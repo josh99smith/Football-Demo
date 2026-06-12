@@ -25,11 +25,29 @@ play, with **down & distance** and the **score** tracked on the HUD.
 | Input | Action |
 | --- | --- |
 | **Left joystick** | Move (camera-relative) |
-| **SNAP / THROW / SPRINT** | Context button (right) |
+| **SNAP / THROW** | Contextual action button (right) |
+| **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
 | **RECEIVER ▸** | Cycle the targeted receiver |
 | **WASD / arrows** (desktop) | Move |
-| **Space** | Snap / throw / sprint |
+| **Space** | Snap / throw |
+| **Shift** | Turbo |
 | **E or Tab** | Cycle receiver |
+
+Cross the line of scrimmage as the QB to commit to a **scramble** (the play
+becomes a run and your receivers block for you).
+
+## Player AI
+
+The steering AI is adapted from
+[Football-Game](https://github.com/josh99smith/Football-Game):
+
+- **Defenders** solve a true pursuit/cut-off angle to meet the ball carrier
+  (instead of trailing), and gang-pursue with anti-clumping separation.
+- **Coverage** is man-to-man with goal-side leverage; DBs break on the ball
+  once it's in the air. A deep safety patrols the middle third.
+- **Receivers** run crisp route cuts (gather, then burst out of the break) and
+  work back to open grass after the route; off-ball teammates pick up the
+  nearest rusher to block once you take off running.
 
 ## Running locally
 

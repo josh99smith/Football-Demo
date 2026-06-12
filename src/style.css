@@ -166,3 +166,16 @@ html, body {
 }
 .mini-btn.active { transform: scale(0.94); background: rgba(0,0,0,0.7); }
 .mini-btn.hidden { display: none; }
+
+/* TURBO sits above the action button on the right */
+.mini-btn.turbo {
+  right: max(34px, env(safe-area-inset-right));
+  bottom: max(170px, calc(env(safe-area-inset-bottom) + 112px));
+  width: 84px;
+  border-radius: 42px;
+  color: #fff;
+  background: #c0392b;
+  border-color: rgba(255, 255, 255, 0.45);
+  font-size: 14px;
+}
+.mini-btn.turbo.active { background: #e74c3c; transform: scale(0.94); }
