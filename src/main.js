@@ -25,6 +25,8 @@ const IDLE_POSE_TIME = 1.188; // a neutral, feet-together frame of the walk cycl
 const WALK_ANIM_RATE   = 1.15;
 const SPRINT_ANIM_RATE = 2.0;
 const SPRINT_LEAN      = 0.22;  // radians (~13°) of forward torso lean at a sprint
+const CAM_FOLLOW       = 3.2;   // how fast the chase cam swings behind the player
+const CAM_HOLD_TIME    = 1.4;   // seconds the camera stays manual after you drag it
 
 // ---- Renderer / scene --------------------------------------
 const canvas = document.getElementById('scene');
@@ -289,6 +291,8 @@ const CLIP_KEYS = {
 
 let relaxing = false;       // is the player doing the lie-down relax?
 let locoLabel = 'idle';     // last locomotion label shown on the HUD badge
+let isMoving = false;       // is the player currently moving (for the chase cam)?
+let camHold = 0;            // >0 while the camera is under manual (drag) control
 
 function onModelLoaded(obj) {
   model = obj;
@@ -482,7 +486,7 @@ function updateJoystick(e) {
 // ---- Camera orbit (mouse / touch drag on empty screen area) ----
 // The joystick and buttons capture their own pointers, so any drag that
 // reaches the canvas is a camera orbit.
-const orbit = { yaw: Math.PI, pitch: 0.35, dist: 8 };
+const orbit = { yaw: 0, pitch: 0.35, dist: 8 };  // yaw 0 = camera behind the player
 const moveVec = { x: 0, y: 0 };       // joystick / keyboard movement vector
 let dragId = null, lastX = 0, lastY = 0;
 
@@ -496,6 +500,7 @@ canvas.addEventListener('pointermove', (e) => {
   orbit.pitch -= (e.clientY - lastY) * 0.005;
   orbit.pitch = Math.max(-0.2, Math.min(1.2, orbit.pitch));
   lastX = e.clientX; lastY = e.clientY;
+  camHold = CAM_HOLD_TIME;   // let the user look around before the chase cam re-centers
 });
 function endPointer(e) { if (e.pointerId === dragId) dragId = null; }
 canvas.addEventListener('pointerup', endPointer);
@@ -531,7 +536,8 @@ function resetPlayer() {
   player.position.set(0, 0, 0);
   velocity.set(0, 0, 0);
   playerYaw.value = 0;
-  orbit.yaw = Math.PI;
+  orbit.yaw = 0;          // camera behind the player
+  camHold = 0;
   setBadge('RESET');
 }
 
@@ -613,6 +619,7 @@ function updateMovement(dt) {
   }
   // Any movement input cancels the lie-down relax.
   const moving = inputMag > 0.05;
+  isMoving = moving;
   if (moving) relaxing = false;
   const sprinting = moving && sprint && !oneShot;
 
@@ -649,6 +656,14 @@ function updateLocomotionBadge(name = locoLabel) {
 }
 
 function updateCamera(dt) {
+  // Chase cam: swing the camera around behind the player as they move, unless
+  // the user is actively orbiting (camHold) — then re-center once they stop.
+  if (camHold > 0) {
+    camHold -= dt;
+  } else if (isMoving) {
+    orbit.yaw = lerpAngle(orbit.yaw, playerYaw.value, 1 - Math.exp(-CAM_FOLLOW * dt));
+  }
+
   // Target a point around the player's upper body.
   camTarget.copy(player.position); camTarget.y += 1.2;
 

@@ -66,6 +66,9 @@ Then open <http://localhost:8080>.
   the ground on load, so the demo is independent of the FBX's native units.
 - The football is a procedural prolate spheroid attached to the rig's `R_Hand`
   bone.
+- The camera is a **chase cam**: it automatically swings around behind the
+  player as they move (`CAM_FOLLOW`). Dragging takes manual control and it
+  re-centers behind the player a moment after you let go (`CAM_HOLD_TIME`).
 - The field — turf stripes, yard lines, hash marks, numbers and end-zone
   wordmarks — is drawn procedurally onto a canvas texture (`makeFieldTexture`),
   with goal posts, grandstands and an instanced "crowd" for atmosphere.
