@@ -372,11 +372,41 @@ function onModelLoaded(obj) {
   }
   updateLocomotionBadge('idle');
 
+  // Re-ground on the *posed* mesh. The feet-on-floor offset was computed from
+  // the bind (T) pose, but the displayed idle is a walk frame whose feet sit
+  // lower, which sinks the player into the turf. Pose the skeleton and drop the
+  // true lowest vertex to y = 0.
+  mixer.update(0);
+  groundToCurrentPose(model);
+
   // Reveal.
   loaderEl.classList.add('gone');
   setTimeout(() => loaderEl.remove(), 700);
   hud.classList.remove('hidden');
   statusEl.textContent = 'Ready';
+}
+
+// Drop the model so the lowest vertex of its *current* (posed) skinned mesh
+// rests on y = 0. Run once at load after the idle pose is applied.
+function groundToCurrentPose(root) {
+  let sk = null;
+  root.traverse(o => { if (o.isSkinnedMesh && !sk) sk = o; });
+  if (!sk) return;
+  root.updateMatrixWorld(true);
+  sk.skeleton.update();
+  const pos = sk.geometry.attributes.position;
+  const v = new THREE.Vector3();
+  let minY = Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    sk.applyBoneTransform(i, v);     // bind -> posed (local)
+    v.applyMatrix4(sk.matrixWorld);  // -> world
+    if (v.y < minY) minY = v.y;
+  }
+  if (Number.isFinite(minY)) {
+    root.position.y -= minY;
+    root.updateMatrixWorld(true);
+  }
 }
 
 function onActionFinished(e) {
