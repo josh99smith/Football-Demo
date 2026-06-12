@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main, claude/football-game-demo-6gi1s5]
+    branches: [claude/football-game-demo-6gi1s5]
   workflow_dispatch:
 
 permissions:
