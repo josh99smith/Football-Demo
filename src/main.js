@@ -13,12 +13,18 @@ const FIELD_WIDTH  = 49;    // world units across
 const END_ZONE     = 9.1;   // depth of each end zone
 const PLAYER_HEIGHT = 1.8;  // target on-screen height (world units)
 const WALK_SPEED   = 2.6;
-const RUN_SPEED    = 7.5;
+const RUN_SPEED    = 6.8;
 const ACCEL        = 22;     // how quickly we reach target speed
 const TURN_SPEED   = 12;     // how quickly the model swivels to face travel
 const IDLE_POSE_TIME = 1.188; // a neutral, feet-together frame of the walk cycle
                               // (the model has no standing idle clip — its only
                               // "idle" is a lie-down relax animation)
+// The FBX's `move_run` clip is unusable (the character runs nearly horizontal,
+// like he's flying). So sprinting reuses the upright walk cycle, sped up and
+// with a forward lean, which reads as a believable run.
+const WALK_ANIM_RATE   = 1.15;
+const SPRINT_ANIM_RATE = 2.0;
+const SPRINT_LEAN      = 0.22;  // radians (~13°) of forward torso lean at a sprint
 
 // ---- Renderer / scene --------------------------------------
 const canvas = document.getElementById('scene');
@@ -282,6 +288,7 @@ const CLIP_KEYS = {
 };
 
 let relaxing = false;       // is the player doing the lie-down relax?
+let locoLabel = 'idle';     // last locomotion label shown on the HUD badge
 
 function onModelLoaded(obj) {
   model = obj;
@@ -302,7 +309,9 @@ function onModelLoaded(obj) {
   });
 
   // The model holder lets us yaw the character independently of root pose.
+  // YXZ order so the sprint lean (rotation.x) tilts forward relative to facing.
   const holder = new THREE.Group();
+  holder.rotation.order = 'YXZ';
   holder.add(model);
   player.add(holder);
   player.userData.holder = holder;
@@ -370,6 +379,7 @@ function onActionFinished(e) {
     // Fade back into whatever locomotion is appropriate.
     fadeTo(current, 0.25);
     actions[finished].fadeOut(0.25);
+    locoLabel = '';   // force the HUD badge to refresh off the action label
   }
 }
 
@@ -574,7 +584,9 @@ function updateMovement(dt) {
     playerYaw.value = lerpAngle(playerYaw.value, targetYaw, 1 - Math.exp(-TURN_SPEED * dt));
   }
   // Any movement input cancels the lie-down relax.
-  if (inputMag > 0.05) relaxing = false;
+  const moving = inputMag > 0.05;
+  if (moving) relaxing = false;
+  const sprinting = moving && sprint && !oneShot;
 
   const holder = player.userData.holder;
   if (holder) {
@@ -583,20 +595,26 @@ function updateMovement(dt) {
     const breathing = (!oneShot && current === 'idle');
     const targetBob = breathing ? Math.sin(clock.elapsedTime * 1.7) * 0.012 : 0;
     holder.position.y += (targetBob - holder.position.y) * (1 - Math.exp(-8 * dt));
+    // Lean forward into a sprint; stay upright otherwise.
+    const targetLean = sprinting ? SPRINT_LEAN : 0;
+    holder.rotation.x += (targetLean - holder.rotation.x) * (1 - Math.exp(-9 * dt));
   }
 
   // Locomotion animation selection (skip while a one-shot plays).
+  // Walk and sprint share the walk clip; sprint just runs it faster.
   if (!oneShot) {
-    let want;
-    if (inputMag > 0.05) want = (sprint ? 'run' : 'walk');
-    else want = relaxing ? 'relax' : 'idle';
-    if (want !== current) { fadeTo(want, 0.25); updateLocomotionBadge(want); }
+    const want = moving ? 'walk' : (relaxing ? 'relax' : 'idle');
+    if (want !== current) fadeTo(want, 0.25);
+    if (moving && actions.walk) actions.walk.timeScale = sprint ? SPRINT_ANIM_RATE : WALK_ANIM_RATE;
+    // Badge tracks walk vs sprint even though both use the same clip.
+    const label = moving ? (sprint ? 'run' : 'walk') : (relaxing ? 'relax' : 'idle');
+    if (label !== locoLabel) { locoLabel = label; updateLocomotionBadge(label); }
   }
 
   speedVal.textContent = speed.toFixed(1);
 }
 
-function updateLocomotionBadge(name = current) {
+function updateLocomotionBadge(name = locoLabel) {
   if (oneShot) return;
   const map = { idle: 'READY', walk: 'JOGGING', run: 'SPRINTING', relax: 'RELAXING' };
   setBadge(map[name] || 'READY', true);

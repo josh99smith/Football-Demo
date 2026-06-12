@@ -53,8 +53,12 @@ Then open <http://localhost:8080>.
   synthesized by freezing a neutral, feet-together frame of the walk cycle
   (`IDLE_POSE_TIME`) with a subtle breathing bob, and the lie-down `relax` is
   kept as an optional move on the `G` key.
+- The bundled `move_run` clip is also unusable as a sprint — the character runs
+  nearly horizontal, as if flying — so **sprinting reuses the walk cycle**, sped
+  up (`SPRINT_ANIM_RATE`) with a forward torso lean (`SPRINT_LEAN`), which reads
+  as a believable run while keeping the character upright.
 - The locomotion clips are **in-place** (no root motion), so movement is driven
-  by code and the animation simply plays underneath. Idle → walk → run are
+  by code and the animation simply plays underneath. Idle → walk → sprint are
   cross-faded based on input and the sprint key; catch and dive are one-shot
   actions (`LoopOnce`, `clampWhenFinished`) that blend back into locomotion when
   they finish.
