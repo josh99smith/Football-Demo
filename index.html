@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Gridiron Demo — Football Field Playground</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8F%88%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="src/style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <!-- Loading overlay -->
+  <div id="loader">
+    <div class="loader-inner">
+      <div class="ball-spinner">🏈</div>
+      <h1>GRIDIRON DEMO</h1>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <p id="loader-status">Loading player...</p>
+    </div>
+  </div>
+
+  <!-- Heads-up display -->
+  <div id="hud" class="hidden">
+    <div id="action-badge">RELAXING</div>
+
+    <div id="controls-panel">
+      <div class="cp-title">CONTROLS <span class="cp-toggle" id="cp-toggle">[H to hide]</span></div>
+      <ul class="cp-list">
+        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> <span>Move</span></li>
+        <li><kbd>Shift</kbd> <span>Sprint</span></li>
+        <li><kbd>Space</kbd> <span>Catch</span></li>
+        <li><kbd>F</kbd> <span>Diving catch</span></li>
+        <li><kbd>B</kbd> <span>Toggle football</span></li>
+        <li><kbd>Drag</kbd> <span>Orbit camera</span></li>
+        <li><kbd>Wheel</kbd> <span>Zoom</span></li>
+        <li><kbd>R</kbd> <span>Reset to midfield</span></li>
+      </ul>
+    </div>
+
+    <div id="speedo"><span id="speed-val">0.0</span><small>SPEED</small></div>
+
+    <!-- Mobile / touch buttons -->
+    <div id="touch-actions">
+      <button data-act="sprint">SPRINT</button>
+      <button data-act="catch">CATCH</button>
+      <button data-act="dive">DIVE</button>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
