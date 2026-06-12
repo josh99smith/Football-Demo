@@ -1,7 +1,21 @@
-# 7-on-7 Football
+# 7-on-7 Blitz Football
 
-A mobile-friendly WebGL football game: run a full 7-on-7 passing play from
-snap to score. Built with [three.js](https://threejs.org/). One rigged
+A mobile-friendly WebGL arcade football game — NFL Blitz-style 7-on-7: run a
+full passing play from snap to score.
+
+## Blitz rules
+
+- **30 yards for a first down**, drives start on your own 20. No punts, no
+  field goals — you go for it.
+- **Turbo meter**: hold TURBO for a 1.4x burst; the meter drains while you
+  burn it and refills when you don't (including between plays).
+- **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives
+  and he *whiffs right past* (and hits the turf, courtesy of the ragdolls).
+  A lone arm-tackle can also be **broken** outright; turbo helps.
+- **ON FIRE**: score 3 straight touchdowns and your whole offense ignites —
+  flaming ball, +12% team speed, and unlimited turbo. An interception or a
+  turnover on downs puts the fire out.
+- Bullet passes, a faster squad on both sides, and most square hits are BIG. Built with [three.js](https://threejs.org/). One rigged
 character is cloned 14 times (each with its own skeleton) and driven by
 shared idle / walk / run glTF clips.
 

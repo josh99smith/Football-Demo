@@ -167,7 +167,7 @@ function makeCharacter(team) {
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     ragdoll: null, ragdolling: false,
   };
@@ -187,15 +187,20 @@ function setClip(ch, name) {
 // ===========================================================================
 const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', DEAD: 'dead' };
 const DIR = 1; // offense attacks +Z
+// NFL Blitz rules: 30 yards for a first down, drives start on your own 20.
+const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
 const game = {
   state: STATE.PRESNAP,
   offense: [], defense: [], all: [],
   qb: null, controlled: null, carrier: null,
   selected: 5, receivers: [],
-  los: -10, firstDown: 0, down: 1,
+  los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   deadTimer: 0,
   tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
+  // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
+  turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
+  playClock: 0, lastBreak: -10,
 };
 
 const ball = {
@@ -206,6 +211,17 @@ function makeBall() {
   const m = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12),
     new THREE.MeshStandardMaterial({ color: 0x6e3b1f, roughness: 0.8 }));
   m.scale.z = 1.7; m.castShadow = true; scene.add(m); ball.mesh = m;
+  const flame = new THREE.PointLight(0xff6622, 0, 6); // lit while ON FIRE
+  m.add(flame); ball.flame = flame;
+}
+function setFireVisual(on) {
+  ball.flame.intensity = on ? 3 : 0;
+  ball.mesh.material.emissive.setHex(on ? 0xff5500 : 0x000000);
+  ball.mesh.material.emissiveIntensity = on ? 0.9 : 1;
+}
+function douseFire() {
+  game.fireCount = 0;
+  if (game.onFire) { game.onFire = false; setFireVisual(false); setStatus('Fire extinguished'); }
 }
 
 const WR_X = [-24, -16, -8, 8, 16, 24];
@@ -225,18 +241,18 @@ function buildRoute(sx, los) {
 }
 
 function spawnTeams() {
-  game.qb = makeCharacter('off'); game.qb.role = 'QB'; game.qb.job = 'qb'; game.qb.baseSpeed = 9.0;
+  game.qb = makeCharacter('off'); game.qb.role = 'QB'; game.qb.job = 'qb'; game.qb.baseSpeed = 9.6;
   game.offense = [game.qb]; game.receivers = [];
   for (const x of WR_X) {
-    const wr = makeCharacter('off'); wr.role = 'WR'; wr.baseSpeed = 8.7;
+    const wr = makeCharacter('off'); wr.role = 'WR'; wr.baseSpeed = 9.3;
     game.offense.push(wr); game.receivers.push(wr);
   }
   game.defense = [];
   for (let i = 0; i < 6; i++) {
-    const db = makeCharacter('def'); db.role = 'DB'; db.covers = i; db.baseSpeed = 8.4;
+    const db = makeCharacter('def'); db.role = 'DB'; db.covers = i; db.baseSpeed = 9.0;
     game.defense.push(db);
   }
-  const safety = makeCharacter('def'); safety.role = 'S'; safety.deep = true; safety.baseSpeed = 8.2;
+  const safety = makeCharacter('def'); safety.role = 'S'; safety.deep = true; safety.baseSpeed = 8.8;
   game.defense.push(safety);
   game.all = [...game.offense, ...game.defense];
 }
@@ -259,7 +275,7 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // ===========================================================================
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
-const TURBO_MULT = 1.35; // arcade turbo (Football-Game uses 1.4)
+const TURBO_MULT = 1.4; // full NFL Blitz turbo
 const px = (p) => p.group ? p.group.position : p;
 function seek(from, tx, tz) {
   const dx = tx - from.x, dz = tz - from.z, d = Math.hypot(dx, dz) || 1;
@@ -317,6 +333,7 @@ function updateDefense() {
   const carrierIsRunning = !!carrier && (carrier.role !== 'QB' || pastLine(carrier));
   const inAir = ball.mode === 'flying';
   for (const d of game.defense) {
+    if (d.ragdolling) continue; // knocked down mid-play (whiff / broken tackle)
     const dp = px(d);
     let steer = { x: 0, z: 0 };
     if (carrierIsRunning && carrier) {
@@ -356,7 +373,10 @@ function updateDefense() {
 const ROUTE_REACH = 1.3, SIDE_MARGIN = 4, BACK_MARGIN = 3;
 function nearestDefenderTo(point) {
   let best = null, bestD = Infinity;
-  for (const d of game.defense) { const dd = dist2(px(d), point); if (dd < bestD) { bestD = dd; best = d; } }
+  for (const d of game.defense) {
+    if (d.ragdolling) continue;
+    const dd = dist2(px(d), point); if (dd < bestD) { bestD = dd; best = d; }
+  }
   return best;
 }
 function assignBlocks(blockForCarrier) {
@@ -365,7 +385,7 @@ function assignBlocks(blockForCarrier) {
   for (const b of blockers) b.blockTarget = null;
   if (!protect) return;
   const pp = px(protect);
-  const threats = [...game.defense].sort((a, b) => dist2(px(a), pp) - dist2(px(b), pp));
+  const threats = game.defense.filter((d) => !d.ragdolling).sort((a, b) => dist2(px(a), pp) - dist2(px(b), pp));
   const taken = new Set();
   for (const threat of threats) {
     let best = null, bestD = Infinity;
@@ -396,7 +416,7 @@ function updateOffense(dt) {
   assignBlocks(blockForCarrier);
 
   for (const o of game.offense) {
-    if (o === game.controlled || o === carrier) continue;
+    if (o === game.controlled || o === carrier || o.ragdolling) continue;
     const p = px(o);
     const job = blockForCarrier && o.job !== 'qb' ? 'block' : o.job;
     let steer = { x: 0, z: 0 };
@@ -437,7 +457,8 @@ function updateOffense(dt) {
 // ===========================================================================
 function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
-  const speed = ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed;
+  let speed = ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed;
+  if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
   let tvx = 0, tvz = 0;
   if (len > 1e-3) { tvx = dx / len * speed; tvz = dz / len * speed; }
   const k = 1 - Math.pow(0.0009, dt); // acceleration smoothing
@@ -556,7 +577,7 @@ function updateButtons() {
   if (s === STATE.PRESNAP) { show(actionBtn, 'SNAP'); show(switchBtn, 'RECEIVER ▸'); hide(turboBtn); }
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(switchBtn, 'RECEIVER ▸'); show(turboBtn); }
   else if (s === STATE.AIR) { hide(actionBtn); hide(switchBtn); show(turboBtn); }
-  else if (s === STATE.RUN) { hide(actionBtn); hide(switchBtn); show(turboBtn); }
+  else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); hide(switchBtn); show(turboBtn); }
   else { hide(actionBtn); hide(switchBtn); hide(turboBtn); }
 }
 
@@ -651,6 +672,7 @@ function newPlay() {
 }
 function snap() {
   game.state = STATE.LIVE;
+  game.playClock = 0; game.lastBreak = -10;
   game.receivers.forEach((wr, i) => { wr.route = buildRoute(WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
   game.defense.forEach((db) => { db.job = db.deep ? 'zone' : 'cover'; if (db.deep) db.zonePoint = new THREE.Vector3(0, 0, game.los + 18); });
   setStatus('Find an open receiver, then THROW');
@@ -661,12 +683,12 @@ function throwBall() {
   const from = ball.mesh.position.clone();
   const flat = recv.group.position.clone(); flat.y = 0;
   const dist = from.clone().setY(0).distanceTo(flat);
-  const dur = Math.max(0.5, dist / 24);
+  const dur = Math.max(0.4, dist / 32); // Blitz bullet passes
   const to = flat.add(recv.vel.clone().multiplyScalar(dur * 0.9));
   to.x = clampX(to.x); to.z = THREE.MathUtils.clamp(to.z, -HALF_L + 1, HALF_L - 1); to.y = 1.2;
   ball.mode = 'flying'; ball.t = 0; ball.dur = dur;
   ball.from.copy(from); ball.to.copy(to);
-  ball.arc = Math.min(7, dist * 0.18 + 1.5); ball.targetRecv = recv;
+  ball.arc = Math.min(4.5, dist * 0.10 + 1.2); ball.targetRecv = recv;
   game.state = STATE.AIR; selRing.visible = false;
   setStatus('Pass is up…'); updateButtons();
 }
@@ -683,21 +705,26 @@ function endPlay(result, endZ) {
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
   if (result === 'TD') {
     game.scoreOff += 7; setStatus('TOUCHDOWN! 🏈');
-    showBanner('TOUCHDOWN!', '#ffd23a');
+    game.fireCount++;
+    if (game.fireCount >= 3 && !game.onFire) {
+      game.onFire = true; setFireVisual(true);
+      showBanner('ON FIRE!', '#ff7a3a');
+      setStatus('3 straight TDs — your team is ON FIRE! 🔥');
+    } else showBanner('TOUCHDOWN!', '#ffd23a');
     timeScale.slow(0.45, 0.5);
     shake.add(0.3);
-    game.los = -10; game.down = 1; game.firstDown = game.los + 10;
+    game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
   } else {
     const gained = result === 'incomplete' ? 0 : endZ - game.los;
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'intercept' ? 'Intercepted!'
         : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
           : `Tackled (+${Math.max(0, Math.round(gained))})`);
-    if (result === 'intercept') { game.los = -10; game.down = 1; game.firstDown = game.los + 10; }
+    if (result === 'intercept') { douseFire(); game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS; }
     else {
       const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 5, GOAL_Z - 1);
-      if (spot >= game.firstDown) { game.los = spot; game.down = 1; game.firstDown = Math.min(GOAL_Z, game.los + 10); }
-      else { game.los = spot; game.down += 1; if (game.down > 4) { game.los = -10; game.down = 1; game.firstDown = game.los + 10; setStatus('Turnover on downs'); } }
+      if (spot >= game.firstDown) { game.los = spot; game.down = 1; game.firstDown = Math.min(GOAL_Z, game.los + FIRST_DOWN_YDS); }
+      else { game.los = spot; game.down += 1; if (game.down > 4) { douseFire(); game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS; setStatus('Turnover on downs'); } }
     }
   }
   updateHUD();
@@ -736,7 +763,7 @@ function resolvePass() {
   let bestR = null, bestRD = Infinity;
   for (const wr of game.receivers) { const d = near(wr); if (d < bestRD) { bestRD = d; bestR = wr; } }
   let bestDD = Infinity;
-  for (const db of game.defense) { const d = near(db); if (d < bestDD) bestDD = d; }
+  for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < bestDD) bestDD = d; }
   if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) {
     ball.mode = 'carried';
     timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
@@ -756,8 +783,10 @@ function checkRunOutcome() {
   const c = game.carrier.group.position;
   if (c.z >= GOAL_Z) { endPlay('TD', c.z); return; }
   if (Math.abs(c.x) > HALF_W || c.z < -HALF_L) { endPlay('oob', c.z); return; }
-  for (const db of game.defense)
+  for (const db of game.defense) {
+    if (db.ragdolling) continue;
     if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { beginTackle(db); return; }
+  }
 }
 
 // ===========================================================================
@@ -776,6 +805,19 @@ function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
   return ch.ragdolling;
 }
 
+// Mid-play knockdowns (whiffs / broken tackles): each gets its own collision
+// bit from a rotating pool so simultaneous bodies never explode each other.
+let midplayBit = 0;
+const MIDPLAY_BITS = [0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800];
+function knockdownDefender(d) {
+  const c = game.carrier ? game.carrier.group.position : d.group.position;
+  const dx = d.group.position.x - c.x, dz = d.group.position.z - c.z;
+  const l = Math.hypot(dx, dz) || 1;
+  const away = new THREE.Vector3(dx / l, 0, dz / l); // bounced off the runner
+  spawnRagdoll(d, new THREE.Vector3(d.vel.x, 0, d.vel.z), away, 3.5,
+    MIDPLAY_BITS[midplayBit++ % MIDPLAY_BITS.length], 'highKnock');
+}
+
 function beginTackle(lead) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
@@ -792,7 +834,29 @@ function beginTackle(lead) {
   const hl = Math.hypot(hitX, hitZ) || 1;
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
-  const big = lead.turbo || closing > 9.5;
+  const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
+
+  // Blitz: a well-timed JUKE makes the first man whiff right past — and down.
+  if (carrier.jukeTimer > 0) {
+    carrier.jukeTimer = 0;
+    knockdownDefender(lead);
+    shake.add(0.15);
+    setStatus('WHIFF!');
+    return;
+  }
+  // Broken tackle: a lone arm-tackle can be shrugged (a committed big hit can't).
+  if (!big && pile.length === 1 && game.playClock - game.lastBreak > 0.55) {
+    const p = game.onFire ? 0.55 : input.turbo ? 0.45 : 0.3;
+    if (Math.random() < p) {
+      game.lastBreak = game.playClock;
+      knockdownDefender(lead);
+      carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
+      shake.add(0.2);
+      shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
+      showBanner('BROKE IT!', '#bfffd0');
+      return;
+    }
+  }
 
   // Pile momentum: mass-weighted COM velocity of carrier + tacklers, bled by
   // wrap-up friction as the pile grows, plus a shove off the lead tackler.
@@ -899,6 +963,19 @@ function updateAnimation(ch, dt) {
   ch.mixer.update(dt);
 }
 
+// Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
+// contact during the juke window he whiffs right past (see beginTackle).
+function doJuke(ch) {
+  if (ch.jukeCd > 0) return;
+  ch.jukeCd = 0.9; ch.jukeTimer = 0.38;
+  const kb = kbVec();
+  const side = (input.x + kb.x) < 0 ? -1 : 1;
+  const rx = Math.cos(ch.heading), rz = -Math.sin(ch.heading); // right of heading
+  ch.vel.x += rx * side * 7; ch.vel.z += rz * side * 7;
+  shake.kick(rx * side, rz * side, 0.25);
+}
+const turboFillEl = document.getElementById('turbo-fill');
+
 // ===========================================================================
 // Main per-frame
 // ===========================================================================
@@ -914,17 +991,36 @@ function updatePlay(dt) {
     if (actionEdge) throwBall();
   }
 
+  // Blitz turbo meter: drains while held, refills when released; ON FIRE =
+  // unlimited turbo + a hotter whole offense.
+  const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN;
+  const turboOn = input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0);
+  if (liveBall) game.playClock += dt;
+  if (liveBall && turboOn && !game.onFire) {
+    game.turboMeter = Math.max(0, game.turboMeter - dt / 2.8);
+    if (game.turboMeter <= 0) game.turboLock = true; // flat: wait for a recharge
+  } else {
+    // Refills whenever it isn't burning — including between plays.
+    game.turboMeter = Math.min(1, game.turboMeter + dt / 4);
+    if (game.turboLock && game.turboMeter > 0.25) game.turboLock = false;
+  }
+  turboFillEl.style.height = `${Math.round(game.turboMeter * 100)}%`;
+  const fireMul = game.onFire ? 1.12 : 1;
+
   if (game.state === STATE.LIVE || game.state === STATE.AIR) {
-    const top = game.qb.baseSpeed * (input.turbo ? TURBO_MULT : 1);
+    const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
     controlledMove(game.qb, dt, top);
     updateOffense(dt); updateDefense();
-    for (const ch of game.all) if (ch !== game.controlled) applySteer(ch, dt);
+    for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     if (game.state === STATE.LIVE && pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
   } else if (game.state === STATE.RUN) {
-    const top = game.carrier.baseSpeed * (input.turbo ? TURBO_MULT : 1);
+    if (actionEdge) doJuke(game.carrier);
+    if (game.carrier.jukeTimer > 0) game.carrier.jukeTimer -= dt;
+    if (game.carrier.jukeCd > 0) game.carrier.jukeCd -= dt;
+    const top = game.carrier.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
     controlledMove(game.carrier, dt, top);
     updateOffense(dt); updateDefense();
-    for (const ch of game.all) if (ch !== game.controlled) applySteer(ch, dt);
+    for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     checkRunOutcome();
   } else if (game.state === STATE.TACKLE) {
     // The ragdolls own the moment: hold everyone else, let physics finish the
@@ -1065,7 +1161,7 @@ window.addEventListener('resize', () => {
 
 loadAssets().then(() => {
   spawnTeams(); makeBall();
-  game.firstDown = game.los + 10;
+  game.firstDown = game.los + FIRST_DOWN_YDS;
   newPlay();
   loadingEl.classList.add('hidden');
   animate();

@@ -207,3 +207,12 @@ html, body {
   font-size: 14px;
 }
 .mini-btn.turbo.active { background: #e74c3c; transform: scale(0.94); }
+.mini-btn.turbo { overflow: hidden; background: #6e2018; }
+.mini-btn.turbo span { position: relative; z-index: 1; }
+#turbo-fill {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 100%;
+  background: linear-gradient(180deg, #ff8a3a, #e23b3b);
+  transition: height 0.08s linear;
+}
