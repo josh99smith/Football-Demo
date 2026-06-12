@@ -19,12 +19,14 @@ const TURN_SPEED   = 12;     // how quickly the model swivels to face travel
 const IDLE_POSE_TIME = 1.188; // a neutral, feet-together frame of the walk cycle
                               // (the model has no standing idle clip — its only
                               // "idle" is a lie-down relax animation)
+const MODEL_FACING_FIX = -Math.PI / 2; // the mesh faces -X by default; rotate to +Z
 // The FBX's `move_run` clip is unusable (the character runs nearly horizontal,
 // like he's flying). So sprinting reuses the upright walk cycle, sped up and
 // with a forward lean, which reads as a believable run.
 const WALK_ANIM_RATE   = 1.15;
 const SPRINT_ANIM_RATE = 2.0;
 const SPRINT_LEAN      = 0.22;  // radians (~13°) of forward torso lean at a sprint
+const CAM_FOLLOW       = 4.0;   // how fast the chase cam swings behind the player
 
 // ---- Renderer / scene --------------------------------------
 const canvas = document.getElementById('scene');
@@ -309,6 +311,10 @@ function onModelLoaded(obj) {
     if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; }
   });
 
+  // The mesh's built-in forward axis points along -X (90° off), so correct it
+  // here: after this, the holder's yaw = the player's actual heading.
+  model.rotation.y = MODEL_FACING_FIX;
+
   // The model holder lets us yaw the character independently of root pose.
   // YXZ order so the sprint lean (rotation.x) tilts forward relative to facing.
   const holder = new THREE.Group();
@@ -571,7 +577,7 @@ function updateMovement(dt) {
 
   // Camera-forward (flattened) and right vectors.
   tmpForward.set(Math.sin(orbit.yaw), 0, Math.cos(orbit.yaw)).normalize();
-  tmpRight.set(tmpForward.z, 0, -tmpForward.x);
+  tmpRight.set(-tmpForward.z, 0, tmpForward.x);   // screen/player right
 
   desiredVel.set(0, 0, 0);
   if (inputMag > 0.05) {
@@ -637,11 +643,16 @@ function updateLocomotionBadge(name = locoLabel) {
 }
 
 function updateCamera(dt) {
-  // Chase cam: sit directly behind the player's heading while they move, so
-  // you always see their back. The heading itself is smoothed (TURN_SPEED),
-  // which keeps the camera motion smooth. Fully automatic — no manual control.
+  // Chase cam: swing around behind the player's heading while they move.
+  // Weight the follow by how far behind we already are (cos), so it eases in
+  // when the player turns but does NOT chase a full 180° reversal (which would
+  // spin endlessly) — running "back" toward the camera just shows the front.
   if (isMoving) {
-    orbit.yaw = playerYaw.value;
+    let diff = (playerYaw.value - orbit.yaw) % (Math.PI * 2);
+    if (diff > Math.PI) diff -= Math.PI * 2;
+    if (diff < -Math.PI) diff += Math.PI * 2;
+    const align = 0.5 + 0.5 * Math.cos(diff);     // 1 = already behind, 0 = opposite
+    orbit.yaw = lerpAngle(orbit.yaw, playerYaw.value, 1 - Math.exp(-CAM_FOLLOW * align * dt));
   }
 
   // Target a point around the player's upper body.
