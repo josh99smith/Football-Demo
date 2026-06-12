@@ -22,9 +22,9 @@ diving-catch animations — all driven by the supplied rigged FBX model.
 | Mouse drag | Orbit the camera |
 | Mouse wheel | Zoom in / out |
 
-On touch devices, drag the **left half** of the screen as a virtual joystick,
-drag the **right half** to orbit the camera, and use the on-screen
-**SPRINT / CATCH / DIVE** buttons.
+On touch devices, use the on-screen **joystick** (bottom-left) to move, the
+**action buttons** (bottom-right: CATCH, DIVE, SPRINT, RELAX) to trigger moves,
+and drag anywhere else on the screen to orbit the camera.
 
 ## Running it
 

@@ -50,10 +50,17 @@
     <div id="speedo"><span id="speed-val">0.0</span><small>SPEED</small></div>
 
     <!-- Mobile / touch buttons -->
+    <!-- Left: movement joystick -->
+    <div id="joystick">
+      <div id="joy-thumb"></div>
+    </div>
+
+    <!-- Right: action buttons -->
     <div id="touch-actions">
-      <button data-act="sprint">SPRINT</button>
-      <button data-act="catch">CATCH</button>
-      <button data-act="dive">DIVE</button>
+      <button class="act-btn act-catch" data-act="catch">CATCH</button>
+      <button class="act-btn act-dive" data-act="dive">DIVE</button>
+      <button class="act-btn act-relax" data-act="relax">RELAX</button>
+      <button class="act-btn act-sprint" data-act="sprint">SPRINT</button>
     </div>
   </div>
 

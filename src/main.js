@@ -428,48 +428,76 @@ addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
 function isDown(...names) { return names.some(n => keys[n]); }
 
-// Touch action buttons.
-document.querySelectorAll('#touch-actions button').forEach(btn => {
+// Touch action buttons (right-hand cluster).
+document.querySelectorAll('#touch-actions .act-btn').forEach(btn => {
   const act = btn.dataset.act;
   if (act === 'sprint') {
-    btn.addEventListener('touchstart', e => { e.preventDefault(); held.sprint = true; }, { passive: false });
-    btn.addEventListener('touchend', () => { held.sprint = false; });
+    const press = e => { e.preventDefault(); held.sprint = true; btn.classList.add('held'); };
+    const release = () => { held.sprint = false; btn.classList.remove('held'); };
+    btn.addEventListener('pointerdown', press);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('pointerleave', release);
   } else {
-    btn.addEventListener('touchstart', e => { e.preventDefault(); triggerOneShot(act); }, { passive: false });
+    btn.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      if (act === 'relax') toggleRelax();
+      else triggerOneShot(act);
+    });
   }
 });
 
-// ---- Camera orbit (mouse / touch drag) ---------------------
+// ---- On-screen movement joystick (left) --------------------
+const joystick = document.getElementById('joystick');
+const joyThumb = document.getElementById('joy-thumb');
+const JOY_RADIUS = 50;                 // px of travel for full deflection
+let joyId = null, joyCenter = null;
+
+joystick.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  joyId = e.pointerId;
+  const r = joystick.getBoundingClientRect();
+  joyCenter = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  joystick.setPointerCapture(e.pointerId);
+  updateJoystick(e);
+});
+joystick.addEventListener('pointermove', e => { if (e.pointerId === joyId) updateJoystick(e); });
+function endJoystick(e) {
+  if (e.pointerId !== joyId) return;
+  joyId = null; moveVec.x = 0; moveVec.y = 0;
+  joyThumb.style.transform = 'translate(0px, 0px)';
+}
+joystick.addEventListener('pointerup', endJoystick);
+joystick.addEventListener('pointercancel', endJoystick);
+
+function updateJoystick(e) {
+  let dx = e.clientX - joyCenter.x, dy = e.clientY - joyCenter.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > JOY_RADIUS) { dx *= JOY_RADIUS / dist; dy *= JOY_RADIUS / dist; }
+  joyThumb.style.transform = `translate(${dx}px, ${dy}px)`;
+  moveVec.x = dx / JOY_RADIUS;          // +x = right
+  moveVec.y = dy / JOY_RADIUS;          // +y = down (consumed as -forward)
+}
+
+// ---- Camera orbit (mouse / touch drag on empty screen area) ----
+// The joystick and buttons capture their own pointers, so any drag that
+// reaches the canvas is a camera orbit.
 const orbit = { yaw: Math.PI, pitch: 0.35, dist: 8 };
-let dragging = false, lastX = 0, lastY = 0;
-let moveTouchId = null, moveStart = null, moveVec = { x: 0, y: 0 };
+const moveVec = { x: 0, y: 0 };       // joystick / keyboard movement vector
+let dragId = null, lastX = 0, lastY = 0;
 
 canvas.addEventListener('pointerdown', (e) => {
-  // On touch, left half of screen = virtual joystick, right half = camera.
-  if (e.pointerType === 'touch' && e.clientX < window.innerWidth / 2 && moveTouchId === null) {
-    moveTouchId = e.pointerId; moveStart = { x: e.clientX, y: e.clientY };
-    return;
-  }
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  dragId = e.pointerId; lastX = e.clientX; lastY = e.clientY;
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', (e) => {
-  if (e.pointerId === moveTouchId) {
-    const dx = (e.clientX - moveStart.x) / 50, dy = (e.clientY - moveStart.y) / 50;
-    moveVec.x = Math.max(-1, Math.min(1, dx));
-    moveVec.y = Math.max(-1, Math.min(1, dy));
-    return;
-  }
-  if (!dragging) return;
+  if (e.pointerId !== dragId) return;
   orbit.yaw   -= (e.clientX - lastX) * 0.005;
   orbit.pitch -= (e.clientY - lastY) * 0.005;
   orbit.pitch = Math.max(-0.2, Math.min(1.2, orbit.pitch));
   lastX = e.clientX; lastY = e.clientY;
 });
-function endPointer(e) {
-  if (e.pointerId === moveTouchId) { moveTouchId = null; moveVec = { x: 0, y: 0 }; }
-  dragging = false;
-}
+function endPointer(e) { if (e.pointerId === dragId) dragId = null; }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('wheel', (e) => {
