@@ -25,8 +25,6 @@ const IDLE_POSE_TIME = 1.188; // a neutral, feet-together frame of the walk cycl
 const WALK_ANIM_RATE   = 1.15;
 const SPRINT_ANIM_RATE = 2.0;
 const SPRINT_LEAN      = 0.22;  // radians (~13°) of forward torso lean at a sprint
-const CAM_FOLLOW       = 3.2;   // how fast the chase cam swings behind the player
-const CAM_HOLD_TIME    = 1.4;   // seconds the camera stays manual after you drag it
 
 // ---- Renderer / scene --------------------------------------
 const canvas = document.getElementById('scene');
@@ -292,7 +290,6 @@ const CLIP_KEYS = {
 let relaxing = false;       // is the player doing the lie-down relax?
 let locoLabel = 'idle';     // last locomotion label shown on the HUD badge
 let isMoving = false;       // is the player currently moving (for the chase cam)?
-let camHold = 0;            // >0 while the camera is under manual (drag) control
 
 function onModelLoaded(obj) {
   model = obj;
@@ -485,29 +482,14 @@ function updateJoystick(e) {
 
 // ---- Camera orbit (mouse / touch drag on empty screen area) ----
 // The joystick and buttons capture their own pointers, so any drag that
-// reaches the canvas is a camera orbit.
-const orbit = { yaw: 0, pitch: 0.35, dist: 8 };  // yaw 0 = camera behind the player
+// fully automatic — it always trails behind the player. No manual orbit.
+const orbit = { yaw: 0, pitch: 0.32, dist: 8 };  // yaw 0 = camera behind the player
 const moveVec = { x: 0, y: 0 };       // joystick / keyboard movement vector
-let dragId = null, lastX = 0, lastY = 0;
 
-canvas.addEventListener('pointerdown', (e) => {
-  dragId = e.pointerId; lastX = e.clientX; lastY = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (e.pointerId !== dragId) return;
-  orbit.yaw   -= (e.clientX - lastX) * 0.005;
-  orbit.pitch -= (e.clientY - lastY) * 0.005;
-  orbit.pitch = Math.max(-0.2, Math.min(1.2, orbit.pitch));
-  lastX = e.clientX; lastY = e.clientY;
-  camHold = CAM_HOLD_TIME;   // let the user look around before the chase cam re-centers
-});
-function endPointer(e) { if (e.pointerId === dragId) dragId = null; }
-canvas.addEventListener('pointerup', endPointer);
-canvas.addEventListener('pointercancel', endPointer);
+// Mouse wheel still zooms (desktop only); there is no manual rotation.
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  orbit.dist = Math.max(3.5, Math.min(20, orbit.dist + e.deltaY * 0.01));
+  orbit.dist = Math.max(4, Math.min(16, orbit.dist + e.deltaY * 0.01));
 }, { passive: false });
 
 // ---- HUD helpers -------------------------------------------
@@ -537,7 +519,6 @@ function resetPlayer() {
   velocity.set(0, 0, 0);
   playerYaw.value = 0;
   orbit.yaw = 0;          // camera behind the player
-  camHold = 0;
   setBadge('RESET');
 }
 
@@ -656,12 +637,11 @@ function updateLocomotionBadge(name = locoLabel) {
 }
 
 function updateCamera(dt) {
-  // Chase cam: swing the camera around behind the player as they move, unless
-  // the user is actively orbiting (camHold) — then re-center once they stop.
-  if (camHold > 0) {
-    camHold -= dt;
-  } else if (isMoving) {
-    orbit.yaw = lerpAngle(orbit.yaw, playerYaw.value, 1 - Math.exp(-CAM_FOLLOW * dt));
+  // Chase cam: sit directly behind the player's heading while they move, so
+  // you always see their back. The heading itself is smoothed (TURN_SPEED),
+  // which keeps the camera motion smooth. Fully automatic — no manual control.
+  if (isMoving) {
+    orbit.yaw = playerYaw.value;
   }
 
   // Target a point around the player's upper body.
