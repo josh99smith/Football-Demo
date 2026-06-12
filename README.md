@@ -15,6 +15,7 @@ diving-catch animations — all driven by the supplied rigged FBX model.
 | `Shift` | Sprint |
 | `Space` | Catch |
 | `F` | Diving catch |
+| `G` | Relax (lie down on the field) |
 | `B` | Toggle the held football |
 | `R` | Reset to midfield |
 | `H` | Show / hide the controls panel |
@@ -44,9 +45,14 @@ Then open <http://localhost:8080>.
 ## How it works
 
 - **`assets/player.fbx`** — the rigged character with five embedded animation
-  clips: `relax` (idle), `walk`, `run`, `Football Catch`, and a parkour
-  swan-dive used for the diving catch. The clips are matched to friendly action
-  names by keyword in `src/main.js` (`CLIP_KEYS`).
+  clips: `relax`, `walk`, `run`, `Football Catch`, and a parkour swan-dive used
+  for the diving catch. The clips are matched to friendly action names by keyword
+  in `src/main.js` (`CLIP_KEYS`).
+- The model has **no dedicated standing-idle clip** — its only idle is `relax`,
+  a 17-second lie-down-on-the-grass animation. So the default idle is
+  synthesized by freezing a neutral, feet-together frame of the walk cycle
+  (`IDLE_POSE_TIME`) with a subtle breathing bob, and the lie-down `relax` is
+  kept as an optional move on the `G` key.
 - The locomotion clips are **in-place** (no root motion), so movement is driven
   by code and the animation simply plays underneath. Idle → walk → run are
   cross-faded based on input and the sprint key; catch and dive are one-shot

@@ -16,6 +16,9 @@ const WALK_SPEED   = 2.6;
 const RUN_SPEED    = 7.5;
 const ACCEL        = 22;     // how quickly we reach target speed
 const TURN_SPEED   = 12;     // how quickly the model swivels to face travel
+const IDLE_POSE_TIME = 1.188; // a neutral, feet-together frame of the walk cycle
+                              // (the model has no standing idle clip — its only
+                              // "idle" is a lie-down relax animation)
 
 // ---- Renderer / scene --------------------------------------
 const canvas = document.getElementById('scene');
@@ -267,13 +270,18 @@ fbx.load('assets/player.fbx', onModelLoaded, (e) => {
 });
 
 // Map the FBX clip list onto friendly action names by keyword.
+// Note: the FBX's only "idle"-ish clip is `relax`, which is a 17s lie-down
+// animation. We expose it as an optional move and synthesize a standing idle
+// from a neutral frame of the walk cycle instead (see onModelLoaded).
 const CLIP_KEYS = {
-  idle:  /relax/i,
+  relax: /relax/i,
   walk:  /walk_normal/i,
   run:   /move_run/i,
   catch: /Football Catch/i,
   dive:  /swan-dive|parkour/i,
 };
+
+let relaxing = false;       // is the player doing the lie-down relax?
 
 function onModelLoaded(obj) {
   model = obj;
@@ -310,6 +318,14 @@ function onModelLoaded(obj) {
       }
     }
   }
+  // Synthesize a standing idle by freezing a neutral frame of the walk clip.
+  // (Cloning the clip gives an action independent of the live `walk` action.)
+  if (actions.walk) {
+    const standClip = actions.walk.getClip().clone();
+    standClip.name = 'stand_idle';
+    actions.idle = mixer.clipAction(standClip);
+  }
+
   // Configure one-shot actions.
   ['catch', 'dive'].forEach(k => {
     if (actions[k]) {
@@ -331,8 +347,14 @@ function onModelLoaded(obj) {
 
   mixer.addEventListener('finished', onActionFinished);
 
-  // Start in idle.
-  if (actions.idle) { actions.idle.play(); current = 'idle'; }
+  // Start in the standing idle pose.
+  if (actions.idle) {
+    actions.idle.play();
+    actions.idle.paused = true;
+    actions.idle.time = IDLE_POSE_TIME;
+    current = 'idle';
+  }
+  updateLocomotionBadge('idle');
 
   // Reveal.
   loaderEl.classList.add('gone');
@@ -359,6 +381,8 @@ function fadeTo(name, dur = 0.2) {
     actions[current].fadeOut(dur);
   }
   next.reset().fadeIn(dur).play();
+  // The idle action is a single held frame, not a looping clip.
+  if (name === 'idle') { next.paused = true; next.time = IDLE_POSE_TIME; }
   current = name;
 }
 
@@ -386,6 +410,7 @@ addEventListener('keydown', (e) => {
   if (k === ' ') { e.preventDefault(); triggerOneShot('catch'); }
   if (k === 'f') triggerOneShot('dive');
   if (k === 'b') toggleBall();
+  if (k === 'g') toggleRelax();
   if (k === 'r') resetPlayer();
   if (k === 'h') togglePanel();
 });
@@ -459,6 +484,10 @@ function toggleBall() {
   if (!football) return;
   ballVisible = !ballVisible;
   football.visible = ballVisible;
+}
+function toggleRelax() {
+  if (!actions.relax) return;
+  relaxing = !relaxing;          // takes effect next idle frame in updateMovement
 }
 function resetPlayer() {
   player.position.set(0, 0, 0);
@@ -544,16 +573,24 @@ function updateMovement(dt) {
     const targetYaw = Math.atan2(velocity.x, velocity.z);
     playerYaw.value = lerpAngle(playerYaw.value, targetYaw, 1 - Math.exp(-TURN_SPEED * dt));
   }
+  // Any movement input cancels the lie-down relax.
+  if (inputMag > 0.05) relaxing = false;
+
   const holder = player.userData.holder;
-  if (holder) holder.rotation.y = playerYaw.value;
+  if (holder) {
+    holder.rotation.y = playerYaw.value;
+    // Subtle breathing bob while standing idle, so it doesn't look frozen.
+    const breathing = (!oneShot && current === 'idle');
+    const targetBob = breathing ? Math.sin(clock.elapsedTime * 1.7) * 0.012 : 0;
+    holder.position.y += (targetBob - holder.position.y) * (1 - Math.exp(-8 * dt));
+  }
 
   // Locomotion animation selection (skip while a one-shot plays).
   if (!oneShot) {
-    let want = 'idle';
+    let want;
     if (inputMag > 0.05) want = (sprint ? 'run' : 'walk');
-    if (want !== current) { fadeTo(want, 0.2); updateLocomotionBadge(want); }
-    // Sync run/walk playback rate a touch with movement effort.
-    if (actions.run) actions.run.timeScale = sprint ? 1 : 1;
+    else want = relaxing ? 'relax' : 'idle';
+    if (want !== current) { fadeTo(want, 0.25); updateLocomotionBadge(want); }
   }
 
   speedVal.textContent = speed.toFixed(1);
@@ -561,7 +598,7 @@ function updateMovement(dt) {
 
 function updateLocomotionBadge(name = current) {
   if (oneShot) return;
-  const map = { idle: 'RELAXING', walk: 'JOGGING', run: 'SPRINTING' };
+  const map = { idle: 'READY', walk: 'JOGGING', run: 'SPRINTING', relax: 'RELAXING' };
   setBadge(map[name] || 'READY', true);
 }
 
