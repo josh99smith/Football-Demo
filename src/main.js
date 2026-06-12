@@ -177,22 +177,39 @@ async function setupPlayer() {
 
   const model = charGltf.scene;
 
-  // Normalize: scale so the character is ~1.9 yards tall and feet sit at y=0.
-  const box = new THREE.Box3().setFromObject(model);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const targetHeight = 1.9;
-  const scale = targetHeight / size.y;
-  model.scale.setScalar(scale);
+  // This rig has an Armature with scale 0.01 and centimetre-scale bones, while
+  // the mesh geometry is in metres. Box3.setFromObject ignores skinning, so it
+  // mis-measures the height by ~100x. Measure the posed skeleton instead — that
+  // is what actually gets rendered.
+  model.updateWorldMatrix(true, true);
+  const bones = [];
+  model.traverse((o) => { if (o.isBone) bones.push(o); });
 
-  // Re-measure after scaling to drop feet onto the turf.
-  const box2 = new THREE.Box3().setFromObject(model);
-  model.position.y = -box2.min.y;
+  const wp = new THREE.Vector3();
+  const measure = () => {
+    let lo = Infinity, hi = -Infinity;
+    for (const b of bones) {
+      b.getWorldPosition(wp);
+      lo = Math.min(lo, wp.y);
+      hi = Math.max(hi, wp.y);
+    }
+    return { lo, hi, span: hi - lo };
+  };
+
+  // Scale the bone span (head bone -> lowest bone) to a sensible player height.
+  const targetHeight = 1.8;
+  const before = measure();
+  model.scale.multiplyScalar(targetHeight / before.span);
+  model.updateWorldMatrix(true, true);
+
+  // Drop the lowest bone onto the turf (the foot mesh sits a touch below it).
+  const after = measure();
+  model.position.y -= after.lo - 0.05;
 
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true;
-      o.frustumCulled = false; // skinned bounds can be unreliable
+      o.frustumCulled = false; // skinned bounds are unreliable
     }
   });
 
@@ -206,16 +223,22 @@ async function setupPlayer() {
     byName[clip.name] = clip;
   }
 
-  const idleClip = charGltf.animations[0]; // static idle pose
-  actions.idle = mixer.clipAction(idleClip);
-  actions.walk = mixer.clipAction(byName['Walking']);
-  actions.run = mixer.clipAction(byName['Running']);
-
-  for (const a of Object.values(actions)) {
+  // Clips from animations.glb retarget onto the character because both files
+  // share the exact same bone names (verified). Idle is the static pose that
+  // ships with the character file.
+  const make = (clip) => {
+    if (!clip) return null;
+    const a = mixer.clipAction(clip);
+    a.setLoop(THREE.LoopRepeat, Infinity);
     a.enabled = true;
     a.setEffectiveWeight(0);
     a.play();
-  }
+    return a;
+  };
+  actions.idle = make(charGltf.animations[0]);
+  actions.walk = make(byName['Walking']);
+  actions.run = make(byName['Running']);
+
   activeAction = actions.idle;
   activeAction.setEffectiveWeight(1);
 
@@ -224,12 +247,14 @@ async function setupPlayer() {
 
 // Cross-fade locomotion based on speed.
 function setLocomotion(name) {
-  const next = actions[name];
+  const next = actions[name] || actions.idle;
   if (!next || next === activeAction) return;
   const prev = activeAction;
+  next.reset();
   next.enabled = true;
   next.setEffectiveTimeScale(1);
-  next.crossFadeFrom(prev, 0.25, true);
+  next.setEffectiveWeight(1);
+  if (prev) next.crossFadeFrom(prev, 0.25, false);
   next.play();
   activeAction = next;
 }
