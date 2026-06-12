@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { PhysicsWorld, TackleRagdoll, pickVariant } from './ragdoll.js';
 
 // ===========================================================================
 // Renderer / scene / camera / lights
@@ -117,11 +118,18 @@ function measureBoneSpan(root) {
   return { lo, hi, span: hi - lo };
 }
 
+// Rapier physics powers the ragdoll tackles. Loaded async; if it fails the
+// game still runs — tackles just end the play without the ragdoll fall.
+let physics = null;
+
 async function loadAssets() {
   loadingText.textContent = 'Loading character…';
   const charGltf = await loadGLB('assets/character.glb');
   loadingText.textContent = 'Loading animations…';
   const animGltf = await loadGLB('assets/animations.glb');
+  loadingText.textContent = 'Starting physics…';
+  try { physics = await PhysicsWorld.create(); }
+  catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
   idleClip = charGltf.animations[0];
   const byName = {};
@@ -155,12 +163,13 @@ function makeCharacter(team) {
   const actions = { idle: mk(idleClip), walk: mk(walkClip), run: mk(runClip) };
   actions.idle.setEffectiveWeight(1);
   return {
-    group, mixer, actions, current: 'idle', active: actions.idle,
+    group, model, mixer, actions, current: 'idle', active: actions.idle,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
     route: null, wp: 0, cutTimer: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
+    ragdoll: null, ragdolling: false,
   };
 }
 
@@ -176,7 +185,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', DEAD: 'dead' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', DEAD: 'dead' };
 const DIR = 1; // offense attacks +Z
 const game = {
   state: STATE.PRESNAP,
@@ -186,6 +195,7 @@ const game = {
   los: -10, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   deadTimer: 0,
+  tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
 };
 
 const ball = {
@@ -553,6 +563,7 @@ function updateButtons() {
 // Play flow
 // ===========================================================================
 function newPlay() {
+  clearRagdolls(); // animation clips repose every bone on the next mixer update
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -618,9 +629,15 @@ function endPlay(result, endZ) {
 const TACKLE_R = 1.5, CATCH_R = 3.0, INTERCEPT_R = 1.7;
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 
+const _hips = new THREE.Vector3();
 function updateBall(dt) {
   if (ball.mode === 'carried') {
     const h = game.carrier || game.qb;
+    if (h.ragdolling && h.ragdoll && h.ragdoll.active) {
+      // Tucked with the falling body: track the carrier's physics-driven hips.
+      const hips = h.ragdoll.tryBone('Hips');
+      if (hips) { hips.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z); return; }
+    }
     const p = h.group.position;
     _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));
     ball.mesh.position.set(p.x + _f.x * 0.4, 1.25, p.z + _f.z * 0.4);
@@ -649,7 +666,85 @@ function checkRunOutcome() {
   if (c.z >= GOAL_Z) { endPlay('TD', c.z); return; }
   if (Math.abs(c.x) > HALF_W || c.z < -HALF_L) { endPlay('oob', c.z); return; }
   for (const db of game.defense)
-    if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { endPlay('tackle', c.z); return; }
+    if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { beginTackle(db); return; }
+}
+
+// ===========================================================================
+// Ragdoll tackles (tackle resolution ported from Football-Game/TackleEngine)
+// ===========================================================================
+const SWARM_R = 3.5;   // defenders within this of the carrier join the pile
+const GANG_MAX = 3;    // max bodies in the pile
+const RAGDOLL_MAX = 3; // carrier + 2 tacklers ragdoll; the rest just wrap
+
+function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
+  if (!physics) return false;
+  if (!ch.ragdoll) { ch.ragdoll = new TackleRagdoll(physics); ch.ragdoll.bind(ch.model); }
+  ch.group.updateWorldMatrix(true, true); // snapshot the CURRENT animated pose
+  ch.ragdoll.spawn(carryVel, hitDir, hitSpeed, bit, variant);
+  ch.ragdolling = ch.ragdoll.active;
+  return ch.ragdolling;
+}
+
+function beginTackle(lead) {
+  const carrier = game.carrier;
+  const cp = carrier.group.position;
+  if (!physics) { endPlay('tackle', cp.z); return; } // no physics: instant whistle
+
+  // Gather the swarm: the lead plus the nearest defenders crashing the carrier.
+  const pile = [lead, ...game.defense
+    .filter((d) => d !== lead && distXZ(px(d), cp) <= SWARM_R)
+    .sort((a, b) => distXZ(px(a), cp) - distXZ(px(b), cp))].slice(0, GANG_MAX);
+  const gangSize = pile.length;
+
+  const hitX = cp.x - lead.group.position.x;
+  const hitZ = cp.z - lead.group.position.z;
+  const hl = Math.hypot(hitX, hitZ) || 1;
+  const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
+  const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
+  const big = lead.turbo || closing > 9.5;
+
+  // Pile momentum: mass-weighted COM velocity of carrier + tacklers, bled by
+  // wrap-up friction as the pile grows, plus a shove off the lead tackler.
+  let mx = carrier.vel.x * 1.15, mz = carrier.vel.z * 1.15, mass = 1.15;
+  for (const t of pile) { mx += t.vel.x; mz += t.vel.z; mass += 1; }
+  const kappa = THREE.MathUtils.clamp(0.12 + 0.06 * (gangSize - 1), 0.12, 0.3);
+  const shove = big ? 3.4 : 1.4;
+  const pvx = (mx / mass) * (1 - kappa) + (hitX / hl) * shove;
+  const pvz = (mz / mass) * (1 - kappa) + (hitZ / hl) * shove;
+  const beat = THREE.MathUtils.clamp(0.2 + gangSize * 0.035 + (big ? 0.08 : 0), 0.2, 0.42);
+
+  // Carrier ragdolls with the contact-picked reaction; the closest tacklers
+  // recoil the other way (varied so a pile isn't a mirror image).
+  const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
+  const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
+  spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
+  const back = hitDir.clone().negate();
+  const bits = [0x0004, 0x0008];
+  for (let i = 0; i < Math.min(pile.length, RAGDOLL_MAX - 1); i++) {
+    const t = pile[i];
+    spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), back, hitSpeed * 0.55, bits[i] ?? 0x0004,
+      i === 0 ? 'highKnock' : 'sideSwipe');
+  }
+
+  // Hold the play while physics plays the fall; the pile slides with its momentum.
+  game.state = STATE.TACKLE;
+  game.tackleTimer = 2.0;
+  game.tackleSpotZ = cp.z + pvz * beat * 0.6;
+  ctrlRing.visible = false;
+  setStatus(gangSize >= 3 ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
+  updateButtons();
+}
+
+function anyRagdollActive() {
+  for (const ch of game.all) if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) return true;
+  return false;
+}
+
+function clearRagdolls() {
+  for (const ch of game.all) {
+    if (ch.ragdoll) ch.ragdoll.dispose();
+    ch.ragdolling = false;
+  }
 }
 
 // ===========================================================================
@@ -672,6 +767,7 @@ function controlledMove(ch, dt, topSpeed) {
   clampToField(ch);
 }
 function updateAnimation(ch, dt) {
+  if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   const want = ch.speed > 0.5 ? (ch.speed > 6 ? 'run' : 'walk') : 'idle';
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
@@ -705,6 +801,14 @@ function updatePlay(dt) {
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled) applySteer(ch, dt);
     checkRunOutcome();
+  } else if (game.state === STATE.TACKLE) {
+    // The ragdolls own the moment: hold everyone else, let physics finish the
+    // fall, then spot the ball where the pile slid to.
+    for (const ch of game.all) if (!ch.ragdolling) { ch.speed = 0; ch.vel.set(0, 0, 0); }
+    game.tackleTimer -= dt;
+    const settled = game.carrier && game.carrier.ragdoll &&
+      game.carrier.ragdoll.active && game.tackleTimer < 1.2 && game.carrier.ragdoll.settled();
+    if (game.tackleTimer <= 0 || settled) endPlay('tackle', game.tackleSpotZ);
   }
 
   updateBall(dt);
@@ -726,7 +830,7 @@ const camDesired = new THREE.Vector3();
 function updateCamera(dt) {
   const t = game.controlled || game.qb;
   const p = t.group.position;
-  const yaw = (game.state === STATE.RUN) ? t.heading : 0;
+  const yaw = (game.state === STATE.RUN || game.state === STATE.TACKLE) ? t.heading : 0;
   _f.set(Math.sin(yaw), 0, Math.cos(yaw));
   camDesired.set(p.x - _f.x * 11, 6.5, p.z - _f.z * 11);
   camera.position.lerp(camDesired, 1 - Math.pow(0.0016, dt));
@@ -738,9 +842,27 @@ function updateCamera(dt) {
 // Loop
 // ===========================================================================
 const clock = new THREE.Clock();
+let phAcc = 0; // fixed-step physics accumulator (60 Hz, max 3 steps/frame)
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
-  updatePlay(dt); updateCamera(dt);
+  updatePlay(dt);
+
+  // Step ragdoll physics at a fixed 60 Hz; soft joint limits run per-substep,
+  // then the rigid bodies drive the skinned bones.
+  if (physics && anyRagdollActive()) {
+    phAcc = Math.min(phAcc + dt, 3 / 60);
+    while (phAcc >= 1 / 60) {
+      physics.step((subDt) => {
+        for (const ch of game.all)
+          if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.applyLimits(subDt);
+      });
+      phAcc -= 1 / 60;
+    }
+    for (const ch of game.all)
+      if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
+  }
+
+  updateCamera(dt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }

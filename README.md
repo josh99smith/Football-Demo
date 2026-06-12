@@ -49,6 +49,22 @@ The steering AI is adapted from
   work back to open grass after the route; off-ball teammates pick up the
   nearest rusher to block once you take off running.
 
+## Ragdoll tackles
+
+Tackles are resolved with real physics ([Rapier](https://rapier.rs/), vendored
+in `vendor/rapier/`), ported from Football-Game's `TackleRagdoll`:
+
+- On contact the carrier's **current animated pose is snapshotted** and a
+  capsule rigid body is spawned per limb, thrown with the runner's momentum
+  plus the hit impulse — every tackle falls differently.
+- The fall reaction is picked from the contact: **high knock, low cut, side
+  swipe, or a gang-tackle twist**; the lead tacklers recoil and tumble too.
+- Soft **anatomical cone+twist joint limits** (enforced per physics substep)
+  keep bodies from folding or candy-wrappering; collision groups keep a pile
+  from exploding.
+- The skinned mesh bones are **driven from the rigid bodies** each frame, and
+  the ball is spotted where the pile's mass-weighted momentum slid to.
+
 ## Running locally
 
 Static site — serve over HTTP (ES module import maps need a server):
