@@ -259,6 +259,7 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // ===========================================================================
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
+const TURBO_MULT = 1.35; // arcade turbo (Football-Game uses 1.4)
 const px = (p) => p.group ? p.group.position : p;
 function seek(from, tx, tz) {
   const dx = tx - from.x, dz = tz - from.z, d = Math.hypot(dx, dz) || 1;
@@ -436,7 +437,7 @@ function updateOffense(dt) {
 // ===========================================================================
 function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
-  const speed = ch.turbo ? ch.baseSpeed * 1.2 : ch.baseSpeed;
+  const speed = ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed;
   let tvx = 0, tvz = 0;
   if (len > 1e-3) { tvx = dx / len * speed; tvz = dz / len * speed; }
   const k = 1 - Math.pow(0.0009, dt); // acceleration smoothing
@@ -560,6 +561,82 @@ function updateButtons() {
 }
 
 // ===========================================================================
+// Juice (ported from Football-Game: ScreenShake.ts + TimeScale.ts)
+// ===========================================================================
+const moveToward = (v, t, maxD) => (v < t ? Math.min(v + maxD, t) : Math.max(v - maxD, t));
+function turnToward(a, b, maxD) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return a + THREE.MathUtils.clamp(d, -maxD, maxD);
+}
+
+// Trauma-based screen shake + a directional kick: a tackle visibly *shoves*
+// the camera the way the runner is driven instead of just rattling it.
+class ScreenShake {
+  constructor() { this.trauma = 0; this.kickX = 0; this.kickZ = 0; this.offX = 0; this.offY = 0; this.offZ = 0; }
+  add(amount) { this.trauma = Math.min(1, this.trauma + amount); }
+  kick(dx, dz, amount) {
+    const l = Math.hypot(dx, dz) || 1;
+    this.kickX += (dx / l) * amount; this.kickZ += (dz / l) * amount;
+  }
+  update(dt, maxOffset = 0.55) {
+    let ox = this.kickX, oz = this.kickZ, oy = 0;
+    if (this.trauma > 0) {
+      const s = this.trauma * this.trauma; // punchy: offset scales with trauma^2
+      ox += (Math.random() * 2 - 1) * maxOffset * s;
+      oz += (Math.random() * 2 - 1) * maxOffset * s;
+      oy += (Math.random() * 2 - 1) * maxOffset * 0.5 * s;
+      this.trauma = Math.max(0, this.trauma - dt * 1.6);
+    }
+    this.offX = ox; this.offY = oy; this.offZ = oz;
+    const k = Math.max(0, 1 - dt * 11); // snappy lurch-out, recovers in ~0.18s
+    this.kickX *= k; this.kickZ *= k;
+    if (Math.abs(this.kickX) < 0.01) this.kickX = 0;
+    if (Math.abs(this.kickZ) < 0.01) this.kickZ = 0;
+  }
+}
+
+// Hit-stop (a brief freeze) + bullet-time slow-mo that eases smoothly back to
+// full speed. The sim multiplies its dt by `update()`'s return each frame.
+class TimeScale {
+  constructor() { this.freezeT = 0; this.slowT = 0; this.slowAmt = 1; this.btHold = 0; this.btEase = 0; this.btEaseDur = 1; this.btScale = 1; }
+  freeze(s) { this.freezeT = Math.max(this.freezeT, s); }
+  slow(scale, s) { this.slowAmt = scale; this.slowT = Math.max(this.slowT, s); }
+  bulletTime(scale = 0.16, hold = 0.5, ease = 0.8) {
+    this.btScale = scale; this.btHold = hold; this.btEase = ease; this.btEaseDur = ease;
+  }
+  update(realDt) {
+    if (this.freezeT > 0) { this.freezeT -= realDt; return 0; }
+    let v = 1;
+    if (this.slowT > 0) { this.slowT -= realDt; v = Math.min(v, this.slowAmt); }
+    if (this.btHold > 0 || this.btEase > 0) {
+      let bt;
+      if (this.btHold > 0) { this.btHold -= realDt; bt = this.btScale; }
+      else {
+        this.btEase -= realDt;
+        const k = THREE.MathUtils.clamp(this.btEase / this.btEaseDur, 0, 1);
+        const s = k * k * (3 - 2 * k); // smoothstep ramp back to full speed
+        bt = this.btScale + (1 - this.btScale) * (1 - s);
+      }
+      v = Math.min(v, bt);
+    }
+    return v;
+  }
+}
+
+const shake = new ScreenShake();
+const timeScale = new TimeScale();
+
+const bannerEl = document.getElementById('banner');
+function showBanner(text, color = '#ffd23a') {
+  bannerEl.textContent = text;
+  bannerEl.style.color = color;
+  bannerEl.classList.remove('pop'); void bannerEl.offsetWidth;
+  bannerEl.classList.add('pop');
+}
+
+// ===========================================================================
 // Play flow
 // ===========================================================================
 function newPlay() {
@@ -606,6 +683,9 @@ function endPlay(result, endZ) {
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
   if (result === 'TD') {
     game.scoreOff += 7; setStatus('TOUCHDOWN! 🏈');
+    showBanner('TOUCHDOWN!', '#ffd23a');
+    timeScale.slow(0.45, 0.5);
+    shake.add(0.3);
     game.los = -10; game.down = 1; game.firstDown = game.los + 10;
   } else {
     const gained = result === 'incomplete' ? 0 : endZ - game.los;
@@ -657,8 +737,19 @@ function resolvePass() {
   for (const wr of game.receivers) { const d = near(wr); if (d < bestRD) { bestRD = d; bestR = wr; } }
   let bestDD = Infinity;
   for (const db of game.defense) { const d = near(db); if (d < bestDD) bestDD = d; }
-  if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) { ball.mode = 'carried'; enterRun(bestR, 'Caught it! Run!'); return; }
-  if (bestDD <= INTERCEPT_R) { ball.mode = 'carried'; endPlay('intercept', game.los); return; }
+  if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) {
+    ball.mode = 'carried';
+    timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
+    enterRun(bestR, 'Caught it! Run!');
+    return;
+  }
+  if (bestDD <= INTERCEPT_R) {
+    ball.mode = 'carried';
+    showBanner('PICKED OFF!', '#ff5a3a');
+    shake.add(0.3);
+    endPlay('intercept', game.los);
+    return;
+  }
   ball.mode = 'carried'; endPlay('incomplete', game.los);
 }
 function checkRunOutcome() {
@@ -731,8 +822,26 @@ function beginTackle(lead) {
   game.tackleTimer = 2.0;
   game.tackleSpotZ = cp.z + pvz * beat * 0.6;
   ctrlRing.visible = false;
-  setStatus(gangSize >= 3 ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
   updateButtons();
+
+  // Impact juice (tiering from TackleEngine.impactFx): the camera gets SHOVED
+  // the way the runner is driven, big hits freeze then play out in slow-mo
+  // with a tight close-up, and the callout pops center-screen.
+  const gang = gangSize >= 3;
+  shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
+  if (big || gang) {
+    timeScale.freeze(big && gang ? 0.09 : 0.05);
+    if (gang) timeScale.bulletTime(0.12, 0.5, 0.8);
+    else timeScale.bulletTime(0.18, 0.34, 0.6);
+    hitZoom(gang ? 0.82 : 0.66);
+    shake.add(gang ? 0.72 : 0.5);
+    showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a');
+  } else {
+    timeScale.bulletTime(0.3, 0.2, 0.42);
+    hitZoom(0.3);
+    shake.add(0.18);
+  }
+  setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
 }
 
 function anyRagdollActive() {
@@ -750,20 +859,36 @@ function clearRagdolls() {
 // ===========================================================================
 // Controlled movement + animation
 // ===========================================================================
+// Movement feel ported from Football-Game/Player.step: integrate toward the
+// desired velocity at a real acceleration, braking HARDER than accelerating
+// (hardest with no input at all) so stops and cuts are crisp; rate-limit the
+// heading so the player carves through turns instead of teleport-turning.
+const ACCEL = 55;        // yd/s^2 (controlled player gets a 1.6x responsiveness boost)
+const TURN_RATE = 9;     // rad/s heading carve
+function brakeAmt(v, tv, baseA, moving) {
+  const braking = Math.abs(tv) < Math.abs(v) || v * tv < 0;
+  return baseA * (braking ? (moving ? 1.35 : 2.0) : 1);
+}
 function controlledMove(ch, dt, topSpeed) {
   const kb = kbVec();
   let ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
   let iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
   const mag = Math.min(1, Math.hypot(ix, iy));
-  if (mag > 0.06) {
+  const moving = mag > 0.06;
+  let dvx = 0, dvz = 0;
+  if (moving) {
     camera.getWorldDirection(_f); _f.y = 0; _f.normalize();
     _r.crossVectors(_f, THREE.Object3D.DEFAULT_UP).normalize();
     _d.set(0, 0, 0).addScaledVector(_f, iy).addScaledVector(_r, ix).normalize();
-    const speed = topSpeed * mag;
-    ch.group.position.addScaledVector(_d, speed * dt);
-    ch.vel.set(_d.x * speed, 0, _d.z * speed);
-    ch.heading = Math.atan2(_d.x, _d.z); ch.speed = speed;
-  } else { ch.vel.set(0, 0, 0); ch.speed = 0; }
+    dvx = _d.x * topSpeed * mag; dvz = _d.z * topSpeed * mag;
+  }
+  const baseA = ACCEL * 1.6 * dt;
+  ch.vel.x = moveToward(ch.vel.x, dvx, brakeAmt(ch.vel.x, dvx, baseA, moving));
+  ch.vel.z = moveToward(ch.vel.z, dvz, brakeAmt(ch.vel.z, dvz, baseA, moving));
+  ch.group.position.x += ch.vel.x * dt;
+  ch.group.position.z += ch.vel.z * dt;
+  ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+  if (ch.speed > 0.5) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
   clampToField(ch);
 }
 function updateAnimation(ch, dt) {
@@ -790,13 +915,13 @@ function updatePlay(dt) {
   }
 
   if (game.state === STATE.LIVE || game.state === STATE.AIR) {
-    const top = game.qb.baseSpeed * (input.turbo ? 1.2 : 1);
+    const top = game.qb.baseSpeed * (input.turbo ? TURBO_MULT : 1);
     controlledMove(game.qb, dt, top);
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled) applySteer(ch, dt);
     if (game.state === STATE.LIVE && pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
   } else if (game.state === STATE.RUN) {
-    const top = game.carrier.baseSpeed * (input.turbo ? 1.22 : 1);
+    const top = game.carrier.baseSpeed * (input.turbo ? TURBO_MULT : 1);
     controlledMove(game.carrier, dt, top);
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled) applySteer(ch, dt);
@@ -824,17 +949,80 @@ function updatePlay(dt) {
 }
 
 // ===========================================================================
-// Camera
+// Camera (feel ported from Football-Game/Scene3D: eased "superstar" chase cam
+// that pans toward what you're aiming at, plus a cinematic hit push-in)
 // ===========================================================================
-const camDesired = new THREE.Vector3();
+const cam = {
+  fwdX: 0, fwdZ: 1,                       // eased behind-cam heading (pans, never jumps)
+  look: new THREE.Vector3(0, 1.3, 0), hasLook: false,
+  pos: new THREE.Vector3(0, 7, -12),
+  lookCur: new THREE.Vector3(0, 1.3, 0),
+  cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
+};
+const _tp = new THREE.Vector3(), _tl = new THREE.Vector3();
+const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
+
+/** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
+function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
+
 function updateCamera(dt) {
   const t = game.controlled || game.qb;
   const p = t.group.position;
-  const yaw = (game.state === STATE.RUN || game.state === STATE.TACKLE) ? t.heading : 0;
-  _f.set(Math.sin(yaw), 0, Math.cos(yaw));
-  camDesired.set(p.x - _f.x * 11, 6.5, p.z - _f.z * 11);
-  camera.position.lerp(camDesired, 1 - Math.pow(0.0016, dt));
-  camera.lookAt(p.x, p.y + 1.4, p.z);
+
+  // Eased heading: as QB look downfield; behind the runner once he takes off.
+  const wantYaw = (game.state === STATE.RUN || game.state === STATE.TACKLE) ? t.heading : 0;
+  const k = Math.min(1, dt * 4);
+  cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
+  cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
+  const m = Math.hypot(cam.fwdX, cam.fwdZ) || 1;
+  cam.fwdX /= m; cam.fwdZ /= m;
+
+  // Look point: straight ahead, panned toward the receiver you're targeting
+  // (pre-throw) or the ball in flight — switching targets pans, never snaps.
+  let lx = p.x + cam.fwdX * 9, lz = p.z + cam.fwdZ * 9;
+  let panTo = null;
+  if ((game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected]) {
+    panTo = game.receivers[game.selected].group.position;
+  } else if (game.state === STATE.AIR) panTo = ball.mesh.position;
+  if (panTo) {
+    if (cam.hasLook) {
+      const lk = Math.min(1, dt * 3.5);
+      cam.look.x += (panTo.x - cam.look.x) * lk;
+      cam.look.z += (panTo.z - cam.look.z) * lk;
+    } else { cam.look.set(panTo.x, 1.3, panTo.z); cam.hasLook = true; }
+    lx += (cam.look.x - lx) * 0.55;
+    lz += (cam.look.z - lz) * 0.55;
+  } else cam.hasLook = false;
+
+  // Tight, low chase while running; pulled back as the QB to read the field.
+  const run = game.state === STATE.RUN;
+  _tp.set(p.x - cam.fwdX * (run ? 9 : 10.5), run ? 5.2 : 6.3, p.z - cam.fwdZ * (run ? 9 : 10.5));
+  _tl.set(lx, 1.3, lz);
+
+  // Cinematic hit push-in: a tight 3/4 close-up on the pile that snaps in on
+  // REAL time (so it cuts in even through bullet-time) and eases back out.
+  const wantCine = cam.cineHold > 0 ? 1 : 0;
+  if (cam.cineHold > 0) cam.cineHold -= dt;
+  cam.cine = moveToward(cam.cine, wantCine, dt / (wantCine > cam.cine ? 0.09 : 0.5));
+  if (cam.cine > 0.001) {
+    const e = cam.cine * cam.cine * (3 - 2 * cam.cine);
+    const f = (game.carrier || t).group.position;
+    _cinePos.set(f.x + 3.0, 3.7, f.z - 2.6);
+    _cineLook.set(f.x, 1.0, f.z);
+    _tp.lerp(_cinePos, e); _tl.lerp(_cineLook, e);
+  }
+
+  // Tight follow (+ a real-time boost while pushing in).
+  const lt = Math.min(1, dt * 9 + cam.cine * 0.5);
+  cam.pos.lerp(_tp, lt);
+  cam.lookCur.lerp(_tl, Math.min(1, lt * 1.3));
+
+  // Shake on top; never let the camera dip into the turf.
+  shake.update(dt);
+  const cy = Math.max(1.3, cam.pos.y + shake.offY);
+  camera.position.set(cam.pos.x + shake.offX, cy, cam.pos.z + shake.offZ);
+  camera.lookAt(cam.lookCur);
+
   sun.position.set(p.x + 40, 70, p.z + 20); sun.target.position.set(p.x, 0, p.z);
 }
 
@@ -844,7 +1032,10 @@ function updateCamera(dt) {
 const clock = new THREE.Clock();
 let phAcc = 0; // fixed-step physics accumulator (60 Hz, max 3 steps/frame)
 function animate() {
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const realDt = Math.min(clock.getDelta(), 0.05);
+  // Hit-stop + bullet-time scale the SIM (movement, animation, ragdolls — the
+  // slow-mo tackles) while the camera/shake run on real time and stay snappy.
+  const dt = realDt * timeScale.update(realDt);
   updatePlay(dt);
 
   // Step ragdoll physics at a fixed 60 Hz; soft joint limits run per-substep,
@@ -862,7 +1053,7 @@ function animate() {
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
   }
 
-  updateCamera(dt);
+  updateCamera(realDt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
