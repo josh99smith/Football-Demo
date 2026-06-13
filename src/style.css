@@ -326,6 +326,31 @@ html, body {
   transition: height 0.08s linear;
 }
 
+/* ---------- Ball-carrier move buttons ---------- */
+.move-btn {
+  position: fixed;
+  width: 70px; height: 70px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: rgba(20, 40, 28, 0.78);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  touch-action: none;
+}
+.move-btn:active, .move-btn.active { transform: scale(0.92); filter: brightness(1.2); }
+.move-btn.hidden { display: none; }
+/* Cluster above the SNAP/JUKE action button (lower-right) */
+#spin-btn  { right: max(40px, env(safe-area-inset-right));  bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(36, 70, 120, 0.82); }
+#dive-btn  { right: max(120px, calc(env(safe-area-inset-right) + 120px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(120, 80, 30, 0.82); }
+#pitch-btn { right: max(200px, calc(env(safe-area-inset-right) + 200px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(110, 40, 110, 0.82); }
+
 /* ---------- Play-select screen ---------- */
 #playselect {
   position: fixed;

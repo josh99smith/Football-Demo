@@ -349,7 +349,7 @@ function makeCharacter(team) {
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -777,7 +777,7 @@ function clampToField(ch) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0 };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false };
 
 (function joystick() {
   const base = document.getElementById('joystick');
@@ -811,6 +811,9 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
 
 const actionBtn = document.getElementById('action-btn');
 const turboBtn = document.getElementById('turbo-btn');
+const spinBtn = document.getElementById('spin-btn');
+const diveBtn = document.getElementById('dive-btn');
+const pitchBtn = document.getElementById('pitch-btn');
 (function buttons() {
   const press = (el, on, off) => {
     const d = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); on(); };
@@ -823,6 +826,9 @@ const turboBtn = document.getElementById('turbo-btn');
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
+  if (spinBtn) press(spinBtn, () => { input.spinEdge = true; });
+  if (diveBtn) press(diveBtn, () => { input.diveEdge = true; });
+  if (pitchBtn) press(pitchBtn, () => { input.pitchEdge = true; });
 })();
 
 // --- Play-select screen: pick one of four plays before each snap -----------
@@ -850,13 +856,16 @@ for (const card of playCards) {
 const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
-  if (!keys[e.code]) {
+  if (!keys[e.code]) { // edge (initial press only, not key-repeat)
     if (e.code === 'Space') input.actionEdge = true;
+    if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
+    if (e.code === 'KeyE') input.diveEdge = true;   // dive
+    if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
+    if (game.choosing && /^Digit[1-4]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
   }
   keys[e.code] = true;
   if (e.code === 'Space') input.action = true;
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') input.turbo = true;
-  if (game.choosing && /^Digit[1-4]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -910,6 +919,9 @@ function show(el, label) { el.classList.remove('hidden'); if (label) el.textCont
 function hide(el) { el.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state;
+  // Ball-carrier move buttons (spin/dive/pitch) only show while running.
+  const showMoves = s === STATE.RUN;
+  for (const b of [spinBtn, diveBtn, pitchBtn]) if (b) b.classList.toggle('hidden', !showMoves);
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : 'SNAP'); hide(turboBtn); }
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(turboBtn); }
@@ -1040,7 +1052,7 @@ function newPlay() {
   // Roll the quarter (or end the game) if the clock ran out on the last play.
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
-  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; }
+  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; }
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -1869,6 +1881,7 @@ function updateAnimation(ch, dt) {
   else if (ch.speed > 0.5) want = 'walk';
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
+  if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / 0.5) * Math.PI * 2; // 360 spin move
   ch.mixer.update(dt);
   // Procedural arm overrides (after the mixer), in priority order: securing a
   // catch, throwing, then a one-off arm action (swat a pass / reach at a ball).
@@ -1890,6 +1903,86 @@ function doJuke(ch) {
   playOneShot(ch, 'juke', 0.45); // dodge-roll animation
   audio.juke();
 }
+
+// A non-ragdolling defender roughly in front of the carrier (within `dist`,
+// aligned with his heading) — the target for a stiff-arm truck.
+function defenderAhead(ch, dist, dotMin) {
+  const hx = Math.sin(ch.heading), hz = Math.cos(ch.heading);
+  let best = null, bestD = dist * dist;
+  for (const d of game.defense) {
+    if (d.ragdolling) continue;
+    const dx = d.group.position.x - ch.group.position.x, dz = d.group.position.z - ch.group.position.z;
+    const l = Math.hypot(dx, dz) || 1;
+    if ((dx / l) * hx + (dz / l) * hz < dotMin) continue; // not ahead
+    const dd = dx * dx + dz * dz;
+    if (dd < bestD) { bestD = dd; best = d; }
+  }
+  return best;
+}
+// SPIN — a 360 that keeps you moving and slips a lone tackler (immunity
+// window). If a defender is right in front, it becomes a STIFF-ARM truck.
+function doSpin(ch) {
+  if (ch.jukeCd > 0) return;
+  const ahead = defenderAhead(ch, 2.8, 0.45);
+  if (ahead) { stiffArm(ch, ahead); return; }
+  ch.jukeCd = 0.9; ch.jukeTimer = 0.5; ch.spinT = 0.5; // immunity + visual spin
+  shake.kick(ch.vel.x, ch.vel.z, 0.18);
+  audio.juke();
+  showBanner('SPIN!', '#bfffd0');
+}
+function stiffArm(ch, def) {
+  ch.jukeCd = 1.0; ch.jukeTimer = 0.25; // brief immunity as you barrel through
+  knockdownDefender(def);               // truck him to the turf (ragdoll)
+  ch.vel.x *= 0.82; ch.vel.z *= 0.82;   // small speed cost
+  shake.add(0.22); shake.kick(Math.sin(ch.heading), Math.cos(ch.heading), 0.5);
+  burst(def.group.position.x, 1.0, def.group.position.z, 0xe8d9a0, 12, 7);
+  audio.hit(0.7);
+  showBanner('STIFF ARM!', '#ffd23a');
+}
+// DIVE — a committed forward lunge (hurdles a lone tackler), then you're DOWN.
+// Great to reach the sticks or the pylon; risky if you go too early.
+function doDive(ch) {
+  if (ch.diveT > 0 || ch.jukeCd > 0.6) return;
+  const fx = Math.sin(ch.heading), fz = Math.cos(ch.heading);
+  const burstSpd = ch.baseSpeed * 1.35;
+  ch.vel.x = fx * burstSpd; ch.vel.z = fz * burstSpd;
+  ch.diveT = 0.45; ch.jukeTimer = 0.32; // hurdle window
+  playOneShot(ch, 'juke', 0.45);
+  audio.juke();
+  showBanner('DIVE!', '#bfffd0');
+}
+// LATERAL/PITCH — flick the ball to a trailing teammate (behind the carrier).
+// A bad pitch near coverage can be fumbled (a live ball the defense may grab).
+function trailingTeammate(ch) {
+  let best = null, bestD = 12 * 12;
+  for (const o of game.offense) {
+    if (o === ch || o.ragdolling) continue;
+    if (o.group.position.z > ch.group.position.z - 1) continue; // must be BEHIND (smaller +Z)
+    const dd = dist2(px(o), px(ch));
+    if (dd < bestD) { bestD = dd; best = o; }
+  }
+  return best;
+}
+function doPitch(ch) {
+  const mate = trailingTeammate(ch);
+  if (!mate) { setStatus('No one to pitch to!'); return; }
+  audio.throwPass();
+  const cover = nearestDefenderTo(px(mate));
+  const risky = cover && distXZ(px(cover), px(mate)) < 3.0;
+  if (risky && Math.random() < 0.5) {
+    // Botched pitch: a live ball. The defense scoops it more often than not.
+    game.fumbleLost = Math.random() < 0.6;
+    showBanner('BOBBLED PITCH!', '#ff6a4a'); audio.groan(); shake.add(0.2);
+    const p = ch.group.position; burst(p.x, 0.6, p.z, 0xdfe7ff, 10, 6);
+    if (game.fumbleLost) { game.fumbleLost = false; endPlay('fumble', p.z); }
+    else { mate.jukeTimer = 0.3; enterRun(mate, 'Recovered the pitch — go!'); ball.holder = mate; }
+    return;
+  }
+  mate.jukeTimer = 0.4; // a step of immunity as he gathers it
+  ball.holder = mate;
+  enterRun(mate, 'Pitch! Keep running!');
+  showBanner('PITCH!', '#bfffd0');
+}
 const turboFillEl = document.getElementById('turbo-fill');
 
 // ===========================================================================
@@ -1897,6 +1990,9 @@ const turboFillEl = document.getElementById('turbo-fill');
 // ===========================================================================
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
+  const spinEdge = input.spinEdge; input.spinEdge = false;
+  const diveEdge = input.diveEdge; input.diveEdge = false;
+  const pitchEdge = input.pitchEdge; input.pitchEdge = false;
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
@@ -1946,14 +2042,34 @@ function updatePlay(dt) {
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
   } else if (game.state === STATE.RUN) {
+    // Move inputs act on the current carrier; a pitch may hand off to a teammate.
     if (actionEdge) doJuke(game.carrier);
-    if (game.carrier.jukeTimer > 0) game.carrier.jukeTimer -= dt;
-    if (game.carrier.jukeCd > 0) game.carrier.jukeCd -= dt;
-    const top = game.carrier.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
-    controlledMove(game.carrier, dt, top);
-    updateOffense(dt); updateDefense();
-    for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
-    checkRunOutcome();
+    if (spinEdge) doSpin(game.carrier);
+    if (diveEdge) doDive(game.carrier);
+    if (pitchEdge) doPitch(game.carrier);
+    if (game.state === STATE.RUN) { // a botched pitch can have ended the play
+      const c = game.carrier;       // (re-fetch: a clean pitch changed the carrier)
+      if (c.jukeTimer > 0) c.jukeTimer -= dt;
+      if (c.jukeCd > 0) c.jukeCd -= dt;
+      if (c.spinT > 0) c.spinT -= dt;
+      if (c.diveT > 0) {
+        // Locked into the dive: coast forward, then go down at the end of it.
+        c.diveT -= dt;
+        c.group.position.x += c.vel.x * dt; c.group.position.z += c.vel.z * dt;
+        c.vel.x *= 0.95; c.vel.z *= 0.95; c.speed = Math.hypot(c.vel.x, c.vel.z);
+        clampToField(c);
+        updateOffense(dt); updateDefense();
+        for (const ch of game.all) if (ch !== c && !ch.ragdolling) applySteer(ch, dt);
+        checkRunOutcome(); // can still score / be gang-tackled mid-dive
+        if (game.state === STATE.RUN && c.diveT <= 0) endPlay('tackle', c.group.position.z);
+      } else {
+        const top = c.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+        controlledMove(c, dt, top);
+        updateOffense(dt); updateDefense();
+        for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+        checkRunOutcome();
+      }
+    }
   } else if (game.state === STATE.RETURN) {
     if (actionEdge) returnDive();
     if (game.state === STATE.RETURN) updateReturn(dt, turboOn, fireMul);

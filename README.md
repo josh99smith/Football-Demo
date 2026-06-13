@@ -57,8 +57,12 @@ play, with **down & distance** and the **score** tracked on the HUD.
 | **Left joystick** | Move + aim the targeted receiver (camera-relative) |
 | **SNAP** then **THROW** (tap=lob, hold=bullet) / **JUKE** | Contextual action button |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
+| **SPIN** (run) | Spin past a defender — or **stiff-arm** (truck) one right in front |
+| **DIVE** (run) | Committed forward lunge for the sticks/pylon — then you're down |
+| **PITCH** (run) | Lateral to a trailing teammate (risky near coverage) |
 | **WASD / arrows** (desktop) | Move + aim |
-| **Space** | Snap / throw |
+| **Space** | Snap / throw / juke |
+| **Q / E / F** (desktop) | Spin / dive / pitch |
 | **Shift** | Turbo |
 
 Cross the line of scrimmage as the QB to commit to a **scramble** (the play
