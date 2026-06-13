@@ -142,12 +142,25 @@ async function loadAssets() {
   charTemplate = charGltf.scene;
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
+  // Strip every clip to ROTATION-ONLY: the source clips carry root motion
+  // (Hips position) that translates the body during the clip and then snaps
+  // back to the spawn spot ("teleport"). We drive position from the game, so
+  // the skeleton should only rotate in place.
+  const inPlace = (clip) => {
+    if (!clip) return clip;
+    const c = clip.clone();
+    c.tracks = c.tracks.filter((t) => t.name.endsWith('.quaternion'));
+    return c;
+  };
   // All clips are authored on THIS rig, so they pose cleanly (no retargeting).
-  idleClip = byName['Idle_11'] || charGltf.animations[0]; // real breathing idle
-  walkClip = byName['Walking']; runClip = byName['Running'];
-  sprintClip = byName['RunFast'] || runClip;              // turbo sprint cycle
-  jukeClip = byName['Roll_Dodge_1'] || null;              // juke = dodge roll
-  catchClip = byName['Jump_to_Catch_and_Fall'] || null;   // reception reach
+  idleClip = inPlace(byName['Idle_11'] || charGltf.animations[0]); // breathing idle
+  walkClip = inPlace(byName['Walking']); runClip = inPlace(byName['Running']);
+  sprintClip = inPlace(byName['RunFast'] || byName['Running']);    // turbo sprint
+  jukeClip = inPlace(byName['Roll_Dodge_1']);                      // juke = dodge roll
+  // Catch: slice out just the reach (the clip ends in a long fall), then in-place.
+  catchClip = byName['Jump_to_Catch_and_Fall']
+    ? inPlace(THREE.AnimationUtils.subclip(byName['Jump_to_Catch_and_Fall'], 'catch', 6, 34, 30))
+    : null;
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -238,12 +251,20 @@ const game = {
 
 const ball = {
   mesh: null, mode: 'carried', // 'carried' | 'flying'
-  t: 0, dur: 1, from: new THREE.Vector3(), to: new THREE.Vector3(), arc: 4, targetRecv: null,
+  to: new THREE.Vector3(), targetRecv: null,
+  // Projectile state while flying.
+  vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
+  spin: 0, spinRate: 0,
 };
 function makeBall() {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12),
-    new THREE.MeshStandardMaterial({ color: 0x6e3b1f, roughness: 0.8 }));
-  m.scale.z = 1.7; m.castShadow = true; scene.add(m); ball.mesh = m;
+  // A stretched ellipsoid (long axis = local +Z) so it noses along its arc.
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.13, 18, 12),
+    new THREE.MeshStandardMaterial({ color: 0x7a3b16, roughness: 0.7, metalness: 0.05 }));
+  m.scale.z = 1.85; m.castShadow = true; scene.add(m); ball.mesh = m;
+  // Lace stripe so the spiral reads.
+  const lace = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.04, 0.16),
+    new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
+  lace.position.set(0, 0.12, 0); m.add(lace);
   const flame = new THREE.PointLight(0xff6622, 0, 6); // lit while ON FIRE
   m.add(flame); ball.flame = flame;
 }
@@ -717,14 +738,24 @@ function snap() {
 function throwBall() {
   const recv = game.receivers[game.selected];
   const from = ball.mesh.position.clone();
-  const flat = recv.group.position.clone(); flat.y = 0;
-  const dist = from.clone().setY(0).distanceTo(flat);
-  const dur = Math.max(0.4, dist / 32); // Blitz bullet passes
-  const to = flat.add(recv.vel.clone().multiplyScalar(dur * 0.9));
-  to.x = clampX(to.x); to.z = THREE.MathUtils.clamp(to.z, -HALF_L + 1, HALF_L - 1); to.y = 1.2;
-  ball.mode = 'flying'; ball.t = 0; ball.dur = dur;
-  ball.from.copy(from); ball.to.copy(to);
-  ball.arc = Math.min(4.5, dist * 0.10 + 1.2); ball.targetRecv = recv;
+  const fx = recv.group.position.x, fz = recv.group.position.z;
+  const distH = Math.hypot(fx - from.x, fz - from.z);
+  // Bullet-ish pass: faster on deeper throws. Lead the receiver by the flight.
+  const speed = THREE.MathUtils.clamp(distH * 1.6, 22, 36);
+  const ft = Math.max(0.35, distH / speed);
+  const tx = clampX(fx + recv.vel.x * ft * 0.9);
+  const tz = THREE.MathUtils.clamp(fz + recv.vel.z * ft * 0.9, -HALF_L + 1, HALF_L - 1);
+  ball.vx = (tx - from.x) / ft;
+  ball.vz = (tz - from.z) / ft;
+  // Real arc: pick a peak height, derive gravity + launch vy so it returns to
+  // catch height exactly at the target time (deeper throws arc higher).
+  const peak = THREE.MathUtils.clamp(distH * 0.085 + 0.8, 1.1, 4.5);
+  ball.g = (8 * peak) / (ft * ft);
+  ball.vy = (4 * peak) / ft;
+  ball.startY = from.y; ball.airTime = 0; ball.flightTime = ft;
+  ball.spin = 0; ball.spinRate = 30 + speed * 0.5; // tight spiral, faster on bullets
+  ball.to.set(tx, 0, tz); ball.targetRecv = recv;
+  ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
   setStatus('Pass is up…'); updateButtons();
 }
@@ -769,8 +800,10 @@ function endPlay(result, endZ) {
 // ===========================================================================
 // Ball + outcomes
 // ===========================================================================
-const TACKLE_R = 1.5, CATCH_R = 3.0, INTERCEPT_R = 1.7;
+const TACKLE_R = 1.5, CATCH_R = 2.4, INTERCEPT_R = 1.6;
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
+const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
+const _zAxis = new THREE.Vector3(0, 0, 1);
 
 const _hips = new THREE.Vector3();
 function updateBall(dt) {
@@ -800,15 +833,35 @@ function updateBall(dt) {
     ball.mesh.position.set(p.x + _f.x * 0.4, 1.25, p.z + _f.z * 0.4);
     ball.mesh.rotation.y = h.heading;
   } else if (ball.mode === 'flying') {
-    ball.t += dt / ball.dur; const t = Math.min(1, ball.t);
-    ball.mesh.position.lerpVectors(ball.from, ball.to, t);
-    ball.mesh.position.y = THREE.MathUtils.lerp(ball.from.y, ball.to.y, t) + ball.arc * Math.sin(Math.PI * t);
-    ball.mesh.rotation.x += dt * 8;
-    if (ball.t >= 1) resolvePass();
+    // Real projectile: integrate horizontal velocity + gravity on the vertical.
+    ball.airTime += dt;
+    const p = ball.mesh.position;
+    p.x += ball.vx * dt;
+    p.z += ball.vz * dt;
+    ball.vy -= ball.g * dt;
+    p.y += ball.vy * dt;
+    // Nose the long axis (local +Z) along the 3D velocity (the arc tangent) so
+    // it tilts up then down, and spiral it about that axis.
+    ball.spin += ball.spinRate * dt;
+    _bv.set(ball.vx, ball.vy, ball.vz);
+    if (_bv.lengthSq() > 1e-5) {
+      _bv.normalize();
+      _ballQ.setFromUnitVectors(_zAxis, _bv);
+      _spinQ.setFromAxisAngle(_zAxis, ball.spin);
+      ball.mesh.quaternion.copy(_ballQ).multiply(_spinQ);
+    }
+    // Catchable once it has descended into reach; resolve at the target time
+    // or when it hits the turf.
+    if (ball.vy < 0 && p.y < 2.6 && tryReception()) return;
+    if (ball.airTime >= ball.flightTime || p.y <= 0.16) {
+      if (!tryReception()) { ball.mode = 'carried'; endPlay('incomplete', game.los); }
+    }
   }
 }
-function resolvePass() {
-  const p = ball.to;
+// Resolve a catch/interception against the ball's LIVE position (so a receiver
+// hauls it in mid-stride). Returns true when handled.
+function tryReception() {
+  const p = ball.mesh.position;
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
   let bestR = null, bestRD = Infinity;
   for (const wr of game.receivers) { const d = near(wr); if (d < bestRD) { bestRD = d; bestR = wr; } }
@@ -819,16 +872,16 @@ function resolvePass() {
     timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
     enterRun(bestR, 'Caught it! Run!');
     playOneShot(bestR, 'catch', 0.55); // reception reach before he takes off
-    return;
+    return true;
   }
   if (bestDD <= INTERCEPT_R) {
     ball.mode = 'carried';
     showBanner('PICKED OFF!', '#ff5a3a');
     shake.add(0.3);
     endPlay('intercept', game.los);
-    return;
+    return true;
   }
-  ball.mode = 'carried'; endPlay('incomplete', game.los);
+  return false;
 }
 function checkRunOutcome() {
   const c = game.carrier.group.position;
