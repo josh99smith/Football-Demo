@@ -254,14 +254,22 @@ function makeCharacter(team) {
   // clips are rotation-only they never restore positions, so we snap bones
   // back to rest when the ragdoll is cleared (else the lower body stays under
   // the field and the next hit snapshots a broken pose).
-  let handBone = null;
+  let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null;
   const restPose = [];
   model.traverse((o) => {
     if (o.isBone) {
       if (o.name === 'RightHand') handBone = o;
+      if (o.name === 'RightArm') upperArm = o;
+      if (o.name === 'RightForeArm') foreArm = o;
+      if (o.name === 'LeftArm') leftArm = o;
+      if (o.name === 'LeftForeArm') leftForeArm = o;
       restPose.push([o, o.position.clone(), o.quaternion.clone()]);
     }
   });
+  const upperArmRest = upperArm ? upperArm.quaternion.clone() : null;
+  const foreArmRest = foreArm ? foreArm.quaternion.clone() : null;
+  const leftArmRest = leftArm ? leftArm.quaternion.clone() : null;
+  const leftForeArmRest = leftForeArm ? leftForeArm.quaternion.clone() : null;
   const mixer = new THREE.AnimationMixer(model);
   const mk = (clip) => {
     const a = mixer.clipAction(clip);
@@ -280,6 +288,8 @@ function makeCharacter(team) {
   actions.idle.setEffectiveWeight(1);
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
+    upperArm, foreArm, upperArmRest, foreArmRest,
+    leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -605,17 +615,26 @@ function updateOffense(dt) {
       const cover = nearestDefenderTo(p);
       const coverD = cover ? distXZ(p, px(cover)) : Infinity;
       if (o.cutTimer > 0) o.cutTimer -= dt;
-      if (o.route && o.wp < o.route.length) {
+      if (ball.mode === 'flying' && o === ball.targetRecv) {
+        // The ball is coming to me — go up and attack the catch point.
+        steer = seek(p, ball.to.x, ball.to.z); o.turbo = true;
+      } else if (o.route && o.wp < o.route.length) {
         const wp = o.route[o.wp];
         const d = distXZ(p, wp);
         steer = seek(p, wp.x, wp.z);
         o.turbo = d > 2 || o.cutTimer > 0;
         if (d < ROUTE_REACH) { o.wp++; o.cutTimer = coverD < 3 ? 0.55 : 0.4; }
-      } else if (cover && coverD < 6) {
-        const away = Math.sign(p.x - px(cover).x) || 1;
-        steer = { x: away, z: DIR * 0.55 }; o.turbo = true;
-        if (coverD < 2.6) o.cutTimer = 0.3;
-      } else { steer = { x: 0, z: DIR * 0.7 }; o.turbo = false; }
+      } else {
+        // Route finished: find open grass. Break off the nearest defender if
+        // covered; otherwise drift back toward the QB's window as an outlet and
+        // keep working downfield into space.
+        const qbx = game.qb.group.position.x;
+        let lat;
+        if (cover && coverD < 7) { lat = Math.sign(p.x - px(cover).x) || 1; if (coverD < 2.6) o.cutTimer = 0.3; }
+        else lat = Math.sign(qbx - p.x) * 0.3;
+        steer = { x: lat, z: DIR * (coverD < 4 ? 0.45 : 0.8) };
+        o.turbo = coverD < 5;
+      }
     }
     const sep = separation(o, game.offense, 2.6);
     o.desired = addSteer(steer, sep, 0.35);
@@ -834,7 +853,7 @@ function showBanner(text, color = '#ffd23a') {
 function newPlay() {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   battleEl.classList.add('hidden'); game.battle.tackler = null;
-  for (const ch of game.all) ch.oneShotT = 0;
+  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; }
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -870,9 +889,10 @@ function throwBall(power) {
   const angle = THREE.MathUtils.lerp(0.62, 0.20, p); // ~36° lob -> ~11° bullet
   const sin2 = Math.sin(2 * angle);
 
-  // Solve speed/angle for a target distance d, then re-lead by the flight time.
+  // Solve speed/angle for a target distance d, then re-lead by the flight time
+  // (a few iterations so the lead converges on where the receiver will be).
   let tx = recv.group.position.x, tz = recv.group.position.z, t = 0.5;
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 4; i++) {
     const d = Math.max(0.5, Math.hypot(tx - from.x, tz - from.z));
     let th = angle;
     let v = Math.sqrt(PASS_G * d / sin2);          // speed to reach d at this angle
@@ -884,10 +904,16 @@ function throwBall(power) {
     const vh = v * Math.cos(th);
     t = d / vh;
     ball._solV = v; ball._solTh = th; ball._solVh = vh;
-    // re-lead the moving receiver by the flight time
-    tx = clampX(recv.group.position.x + recv.vel.x * t * 0.95);
-    tz = THREE.MathUtils.clamp(recv.group.position.z + recv.vel.z * t * 0.95, -HALF_L + 1, HALF_L - 1);
+    // Lead the moving receiver by the flight time.
+    tx = recv.group.position.x + recv.vel.x * t;
+    tz = recv.group.position.z + recv.vel.z * t;
   }
+  // Slight inaccuracy: the QB isn't perfect (bullets are tighter than lobs, and
+  // long throws drift more) — but mostly on target so it's catchable.
+  const errMag = THREE.MathUtils.lerp(0.9, 0.35, p) * THREE.MathUtils.clamp(t / 1.2, 0.5, 1.4);
+  const ea = Math.random() * Math.PI * 2;
+  tx = clampX(tx + Math.cos(ea) * errMag);
+  tz = THREE.MathUtils.clamp(tz + Math.sin(ea) * errMag, -HALF_L + 1, HALF_L - 1);
   const d = Math.max(0.5, Math.hypot(tx - from.x, tz - from.z));
   const dirx = (tx - from.x) / d, dirz = (tz - from.z) / d;
   ball.vx = dirx * ball._solVh;
@@ -900,6 +926,11 @@ function throwBall(power) {
   ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
+  // Procedural throwing motion, varied by the throw: face the target and let
+  // the over-the-top amount track the launch angle (lob = more loft).
+  game.qb.heading = Math.atan2(dirx, dirz);
+  game.qb.throwAnimT = THROW_ANIM_DUR;
+  game.qb.throwLaunch = ball._solTh;
   audio.throwPass();
   setStatus(p > 0.6 ? 'Bullet!' : 'Pass is up…'); updateButtons();
 }
@@ -946,7 +977,8 @@ function endPlay(result, endZ) {
 // ===========================================================================
 // Ball + outcomes
 // ===========================================================================
-const TACKLE_R = 1.5, CATCH_R = 1.6, CONTEST_R = 2.7, INTERCEPT_R = 1.3;
+const TACKLE_R = 1.5, CATCH_R = 1.6, CATCH_R_INTENDED = 2.6, CONTEST_R = 2.7, INTERCEPT_R = 1.3;
+const THROW_ANIM_DUR = 0.45; // procedural throwing-motion length (s)
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -1022,7 +1054,7 @@ function updateBall(dt) {
     if (ball.secureT <= 0) {
       p.set(tx, ty, tz);
       if (ball.intercept) { ball.mode = 'carried'; ball.holder = c; endPlay('intercept', game.los); }
-      else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); playOneShot(c, 'catch', 0.55); }
+      else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); }
     }
   }
 }
@@ -1030,7 +1062,7 @@ function updateBall(dt) {
 // resolves to a catch (or interception).
 function startSecure(player, isInt) {
   player.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
-  ball.mode = 'secured'; ball.catcher = player; ball.secureT = 0.16; ball.intercept = isInt;
+  ball.mode = 'secured'; ball.catcher = player; ball.secureT = 0.24; ball.intercept = isInt;
   const p = ball.mesh.position;
   if (isInt) {
     showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
@@ -1055,14 +1087,20 @@ function passBrokenUp(msg, color) {
 function tryReception() {
   const p = ball.mesh.position;
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
+  // The intended receiver gets a bigger window (the throw was aimed at him);
+  // any other receiver needs the ball right on him.
   let bestR = null, dR = Infinity;
-  for (const wr of game.receivers) { const d = near(wr); if (d < dR) { dR = d; bestR = wr; } }
+  for (const wr of game.receivers) {
+    const reach = wr === ball.targetRecv ? CATCH_R_INTENDED : CATCH_R;
+    const d = near(wr);
+    if (d <= reach && d < dR) { dR = d; bestR = wr; }
+  }
   let bestDef = null, dD = Infinity;
   for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
 
   // No receiver in catching range yet — but a defender right on the ball can
   // still jump it. Otherwise keep flying (resolves incomplete at the end).
-  if (!bestR || dR > CATCH_R) {
+  if (!bestR) {
     if (bestDef && dD <= INTERCEPT_R && !ball.intRolled) {
       ball.intRolled = true; // one roll per throw, not per frame
       if (Math.random() < 0.45) { startSecure(bestDef, true); return true; }
@@ -1404,6 +1442,37 @@ function aimReceiver() {
   }
   game.selected = bestI;
 }
+const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0);
+// Procedural THROW: snap the right arm up-and-over for a beat, then ease back.
+// The over-the-top amount tracks the launch angle (a lob lofts more than a
+// bullet), so it varies with the throw. Rig-agnostic (just the arm bones).
+function applyThrowPose(ch, dt) {
+  ch.throwAnimT -= dt;
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
+  const w = Math.sin(Math.PI * t); // 0 -> peak -> 0 (cock, release, return)
+  const over = THREE.MathUtils.lerp(1.5, 2.2, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1));
+  _tq.setFromAxisAngle(_xAxisL, -over * w);
+  ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
+  if (ch.foreArm && ch.foreArmRest) {
+    _tq.setFromAxisAngle(_xAxisL, -1.2 * w);
+    ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq);
+  }
+  ch.upperArm.updateMatrixWorld(true);
+}
+// Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
+// high the ball is relative to the catcher's chest (high ball -> arms up, low
+// ball -> arms down) so it varies with the ball/player positions.
+function applyCatchPose(ch, ballPos) {
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const chestY = ch.group.position.y + 1.15;
+  const raise = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
+  _tq.setFromAxisAngle(_xAxisL, -raise);
+  ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+  if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.55); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+  if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, raise); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
+  if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.55); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   if (ch.oneShotT > 0) {     // hold a one-shot (juke roll / catch reach)
@@ -1419,6 +1488,10 @@ function updateAnimation(ch, dt) {
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
   ch.mixer.update(dt);
+  // Procedural arm overrides (after the mixer): a position-aware catch reach
+  // while securing the ball, otherwise the throwing motion.
+  if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
+  else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
 }
 
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
@@ -1640,6 +1713,8 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
 
 
 
