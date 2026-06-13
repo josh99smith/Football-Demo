@@ -150,11 +150,20 @@ function makeCharacter(team) {
   const model = cloneSkeleton(charTemplate);
   model.scale.multiplyScalar(SCALE);
   model.position.y = GROUND_Y;
+  const tint = TEAM_TINT[team];
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false;
+      // The character's base texture is too dark to read a colour tint through,
+      // so paint the uniform a solid team colour (with a slight emissive glow
+      // so it stays vivid in shade) — guarantees the teams look different.
       o.material = o.material.clone();
-      o.material.color = o.material.color.clone().multiply(TEAM_TINT[team]);
+      o.material.map = null;
+      o.material.color.copy(tint);
+      o.material.emissive = tint.clone().multiplyScalar(0.18);
+      o.material.metalness = 0.0;
+      o.material.roughness = 0.7;
+      o.material.needsUpdate = true;
     }
   });
   const group = new THREE.Group();
