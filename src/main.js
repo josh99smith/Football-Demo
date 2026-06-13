@@ -315,7 +315,7 @@ function makeCharacter(team) {
     const headH = Math.max(0.05, hp.distanceTo(ep));
     helmet = helmetScene.clone(true);
     helmet.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
-    helmet.scale.setScalar(headH * 1.15); // helmet ~bbox(2.0)*scale tall, a bit bigger than the head
+    helmet.scale.setScalar(headH * 1.55); // a bit bigger so the head reads (was sunken/small)
     helmetQ0Inv = headBone.getWorldQuaternion(new THREE.Quaternion()).invert();
     scene.add(helmet);
   }
@@ -1665,7 +1665,7 @@ function updateHelmet(ch) {
   if (!ch.helmet) return;
   ch.headBone.getWorldPosition(_hv1);
   ch.headEnd.getWorldPosition(_hv2);
-  ch.helmet.position.lerpVectors(_hv1, _hv2, 0.5);
+  ch.helmet.position.lerpVectors(_hv1, _hv2, 0.7); // ride higher (toward the crown), not sunken
   ch.headBone.getWorldQuaternion(_hq);
   ch.helmet.quaternion.copy(_hq).multiply(ch.helmetQ0Inv);
 }
@@ -1710,10 +1710,11 @@ function updateCamera(dt) {
   cam.fwdX /= m; cam.fwdZ /= m;
 
   const run = game.state === STATE.RUN;
-  const back = air ? 9 : (run ? 9 : 10.5);
-  const hgt = air ? Math.max(5.5, fp.y + 3.2) : (run ? 5.2 : 6.3);
-  const aheadL = air ? 5 : 9;                 // look ahead toward the receiver in flight
-  const lookH = air ? (fp.y * 0.55 + 0.8) : 1.3;
+  // Pulled in closer so players read clearly (was too far to see the heads).
+  const back = air ? 8 : (run ? 6.8 : 7.6);
+  const hgt = air ? Math.max(4.6, fp.y + 2.6) : (run ? 4.0 : 4.6);
+  const aheadL = air ? 4.5 : 7.5;             // look ahead toward the receiver in flight
+  const lookH = air ? (fp.y * 0.55 + 0.8) : 1.5;
   _tp.set(fp.x - cam.fwdX * back, hgt, fp.z - cam.fwdZ * back);
   _tl.set(fp.x + cam.fwdX * aheadL, lookH, fp.z + cam.fwdZ * aheadL);
 
