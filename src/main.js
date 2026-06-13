@@ -857,27 +857,46 @@ function snap() {
   setStatus('Find an open receiver, then THROW');
   updateButtons();
 }
-// power 0..1: tap (lob — slow, high arc, lazy spiral) -> hold (bullet — fast,
-// flat, tight spiral). Mirrors Football-Game's throwParams.
+const PASS_G = 10.7;      // gravity, yd/s^2 (~9.8 m/s^2)
+const PASS_VMAX = 31;     // arm strength: max launch speed, yd/s
+
+// Real ballistics: power sets the launch ANGLE (tap = lofted lob, hold = flat
+// bullet); the speed is solved to actually reach the receiver, capped by arm
+// strength — so deep throws naturally arc higher and bullets need real zip.
 function throwBall(power) {
   const p = THREE.MathUtils.clamp(power, 0, 1);
   const recv = game.receivers[game.selected];
   const from = ball.mesh.position.clone();
-  const fx = recv.group.position.x, fz = recv.group.position.z;
-  const distH = Math.hypot(fx - from.x, fz - from.z);
-  const speed = THREE.MathUtils.lerp(17, 36, p);   // lob -> bullet
-  const ft = Math.max(0.3, distH / speed);
-  const tx = clampX(fx + recv.vel.x * ft * 0.9);
-  const tz = THREE.MathUtils.clamp(fz + recv.vel.z * ft * 0.9, -HALF_L + 1, HALF_L - 1);
-  ball.vx = (tx - from.x) / ft;
-  ball.vz = (tz - from.z) / ft;
-  // Lob arcs high, bullet stays flat. Derive gravity + launch vy so it returns
-  // to catch height right at the target time.
-  const peak = THREE.MathUtils.lerp(4.6, 1.0, p);
-  ball.g = (8 * peak) / (ft * ft);
-  ball.vy = (4 * peak) / ft;
-  ball.startY = from.y; ball.airTime = 0; ball.flightTime = ft;
-  ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(22, 54, p); // lazy -> tight spiral
+  const angle = THREE.MathUtils.lerp(0.62, 0.20, p); // ~36° lob -> ~11° bullet
+  const sin2 = Math.sin(2 * angle);
+
+  // Solve speed/angle for a target distance d, then re-lead by the flight time.
+  let tx = recv.group.position.x, tz = recv.group.position.z, t = 0.5;
+  for (let i = 0; i < 2; i++) {
+    const d = Math.max(0.5, Math.hypot(tx - from.x, tz - from.z));
+    let th = angle;
+    let v = Math.sqrt(PASS_G * d / sin2);          // speed to reach d at this angle
+    if (v > PASS_VMAX) {                            // arm maxed: flatten less, arc more
+      v = PASS_VMAX;
+      const s = THREE.MathUtils.clamp(PASS_G * d / (v * v), 0, 1);
+      th = Math.max(angle, 0.5 * Math.asin(s));     // raise the angle until it carries
+    }
+    const vh = v * Math.cos(th);
+    t = d / vh;
+    ball._solV = v; ball._solTh = th; ball._solVh = vh;
+    // re-lead the moving receiver by the flight time
+    tx = clampX(recv.group.position.x + recv.vel.x * t * 0.95);
+    tz = THREE.MathUtils.clamp(recv.group.position.z + recv.vel.z * t * 0.95, -HALF_L + 1, HALF_L - 1);
+  }
+  const d = Math.max(0.5, Math.hypot(tx - from.x, tz - from.z));
+  const dirx = (tx - from.x) / d, dirz = (tz - from.z) / d;
+  ball.vx = dirx * ball._solVh;
+  ball.vz = dirz * ball._solVh;
+  ball.vy = ball._solV * Math.sin(ball._solTh);
+  ball.g = PASS_G;
+  ball.startY = from.y; ball.airTime = 0; ball.flightTime = d / ball._solVh;
+  // Spiral tighter/faster with arm strength.
+  ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
   ball.to.set(tx, 0, tz); ball.targetRecv = recv;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
@@ -1591,6 +1610,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
