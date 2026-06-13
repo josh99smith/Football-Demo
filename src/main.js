@@ -324,11 +324,13 @@ const game = {
 const THROW_CHARGE_MAX = 0.5; // seconds to a full bullet pass
 
 const ball = {
-  mesh: null, mode: 'carried', // 'carried' | 'flying'
+  mesh: null, mode: 'carried', // 'carried' | 'flying' | 'secured' | 'rest'
   to: new THREE.Vector3(), targetRecv: null,
   // Projectile state while flying.
   vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
   spin: 0, spinRate: 0,
+  // Catch: ball homes into the catcher's hands before the play resolves.
+  catcher: null, secureT: 0, intercept: false, holder: null,
   trail: [], trailHist: [], // glowing comet trail (sprite pool)
 };
 function makeGlowTexture() {
@@ -840,6 +842,7 @@ function newPlay() {
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
   ball.mode = 'carried'; ball.targetRecv = null;
+  ball.holder = null; ball.catcher = null; ball.secureT = 0; ball.intercept = false;
   selRing.visible = true; ctrlRing.visible = false;
   losLine.position.z = game.los;
   firstDownLine.position.z = THREE.MathUtils.clamp(game.firstDown, -HALF_L + 1, GOAL_Z);
@@ -934,8 +937,9 @@ const _zAxis = new THREE.Vector3(0, 0, 1);
 
 const _hips = new THREE.Vector3();
 function updateBall(dt) {
+  if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
   if (ball.mode === 'carried') {
-    const h = game.carrier || game.qb;
+    const h = game.carrier || ball.holder || game.qb;
     if (h.ragdolling && h.ragdoll && h.ragdoll.active) {
       // Tucked with the falling body: track the carrier's physics-driven hips.
       const hips = h.ragdoll.tryBone('Hips');
@@ -981,7 +985,28 @@ function updateBall(dt) {
     // or when it hits the turf.
     if (ball.vy < 0 && p.y < 2.6 && tryReception()) return;
     if (ball.airTime >= ball.flightTime || p.y <= 0.16) {
-      if (!tryReception()) { ball.mode = 'carried'; endPlay('incomplete', game.los); }
+      if (!tryReception()) { ball.mode = 'rest'; endPlay('incomplete', game.los); }
+    }
+  } else if (ball.mode === 'secured') {
+    // Home the ball INTO the catcher's hands over a short beat so you see it
+    // get tucked away, then resolve the catch / interception.
+    const c = ball.catcher;
+    let tx, ty, tz;
+    if (c && c.handBone) {
+      c.handBone.updateWorldMatrix(true, false);
+      c.handBone.getWorldPosition(_hips);
+      tx = _hips.x; ty = Math.max(0.9, _hips.y); tz = _hips.z;
+    } else { const gp = c.group.position; tx = gp.x; ty = 1.2; tz = gp.z; }
+    const k = THREE.MathUtils.clamp(dt / Math.max(0.0001, ball.secureT), 0, 1);
+    const p = ball.mesh.position;
+    p.x += (tx - p.x) * k; p.y += (ty - p.y) * k; p.z += (tz - p.z) * k;
+    ball.spin += ball.spinRate * 0.5 * dt;
+    ball.mesh.rotation.set(0, c ? c.heading : 0, 0.35); // settle into a tuck
+    ball.secureT -= dt;
+    if (ball.secureT <= 0) {
+      p.set(tx, ty, tz);
+      if (ball.intercept) { ball.mode = 'carried'; ball.holder = c; endPlay('intercept', game.los); }
+      else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); playOneShot(c, 'catch', 0.55); }
     }
   }
 }
@@ -992,22 +1017,25 @@ function tryReception() {
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
   let bestR = null, bestRD = Infinity;
   for (const wr of game.receivers) { const d = near(wr); if (d < bestRD) { bestRD = d; bestR = wr; } }
-  let bestDD = Infinity;
-  for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < bestDD) bestDD = d; }
+  let bestDef = null, bestDD = Infinity;
+  for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < bestDD) { bestDD = d; bestDef = db; } }
+  // Catch: hand the ball off to the "secure" phase so it visibly tucks into
+  // the receiver's hands before he takes off.
   if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) {
-    ball.mode = 'carried';
-    timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
+    timeScale.slow(0.7, 0.18);
     audio.catch(); audio.cheer(0.35);
     const p = ball.mesh.position; burst(p.x, p.y, p.z, 0xffffff, 8, 5);
-    enterRun(bestR, 'Caught it! Run!');
-    playOneShot(bestR, 'catch', 0.55); // reception reach before he takes off
+    bestR.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
+    ball.mode = 'secured'; ball.catcher = bestR; ball.secureT = 0.16; ball.intercept = false;
     return true;
   }
+  // Interception: the defender secures it into his hands, then the whistle.
   if (bestDD <= INTERCEPT_R) {
-    ball.mode = 'carried';
     showBanner('PICKED OFF!', '#ff5a3a');
     shake.add(0.3); audio.groan();
-    endPlay('intercept', game.los);
+    const p = ball.mesh.position; burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
+    bestDef.heading = Math.atan2(ball.vx, ball.vz);
+    ball.mode = 'secured'; ball.catcher = bestDef; ball.secureT = 0.16; ball.intercept = true;
     return true;
   }
   return false;
@@ -1546,5 +1574,8 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
+
 
 
