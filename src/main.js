@@ -364,7 +364,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', BATTLE: 'battle', DEAD: 'dead' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', DEAD: 'dead' };
 const DIR = 1; // offense attacks +Z
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
@@ -381,6 +381,8 @@ const game = {
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   deadTimer: 0,
   tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
+  returnActive: false, returner: null, // interception runback (defense carries)
+  fumbleLost: false,                    // a hit popped the ball loose to the defense
   // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
   turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
   playClock: 0, lastBreak: -10,
@@ -843,6 +845,7 @@ function updateButtons() {
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(turboBtn); }
   else if (s === STATE.AIR) { hide(actionBtn); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); show(turboBtn); }
+  else if (s === STATE.RETURN) { show(actionBtn, 'TACKLE'); show(turboBtn); }
   else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
 }
@@ -971,6 +974,7 @@ function newPlay() {
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
+  game.returnActive = false; game.returner = null; game.fumbleLost = false;
   game.snapClock = PLAY_CLOCK;
   ball.mode = 'carried'; ball.targetRecv = null;
   ball.holder = null; ball.catcher = null; ball.secureT = 0; ball.intercept = false;
@@ -1059,6 +1063,130 @@ function enterRun(player, msg) {
   ctrlRing.visible = true; selRing.visible = false;
   setStatus(msg); updateButtons();
 }
+// --- Interception runback -------------------------------------------------
+// The defender who picked it off carries the ball back toward the offense's
+// OWN goal (-Z). YOU take over the nearest offensive player and try to chase
+// him down before he scores. Reaching the end zone is a defensive TD (pick
+// six); getting tackled is a turnover (offense gets the ball back).
+function nearestOffender(point) {
+  let best = null, bestD = Infinity;
+  for (const o of game.offense) {
+    if (o.ragdolling) continue;
+    const d = dist2(px(o), point); if (d < bestD) { bestD = d; best = o; }
+  }
+  return best;
+}
+function pursuitPoint(chaser, target) {
+  const cp = px(chaser), tp = px(target);
+  const spd = Math.max(7, chaser.baseSpeed);
+  let t = distXZ(tp, cp) / spd;
+  for (let i = 0; i < 3; i++) {
+    const fx = tp.x + target.vel.x * t, fz = tp.z + target.vel.z * t;
+    t = Math.hypot(fx - cp.x, fz - cp.z) / spd;
+  }
+  t = Math.min(t, 0.7);
+  return { x: tp.x + target.vel.x * t, z: tp.z + target.vel.z * t };
+}
+function beginReturn(interceptor) {
+  game.state = STATE.RETURN;
+  game.returnActive = true; game.returner = interceptor;
+  game.carrier = interceptor;          // so the ball follows him + TACKLE settle works
+  ball.mode = 'carried'; ball.holder = interceptor;
+  game.controlled = nearestOffender(interceptor.group.position) || game.qb;
+  ctrlRing.visible = true; selRing.visible = false;
+  showBanner('INTERCEPTED!', '#ff5a3a');
+  setStatus('Intercepted — chase him down!');
+  updateButtons();
+}
+function updateReturn(dt, turboOn, fireMul) {
+  const r = game.returner;
+  if (!r) { game.returnActive = false; endPlay('incomplete', game.los); return; }
+  const rp = r.group.position;
+  // Returner heads for his end zone (-Z), cutting back from the nearest chaser.
+  let steer = seek(px(r), THREE.MathUtils.clamp(rp.x * 0.4, -14, 14), OWN_GOAL_Z - 3);
+  const chaser = nearestOffender(rp);
+  if (chaser) {
+    const ax = rp.x - chaser.group.position.x, al = Math.abs(ax) || 1;
+    steer = addSteer(steer, { x: ax / al, z: 0 }, 0.55); // juke laterally away
+  }
+  r.desired = addSteer(steer, separation(r, game.defense, 2.5), 0.2); r.turbo = true;
+  // The offense pursues with cut-off angles; the player drives the controlled man.
+  for (const o of game.offense) {
+    if (o === game.controlled || o.ragdolling) continue;
+    const ip = pursuitPoint(o, r);
+    o.desired = seek(px(o), ip.x, ip.z); o.turbo = dist2(px(o), rp) > 16;
+  }
+  // The returner's teammates trail to escort (and stay out of the way).
+  for (const d of game.defense) {
+    if (d === r || d.ragdolling) continue;
+    d.desired = seek(px(d), rp.x, rp.z + 3); d.turbo = false;
+  }
+  const top = game.controlled.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+  controlledMove(game.controlled, dt, top);
+  for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+  // Outcomes: house call, out of bounds, or run down.
+  if (rp.z <= OWN_GOAL_Z) { endReturn('defTD', rp.z); return; }
+  if (Math.abs(rp.x) > HALF_W) { endReturn('tackle', rp.z); return; }
+  for (const o of game.offense) {
+    if (o.ragdolling) continue;
+    if (Math.hypot(o.group.position.x - rp.x, o.group.position.z - rp.z) <= TACKLE_R) { tackleReturner(o); return; }
+  }
+}
+function tackleReturner(tackler) {
+  const r = game.returner, rp = r.group.position;
+  if (!physics) { endReturn('tackle', rp.z); return; }
+  const hitX = rp.x - tackler.group.position.x, hitZ = rp.z - tackler.group.position.z;
+  const hl = Math.hypot(hitX, hitZ) || 1;
+  const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
+  const closing = Math.hypot(tackler.vel.x - r.vel.x, tackler.vel.z - r.vel.z);
+  const big = tackler.turbo || closing > 8;
+  spawnRagdoll(r, new THREE.Vector3(r.vel.x, 0, r.vel.z), hitDir,
+    THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8), 0x0002, pickVariant(big, 1, closing, hitX, hitZ));
+  tackler.heading = Math.atan2(hitX, hitZ); playOneShot(tackler, 'tackle', 0.45);
+  game.state = STATE.TACKLE; game.tackleTimer = 2.0; game.tackleSpotZ = rp.z; // returnActive still set
+  ctrlRing.visible = false; updateButtons();
+  shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
+  burst(rp.x, 1.0, rp.z, 0xe8d9a0, big ? 16 : 10, big ? 8 : 6);
+  if (big) { timeScale.bulletTime(0.16, 0.5, 0.9); hitZoom(1.2); shake.add(0.5); audio.bigHit(); showBanner('STOPPED!', '#bfffd0'); }
+  else { timeScale.bulletTime(0.22, 0.4, 0.7); hitZoom(0.9); shake.add(0.18); audio.hit(0.6); }
+  setStatus('Return stopped!');
+}
+function endReturn(result, spotZ) {
+  game.returnActive = false; game.returner = null;
+  game.state = STATE.DEAD; game.deadTimer = 1.1;
+  ball.mode = 'rest';
+  selRing.visible = false; ctrlRing.visible = false; updateButtons();
+  douseFire(); // the offense gave it away — fire out
+  if (result === 'defTD') {
+    game.scoreDef += 7; audio.touchdown();
+    showBanner('PICK SIX!', '#5a8bff'); setStatus('Returned for a touchdown!');
+    shake.add(0.3); timeScale.slow(0.5, 0.4);
+  } else {
+    audio.whistle(); showBanner('TURNOVER', '#ffd23a'); setStatus('Turnover — offense takes over');
+  }
+  // Arcade reset: the offense gets the ball back on its own 20 either way.
+  game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
+  updateHUD();
+}
+// The TACKLE button during a runback: a diving lunge — burst at the returner
+// and, if close enough, complete the tackle with an extended reach.
+function returnDive() {
+  const o = game.controlled, r = game.returner;
+  if (!o || !r) return;
+  const dx = r.group.position.x - o.group.position.x, dz = r.group.position.z - o.group.position.z;
+  const l = Math.hypot(dx, dz) || 1;
+  const burst = o.baseSpeed * 1.25;
+  o.vel.x = dx / l * burst; o.vel.z = dz / l * burst; o.heading = Math.atan2(dx, dz);
+  playOneShot(o, 'tackle', 0.4);
+  if (l <= 2.4) tackleReturner(o); // diving tackle reaches a touch farther
+}
+// Route the end of a tackle: an interception runback, a lost fumble, or a
+// normal tackle (down & distance).
+function resolveTackleEnd() {
+  if (game.returnActive) { endReturn('tackle', game.tackleSpotZ); return; }
+  if (game.fumbleLost) { game.fumbleLost = false; endPlay('fumble', game.tackleSpotZ); return; }
+  endPlay('tackle', game.tackleSpotZ);
+}
 function endPlay(result, endZ) {
   game.state = STATE.DEAD; game.deadTimer = 1.1;
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
@@ -1079,12 +1207,12 @@ function endPlay(result, endZ) {
     const gained = result === 'incomplete' ? 0 : endZ - game.los;
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'intercept' ? 'Intercepted!'
-        : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
-          : `Tackled (+${Math.max(0, Math.round(gained))})`);
-    if (result === 'intercept') {
-      // Pick six: the defense cashes the takeaway for points and the offense
-      // gets the ball back on its own 20 (arcade Blitz — no return to play out).
-      game.scoreDef += 7; showBanner('PICK SIX!', '#5a8bff');
+        : result === 'fumble' ? 'Fumble — turnover!'
+          : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
+            : `Tackled (+${Math.max(0, Math.round(gained))})`);
+    if (result === 'intercept' || result === 'fumble') {
+      // Turnover: the defense recovers and the offense gets the ball back on its
+      // own 20 (arcade reset — the defense's possession isn't played out).
       douseFire(); game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
     }
     else {
@@ -1191,7 +1319,7 @@ function updateBall(dt) {
     ball.secureT -= dt;
     if (ball.secureT <= 0) {
       p.set(tx, ty, tz);
-      if (ball.intercept) { ball.mode = 'carried'; ball.holder = c; endPlay('intercept', game.los); }
+      if (ball.intercept) { ball.mode = 'carried'; ball.holder = c; beginReturn(c); }
       else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); }
     }
   }
@@ -1484,6 +1612,11 @@ function beginTackle(lead, force = false) {
   // Smooth, deep slow-mo (no freeze frame): ease down into bullet-time and ramp
   // back up, with the camera zooming in for the whole beat.
   const gang = gangSize >= 3;
+  // Random fumble: a jarring hit can knock the ball loose. Bigger hits and gang
+  // tackles pop it more often; about half the time the defense recovers it (a
+  // turnover) — otherwise the offense falls on it (a normal tackle).
+  const fumbled = Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0);
+  game.fumbleLost = fumbled && Math.random() < 0.5;
   shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
   burst(cp.x, 1.0, cp.z, 0xe8d9a0, big || gang ? 18 : 11, big || gang ? 9 : 6); // dust/impact
   if (big || gang) {
@@ -1499,6 +1632,11 @@ function beginTackle(lead, force = false) {
     audio.hit(0.6);
   }
   setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
+  if (fumbled) {
+    audio.groan();
+    showBanner(game.fumbleLost ? 'FUMBLE!' : 'FUMBLE — RECOVERED!', game.fumbleLost ? '#ff3a3a' : '#ffd23a');
+    setStatus(game.fumbleLost ? 'Fumble — defense recovers!' : 'Fumble — offense falls on it!');
+  }
 }
 
 function anyRagdollActive() {
@@ -1676,7 +1814,7 @@ function updatePlay(dt) {
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
   // unlimited turbo + a hotter whole offense.
-  const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN;
+  const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN;
   const turboOn = input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0);
   if (liveBall) game.playClock += dt;
   if (liveBall && turboOn && !game.onFire) {
@@ -1709,6 +1847,9 @@ function updatePlay(dt) {
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     checkRunOutcome();
+  } else if (game.state === STATE.RETURN) {
+    if (actionEdge) returnDive();
+    if (game.state === STATE.RETURN) updateReturn(dt, turboOn, fireMul);
   } else if (game.state === STATE.BATTLE) {
     if (actionEdge) input.battleMash++;
     for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
@@ -1720,7 +1861,7 @@ function updatePlay(dt) {
     game.tackleTimer -= dt;
     const settled = game.carrier && game.carrier.ragdoll &&
       game.carrier.ragdoll.active && game.tackleTimer < 1.2 && game.carrier.ragdoll.settled();
-    if (game.tackleTimer <= 0 || settled) endPlay('tackle', game.tackleSpotZ);
+    if (game.tackleTimer <= 0 || settled) resolveTackleEnd();
   }
 
   for (const ch of game.all) updateAnimation(ch, dt);
@@ -1771,24 +1912,41 @@ function updateCamera(dt) {
   // On a throw, FOLLOW THE BALL: focus the live ball and trail its flight so
   // you watch the pass travel to the receiver; otherwise focus the player.
   const air = (game.state === STATE.AIR || (game.state === STATE.DEAD && ball.mode === 'flying'));
+  // An interception runback is a legit reason to look the OTHER way (-Z).
+  const ret = game.state === STATE.RETURN || game.returnActive;
   const fp = air ? ball.mesh.position : p;
 
   // Eased heading: trail the ball's travel in the air, behind the runner once
   // he takes off, otherwise locked straight downfield. Eases so it stays smooth.
-  let wantYaw = air ? Math.atan2(ball.vx, ball.vz)
-    : (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE) ? t.heading : 0;
-  // Never let the camera swing to face the wrong end zone: keep the attacking
-  // end zone (+Z) generally ahead even when the runner cuts back upfield.
+  let wantYaw;
+  if (air) wantYaw = Math.atan2(ball.vx, ball.vz);
+  else if (ret) {
+    const rb = game.returner || game.carrier;
+    const rp = rb ? rb.group.position : p;
+    wantYaw = Math.atan2(rp.x - p.x, rp.z - p.z); // chaser looks toward the returner
+  } else if (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE) {
+    wantYaw = t.heading;
+  } else wantYaw = 0;
   while (wantYaw > Math.PI) wantYaw -= Math.PI * 2;
   while (wantYaw < -Math.PI) wantYaw += Math.PI * 2;
-  wantYaw = THREE.MathUtils.clamp(wantYaw, -1.15, 1.15); // ~±66° off downfield
+  if (ret) {
+    // Clamp around the -Z (return) end so the runback stays framed.
+    let rel = wantYaw - Math.PI;
+    while (rel > Math.PI) rel -= Math.PI * 2;
+    while (rel < -Math.PI) rel += Math.PI * 2;
+    wantYaw = Math.PI + THREE.MathUtils.clamp(rel, -1.15, 1.15);
+  } else {
+    // Never let the camera swing to face the wrong end zone on a normal play:
+    // keep the attacking end zone (+Z) generally ahead even on cutbacks.
+    wantYaw = THREE.MathUtils.clamp(wantYaw, -1.15, 1.15); // ~±66° off downfield
+  }
   const k = Math.min(1, dt * (air ? 5 : 3));
   cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
   cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
   const m = Math.hypot(cam.fwdX, cam.fwdZ) || 1;
   cam.fwdX /= m; cam.fwdZ /= m;
 
-  const run = game.state === STATE.RUN;
+  const run = game.state === STATE.RUN || game.state === STATE.RETURN;
   // Pulled in closer so players read clearly (was too far to see the heads).
   const back = air ? 8 : (run ? 6.8 : 7.6);
   const hgt = air ? Math.max(4.6, fp.y + 2.6) : (run ? 4.0 : 4.6);
