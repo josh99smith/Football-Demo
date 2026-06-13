@@ -115,7 +115,9 @@ python3 -m http.server 8000   # then open http://localhost:8000
 - `src/main.js` — field, character cloning, play-state machine, route &
   coverage AI, ball flight, scoring
 - `assets/character.glb` — rigged character + idle pose
-- `assets/animations.glb` — walk / run / directional clips (shared skeleton)
+- `assets/animations.glb` — locomotion + action clips on the character's own
+  rig: breathing idle, walk, run, RunFast (sprint), dodge-roll juke, catch,
+  get-ups, backpedals, sharp turn
 - `vendor/three/` — vendored three.js + GLTFLoader + SkeletonUtils (no CDN)
 - `vendor/rapier/` — vendored Rapier3D physics (ragdoll tackles)
 

@@ -106,7 +106,7 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
-let charTemplate, idleClip, walkClip, runClip;
+let charTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip;
 let SCALE = 1, GROUND_Y = 0;
 // Team uniforms: home offense in vivid blue, away defense in a distinct
 // purple so the two squads never read alike on the field.
@@ -133,10 +133,14 @@ async function loadAssets() {
   try { physics = await PhysicsWorld.create(); }
   catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
-  idleClip = charGltf.animations[0];
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
+  // All clips are authored on THIS rig, so they pose cleanly (no retargeting).
+  idleClip = byName['Idle_11'] || charGltf.animations[0]; // real breathing idle
   walkClip = byName['Walking']; runClip = byName['Running'];
+  sprintClip = byName['RunFast'] || runClip;              // turbo sprint cycle
+  jukeClip = byName['Roll_Dodge_1'] || null;              // juke = dodge roll
+  catchClip = byName['Jump_to_Catch_and_Fall'] || null;   // reception reach
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -162,14 +166,21 @@ function makeCharacter(team) {
     a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true;
     a.setEffectiveWeight(0); a.play(); return a;
   };
-  const actions = { idle: mk(idleClip), walk: mk(walkClip), run: mk(runClip) };
+  const actions = { idle: mk(idleClip), walk: mk(walkClip), run: mk(runClip), sprint: mk(sprintClip) };
+  const oneShot = (clip) => {
+    const a = mixer.clipAction(clip);
+    a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true;
+    a.enabled = true; a.setEffectiveWeight(0); return a;
+  };
+  if (jukeClip) actions.juke = oneShot(jukeClip);
+  if (catchClip) actions.catch = oneShot(catchClip);
   actions.idle.setEffectiveWeight(1);
   return {
     group, model, mixer, actions, current: 'idle', active: actions.idle,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -667,6 +678,7 @@ function showBanner(text, color = '#ffd23a') {
 function newPlay() {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   battleEl.classList.add('hidden'); game.battle.tackler = null;
+  for (const ch of game.all) ch.oneShotT = 0;
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -773,6 +785,7 @@ function resolvePass() {
     ball.mode = 'carried';
     timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
     enterRun(bestR, 'Caught it! Run!');
+    playOneShot(bestR, 'catch', 0.55); // reception reach before he takes off
     return;
   }
   if (bestDD <= INTERCEPT_R) {
@@ -1061,9 +1074,22 @@ function controlledMove(ch, dt, topSpeed) {
   if (ch.speed > 0.5) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
   clampToField(ch);
 }
+function playOneShot(ch, name, hold) {
+  if (!ch.actions[name]) return;
+  ch.oneShotT = hold; setClip(ch, name);
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
-  const want = ch.speed > 0.5 ? (ch.speed > 6 ? 'run' : 'walk') : 'idle';
+  if (ch.oneShotT > 0) {     // hold a one-shot (juke roll / catch reach)
+    ch.oneShotT -= dt;
+    ch.group.rotation.y = ch.heading;
+    ch.mixer.update(dt);
+    return;
+  }
+  let want = 'idle';
+  if (ch.speed > 11) want = 'sprint';        // turbo / RunFast
+  else if (ch.speed > 6) want = 'run';
+  else if (ch.speed > 0.5) want = 'walk';
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
   ch.mixer.update(dt);
@@ -1079,6 +1105,7 @@ function doJuke(ch) {
   const rx = Math.cos(ch.heading), rz = -Math.sin(ch.heading); // right of heading
   ch.vel.x += rx * side * 7; ch.vel.z += rz * side * 7;
   shake.kick(rx * side, rz * side, 0.25);
+  playOneShot(ch, 'juke', 0.45); // dodge-roll animation
 }
 const turboFillEl = document.getElementById('turbo-fill');
 
