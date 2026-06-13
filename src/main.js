@@ -167,7 +167,8 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
-let charTemplate, defTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
+let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate;
+let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
@@ -197,6 +198,9 @@ async function loadAssets() {
   catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
   defTemplate = defGltf ? defGltf.scene : null;
+  // Team helmets (static meshes attached to each head).
+  try { helmetOffTemplate = (await loadGLB('assets/helmet_off.glb')).scene; } catch (e) { console.warn('off helmet missing', e); }
+  try { helmetDefTemplate = (await loadGLB('assets/helmet_def.glb')).scene; } catch (e) { console.warn('def helmet missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
@@ -264,6 +268,7 @@ function makeCharacter(team) {
   // back to rest when the ragdoll is cleared (else the lower body stays under
   // the field and the next hit snapshots a broken pose).
   let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null;
+  let headBone = null, headEnd = null;
   const restPose = [];
   model.traverse((o) => {
     if (o.isBone) {
@@ -272,6 +277,8 @@ function makeCharacter(team) {
       if (o.name === 'RightForeArm') foreArm = o;
       if (o.name === 'LeftArm') leftArm = o;
       if (o.name === 'LeftForeArm') leftForeArm = o;
+      if (o.name === 'Head') headBone = o;
+      if (o.name === 'head_end') headEnd = o;
       restPose.push([o, o.position.clone(), o.quaternion.clone()]);
     }
   });
@@ -295,10 +302,29 @@ function makeCharacter(team) {
   if (catchClip) actions.catch = oneShot(catchClip);
   if (tackleClip) actions.tackle = oneShot(tackleClip);
   actions.idle.setEffectiveWeight(1);
+
+  // Helmet: a scaled clone of the team helmet that tracks the Head bone (so it
+  // follows head bob and ragdoll tumbles). Sized to the head and aligned so it
+  // faces forward; helmetQ0Inv removes the bone's rest orientation.
+  let helmet = null, helmetQ0Inv = null;
+  const helmetScene = team === 'def' ? helmetDefTemplate : helmetOffTemplate;
+  if (helmetScene && headBone && headEnd) {
+    model.updateWorldMatrix(true, true);
+    const hp = new THREE.Vector3(), ep = new THREE.Vector3();
+    headBone.getWorldPosition(hp); headEnd.getWorldPosition(ep);
+    const headH = Math.max(0.05, hp.distanceTo(ep));
+    helmet = helmetScene.clone(true);
+    helmet.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+    helmet.scale.setScalar(headH * 1.15); // helmet ~bbox(2.0)*scale tall, a bit bigger than the head
+    helmetQ0Inv = headBone.getWorldQuaternion(new THREE.Quaternion()).invert();
+    scene.add(helmet);
+  }
+
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
+    headBone, headEnd, helmet, helmetQ0Inv,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1632,6 +1658,18 @@ function updatePlay(dt) {
   if (game.state === STATE.DEAD) { game.deadTimer -= dt; if (game.deadTimer <= 0) newPlay(); }
 }
 
+// Keep each player's helmet glued to the head (centred between Head and
+// head_end, oriented to the head minus its rest twist) — follows bob + ragdoll.
+const _hv1 = new THREE.Vector3(), _hv2 = new THREE.Vector3(), _hq = new THREE.Quaternion();
+function updateHelmet(ch) {
+  if (!ch.helmet) return;
+  ch.headBone.getWorldPosition(_hv1);
+  ch.headEnd.getWorldPosition(_hv2);
+  ch.helmet.position.lerpVectors(_hv1, _hv2, 0.5);
+  ch.headBone.getWorldQuaternion(_hq);
+  ch.helmet.quaternion.copy(_hq).multiply(ch.helmetQ0Inv);
+}
+
 // ===========================================================================
 // Camera (feel ported from Football-Game/Scene3D: eased "superstar" chase cam
 // that pans toward what you're aiming at, plus a cinematic hit push-in)
@@ -1735,6 +1773,7 @@ function animate() {
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
   }
 
+  for (const ch of game.all) updateHelmet(ch); // helmets ride the heads
   updateCamera(realDt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
@@ -1752,6 +1791,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
