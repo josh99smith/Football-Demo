@@ -265,6 +265,7 @@ const game = {
   playClock: 0, lastBreak: -10,
   battle: { val: 0.5, timer: 0, tackler: null, cd: 0, flash: 0 },
   throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
+  throwArmed: false, // a throw only arms on a fresh press in LIVE (not the snap press)
 };
 const THROW_CHARGE_MAX = 0.5; // seconds to a full bullet pass
 
@@ -790,6 +791,7 @@ function newPlay() {
 function snap() {
   game.state = STATE.LIVE;
   game.playClock = 0; game.lastBreak = -10;
+  game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   game.receivers.forEach((wr, i) => { wr.route = buildRoute(WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
   game.defense.forEach((db) => { db.job = db.deep ? 'zone' : 'cover'; if (db.deep) db.zonePoint = new THREE.Vector3(0, 0, game.los + 18); });
   setStatus('Find an open receiver, then THROW');
@@ -1282,15 +1284,19 @@ function updatePlay(dt) {
     if (actionEdge) snap();
   } else if (game.state === STATE.LIVE) {
     if (switchEdge) game.selected = (game.selected + 1) % game.receivers.length;
-    // Tap = lob, hold = bullet: charge while THROW is held, fire on release.
-    if (input.action) {
-      game.throwCharge = Math.min(THROW_CHARGE_MAX, game.throwCharge + dt);
-    } else if (game.throwCharge > 0 || actionEdge) {
-      throwBall(game.throwCharge / THROW_CHARGE_MAX); // instant tap (charge 0) = pure lob
-      game.throwCharge = 0;
+    // A throw only arms on a FRESH press in LIVE — so the held snap press never
+    // bleeds into an instant throw. Tap = lob, hold = bullet.
+    if (actionEdge) game.throwArmed = true;
+    if (game.throwArmed) {
+      if (input.action) {
+        game.throwCharge = Math.min(THROW_CHARGE_MAX, game.throwCharge + dt);
+      } else {
+        throwBall(game.throwCharge / THROW_CHARGE_MAX); // released (instant tap charge 0 = lob)
+        game.throwCharge = 0; game.throwArmed = false;
+      }
     }
   } else {
-    game.throwCharge = 0; // not live: never carry a stale charge
+    game.throwCharge = 0; game.throwArmed = false; // not live: never carry a stale charge
   }
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
