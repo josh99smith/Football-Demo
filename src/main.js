@@ -169,9 +169,6 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 
 let charTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let SCALE = 1, GROUND_Y = 0;
-// Team uniforms: defense (the opponent) in blue, your offense in red so the
-// two squads never read alike on the field.
-const TEAM_TINT = { off: new THREE.Color(0xff3b3b), def: new THREE.Color(0x3f7bff) };
 
 function measureBoneSpan(root) {
   root.updateWorldMatrix(true, true);
@@ -230,19 +227,18 @@ function makeCharacter(team) {
   const model = cloneSkeleton(charTemplate);
   model.scale.multiplyScalar(SCALE);
   model.position.y = GROUND_Y;
-  const tint = TEAM_TINT[team];
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false;
-      // The character's base texture is too dark to read a colour tint through,
-      // so paint the uniform a solid team colour (with a slight emissive glow
-      // so it stays vivid in shade) — guarantees the teams look different.
       o.material = o.material.clone();
-      o.material.map = null;
-      o.material.color.copy(tint);
-      o.material.emissive = tint.clone().multiplyScalar(0.18);
-      o.material.metalness = 0.0;
-      o.material.roughness = 0.7;
+      // Offense keeps the character's ORIGINAL skin/texture. The opposing
+      // defense is tinted blue (over the original texture, with a blue glow so
+      // it reads through the dark base) to tell the teams apart.
+      if (team === 'def') {
+        o.material.color.setHex(0x4f7bff);
+        o.material.emissive = new THREE.Color(0x14336e);
+        o.material.emissiveIntensity = 0.55;
+      }
       o.material.needsUpdate = true;
     }
   });
@@ -877,7 +873,8 @@ function snap() {
   updateButtons();
 }
 const PASS_G = 10.7;      // gravity, yd/s^2 (~9.8 m/s^2)
-const PASS_VMAX = 31;     // arm strength: max launch speed, yd/s
+const PASS_VMAX = 37;     // arm strength: max launch speed, yd/s (snappier throws)
+const BALL_NUDGE = 16;    // in-flight steering toward the receiver (yd/s^2 of redirect)
 
 // Real ballistics: power sets the launch ANGLE (tap = lofted lob, hold = flat
 // bullet); the speed is solved to actually reach the receiver, capped by arm
@@ -886,7 +883,7 @@ function throwBall(power) {
   const p = THREE.MathUtils.clamp(power, 0, 1);
   const recv = game.receivers[game.selected];
   const from = ball.mesh.position.clone();
-  const angle = THREE.MathUtils.lerp(0.62, 0.20, p); // ~36° lob -> ~11° bullet
+  const angle = THREE.MathUtils.lerp(0.55, 0.17, p); // ~31° lob -> ~10° bullet (flatter/faster)
   const sin2 = Math.sin(2 * angle);
 
   // Solve speed/angle for a target distance d, then re-lead by the flight time
@@ -1015,10 +1012,25 @@ function updateBall(dt) {
     // Real projectile: integrate horizontal velocity + gravity on the vertical.
     ball.airTime += dt;
     const p = ball.mesh.position;
+    // User nudge: the left stick gently steers the ball in flight (camera-
+    // relative) so you can guide a throw toward the receiver — subtle, not full
+    // control.
+    const kb = kbVec();
+    const ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
+    const iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
+    if (Math.hypot(ix, iy) > 0.12) {
+      camera.getWorldDirection(_f); _f.y = 0; _f.normalize();
+      _r.crossVectors(_f, THREE.Object3D.DEFAULT_UP).normalize();
+      ball.vx += (_f.x * iy + _r.x * ix) * BALL_NUDGE * dt;
+      ball.vz += (_f.z * iy + _r.z * ix) * BALL_NUDGE * dt;
+    }
     p.x += ball.vx * dt;
     p.z += ball.vz * dt;
     ball.vy -= ball.g * dt;
     p.y += ball.vy * dt;
+    // Keep the receiver's homing target on the ball's projected landing spot.
+    const tRem = Math.max(0.05, ball.flightTime - ball.airTime);
+    ball.to.set(p.x + ball.vx * tRem, 0, p.z + ball.vz * tRem);
     // Nose the long axis (local +Z) along the 3D velocity (the arc tangent) so
     // it tilts up then down, and spiral it about that axis.
     ball.spin += ball.spinRate * dt;
@@ -1552,11 +1564,15 @@ function updatePlay(dt) {
   const fireMul = game.onFire ? 1.12 : 1;
 
   if (game.state === STATE.LIVE || game.state === STATE.AIR) {
-    const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
-    controlledMove(game.qb, dt, top);
+    // Pre-throw the QB scrambles with the stick; once the ball's in the air the
+    // stick steers the BALL instead (see updateBall), so the QB holds.
+    if (game.state === STATE.LIVE) {
+      const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+      controlledMove(game.qb, dt, top);
+      if (pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
+    } else { game.qb.speed = 0; game.qb.vel.set(0, 0, 0); }
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
-    if (game.state === STATE.LIVE && pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
   } else if (game.state === STATE.RUN) {
     if (actionEdge) doJuke(game.carrier);
     if (game.carrier.jukeTimer > 0) game.carrier.jukeTimer -= dt;
@@ -1629,8 +1645,13 @@ function updateCamera(dt) {
 
   // Eased heading: trail the ball's travel in the air, behind the runner once
   // he takes off, otherwise locked straight downfield. Eases so it stays smooth.
-  const wantYaw = air ? Math.atan2(ball.vx, ball.vz)
+  let wantYaw = air ? Math.atan2(ball.vx, ball.vz)
     : (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE) ? t.heading : 0;
+  // Never let the camera swing to face the wrong end zone: keep the attacking
+  // end zone (+Z) generally ahead even when the runner cuts back upfield.
+  while (wantYaw > Math.PI) wantYaw -= Math.PI * 2;
+  while (wantYaw < -Math.PI) wantYaw += Math.PI * 2;
+  wantYaw = THREE.MathUtils.clamp(wantYaw, -1.15, 1.15); // ~±66° off downfield
   const k = Math.min(1, dt * (air ? 5 : 3));
   cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
   cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
@@ -1718,6 +1739,9 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
+
 
 
 

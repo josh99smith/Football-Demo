@@ -1,7 +1,7 @@
 :root {
   --accent: #ffd54a;
-  --off: #ff5a5a;
-  --def: #4a8bff;
+  --off: #e2e8f2;
+  --def: #5a8bff;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
