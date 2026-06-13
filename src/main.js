@@ -316,7 +316,9 @@ function makeCharacter(team) {
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
   // Local transform compensates for the bone's tiny world scale.
   let helmet = null;
-  const helmetScene = team === 'def' ? helmetDefTemplate : helmetOffTemplate;
+  // Both teams wear the red helmet head model (helmetOffTemplate); the blue
+  // helmet is kept only as a fallback if the red one fails to load.
+  const helmetScene = helmetOffTemplate || helmetDefTemplate;
   if (helmetScene && headBone && headEnd) {
     model.updateWorldMatrix(true, true);
     const hp = new THREE.Vector3(), ep = new THREE.Vector3(), hs = new THREE.Vector3(), hq = new THREE.Quaternion();
