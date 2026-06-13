@@ -303,28 +303,35 @@ function makeCharacter(team) {
   if (tackleClip) actions.tackle = oneShot(tackleClip);
   actions.idle.setEffectiveWeight(1);
 
-  // Helmet: a scaled clone of the team helmet that tracks the Head bone (so it
-  // follows head bob and ragdoll tumbles). Sized to the head and aligned so it
-  // faces forward; helmetQ0Inv removes the bone's rest orientation.
-  let helmet = null, helmetQ0Inv = null;
+  // Helmet: a scaled clone of the team helmet PARENTED to the Head bone, so it
+  // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
+  // Local transform compensates for the bone's tiny world scale.
+  let helmet = null;
   const helmetScene = team === 'def' ? helmetDefTemplate : helmetOffTemplate;
   if (helmetScene && headBone && headEnd) {
     model.updateWorldMatrix(true, true);
-    const hp = new THREE.Vector3(), ep = new THREE.Vector3();
-    headBone.getWorldPosition(hp); headEnd.getWorldPosition(ep);
-    const headH = Math.max(0.05, hp.distanceTo(ep));
+    const hp = new THREE.Vector3(), ep = new THREE.Vector3(), hs = new THREE.Vector3(), hq = new THREE.Quaternion();
+    headBone.matrixWorld.decompose(hp, hq, hs);  // head bone world pos/rot/scale
+    headEnd.getWorldPosition(ep);
+    const headH = Math.max(0.05, hp.distanceTo(ep));      // head length (world)
+    const headWorldScale = (hs.x + hs.y + hs.z) / 3 || 0.0124;
     helmet = helmetScene.clone(true);
     helmet.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
-    helmet.scale.setScalar(headH * 1.55); // a bit bigger so the head reads (was sunken/small)
-    helmetQ0Inv = headBone.getWorldQuaternion(new THREE.Quaternion()).invert();
-    scene.add(helmet);
+    // helmet bbox is ~2 units tall; size it to ~1.8x the head in WORLD units.
+    helmet.scale.setScalar((headH * 1.8) / (2.0 * headWorldScale));
+    // Seat it at the head centre (toward the crown), in Head-local space.
+    const centre = new THREE.Vector3().lerpVectors(hp, ep, 0.55);
+    helmet.position.copy(headBone.worldToLocal(centre));
+    // Face forward: world-identity orientation at rest = headWorldQuat^-1.
+    helmet.quaternion.copy(hq).invert();
+    headBone.add(helmet);
   }
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
-    headBone, headEnd, helmet, helmetQ0Inv,
+    headBone, headEnd, helmet,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -650,8 +657,11 @@ function updateOffense(dt) {
       const cover = nearestDefenderTo(p);
       const coverD = cover ? distXZ(p, px(cover)) : Infinity;
       if (o.cutTimer > 0) o.cutTimer -= dt;
-      if (ball.mode === 'flying' && o === ball.targetRecv) {
-        // The ball is coming to me — go up and attack the catch point.
+      // Run to the ball's projected landing (ball.to, updated each frame along
+      // the live trajectory) to make a play on it — the target always does, and
+      // any receiver near the trajectory breaks on it too, to up the catch odds.
+      const onBall = ball.mode === 'flying' && (o === ball.targetRecv || distXZ(p, ball.to) < 9);
+      if (onBall) {
         steer = seek(p, ball.to.x, ball.to.z); o.turbo = true;
       } else if (o.route && o.wp < o.route.length) {
         const wp = o.route[o.wp];
@@ -913,7 +923,7 @@ function snap() {
 }
 const PASS_G = 10.7;      // gravity, yd/s^2 (~9.8 m/s^2)
 const PASS_VMAX = 37;     // arm strength: max launch speed, yd/s (snappier throws)
-const BALL_NUDGE = 16;    // in-flight steering toward the receiver (yd/s^2 of redirect)
+const BALL_NUDGE = 7;     // in-flight steering (yd/s^2 of redirect) — ON FIRE only, subtle
 
 // Real ballistics: power sets the launch ANGLE (tap = lofted lob, hold = flat
 // bullet); the speed is solved to actually reach the receiver, capped by arm
@@ -1051,17 +1061,18 @@ function updateBall(dt) {
     // Real projectile: integrate horizontal velocity + gravity on the vertical.
     ball.airTime += dt;
     const p = ball.mesh.position;
-    // User nudge: the left stick gently steers the ball in flight (camera-
-    // relative) so you can guide a throw toward the receiver — subtle, not full
-    // control.
-    const kb = kbVec();
-    const ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
-    const iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
-    if (Math.hypot(ix, iy) > 0.12) {
-      camera.getWorldDirection(_f); _f.y = 0; _f.normalize();
-      _r.crossVectors(_f, THREE.Object3D.DEFAULT_UP).normalize();
-      ball.vx += (_f.x * iy + _r.x * ix) * BALL_NUDGE * dt;
-      ball.vz += (_f.z * iy + _r.z * ix) * BALL_NUDGE * dt;
+    // User nudge: only while ON FIRE can the left stick gently steer the ball in
+    // flight (camera-relative) — a subtle guide toward the receiver, not control.
+    if (game.onFire) {
+      const kb = kbVec();
+      const ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
+      const iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
+      if (Math.hypot(ix, iy) > 0.12) {
+        camera.getWorldDirection(_f); _f.y = 0; _f.normalize();
+        _r.crossVectors(_f, THREE.Object3D.DEFAULT_UP).normalize();
+        ball.vx += (_f.x * iy + _r.x * ix) * BALL_NUDGE * dt;
+        ball.vz += (_f.z * iy + _r.z * ix) * BALL_NUDGE * dt;
+      }
     }
     p.x += ball.vx * dt;
     p.z += ball.vz * dt;
@@ -1658,17 +1669,8 @@ function updatePlay(dt) {
   if (game.state === STATE.DEAD) { game.deadTimer -= dt; if (game.deadTimer <= 0) newPlay(); }
 }
 
-// Keep each player's helmet glued to the head (centred between Head and
-// head_end, oriented to the head minus its rest twist) — follows bob + ragdoll.
-const _hv1 = new THREE.Vector3(), _hv2 = new THREE.Vector3(), _hq = new THREE.Quaternion();
-function updateHelmet(ch) {
-  if (!ch.helmet) return;
-  ch.headBone.getWorldPosition(_hv1);
-  ch.headEnd.getWorldPosition(_hv2);
-  ch.helmet.position.lerpVectors(_hv1, _hv2, 0.7); // ride higher (toward the crown), not sunken
-  ch.headBone.getWorldQuaternion(_hq);
-  ch.helmet.quaternion.copy(_hq).multiply(ch.helmetQ0Inv);
-}
+// Keep each player's helmet glued to the head — it's parented to the Head bone
+// so it tracks automatically (head turns + ragdoll); no per-frame work needed.
 
 // ===========================================================================
 // Camera (feel ported from Football-Game/Scene3D: eased "superstar" chase cam
@@ -1774,7 +1776,6 @@ function animate() {
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
   }
 
-  for (const ch of game.all) updateHelmet(ch); // helmets ride the heads
   updateCamera(realDt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
@@ -1792,6 +1793,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
