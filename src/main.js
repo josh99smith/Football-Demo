@@ -870,9 +870,8 @@ function tryBreak(carrier, pile) {
 }
 
 // --- 1-on-1 break-tackle battle (mash to break free) -----------------------
-const BATTLE_CHANCE = 0.34;  // a lone clean hit kicks off a duel this often
 const BATTLE_TIME = 2.6;     // seconds before it resolves on whoever leads
-const BATTLE_TAP = 0.085;    // meter toward break per mash
+const BATTLE_TAP = 0.095;    // meter toward break per mash
 const BATTLE_CPU = 0.24;     // meter drift/s toward the tackle
 const battleEl = document.getElementById('battle');
 const battleFill = document.getElementById('battle-fill');
@@ -882,9 +881,10 @@ const battlePrompt = document.getElementById('battle-prompt');
 battleEl.addEventListener('touchstart', (e) => { e.preventDefault(); input.battleMash++; }, { passive: false });
 battleEl.addEventListener('mousedown', () => { input.battleMash++; });
 
-function startBattle(tackler) {
+function startBattle(tackler, hard = false) {
   const b = game.battle;
-  b.val = 0.5; b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
+  // A big committed hit starts you further behind (harder to break out of).
+  b.val = hard ? 0.4 : 0.52; b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
   game.state = STATE.BATTLE;
   // Face the two off, stopped, chest to chest.
   const c = game.carrier;
@@ -902,7 +902,7 @@ function startBattle(tackler) {
 function endBattle(carrierWon) {
   const b = game.battle;
   const tackler = b.tackler;
-  b.tackler = null; b.cd = 3.0;
+  b.tackler = null; b.cd = 1.2; // brief cooldown so battles don't instantly chain
   battleEl.classList.add('hidden');
   if (carrierWon) {
     game.carrier.jukeTimer = 0.5; // brief immunity so he actually escapes
@@ -976,15 +976,17 @@ function beginTackle(lead, force = false) {
     return;
   }
 
-  // Tecmo-style 1-on-1 BATTLE: a clean, lone hit can kick off a mash duel
-  // (ported from TackleEngine.struggle). Big committed hits go straight down.
-  if (!force && !big && gangSize === 1 && game.battle.cd <= 0 && Math.random() < BATTLE_CHANCE) {
-    startBattle(lead);
+  // 1-on-1 break-tackle BATTLE: any LONE tackler on the ball carrier kicks off
+  // a mash duel — your chance to break the tackle. A big committed hit just
+  // starts you further behind. (A swarm can't be broken this way.)
+  if (!force && gangSize === 1 && game.battle.cd <= 0) {
+    startBattle(lead, big);
     return;
   }
 
-  // Broken tackle: strength + momentum vs the pile (TackleEngine.tryBreak).
-  if (!force && !big && tryBreak(carrier, pile)) {
+  // Otherwise (a gang, or while the battle is on cooldown): a small strength +
+  // momentum chance to bust through anyway (TackleEngine.tryBreak).
+  if (!force && tryBreak(carrier, pile)) {
     knockdownDefender(lead);
     carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
     shake.add(0.2);
