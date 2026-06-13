@@ -1,7 +1,7 @@
 :root {
   --accent: #ffd54a;
-  --off: #4a8bff;
-  --def: #a85cff;
+  --off: #ff5a5a;
+  --def: #4a8bff;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -192,7 +192,7 @@ html, body {
   position: relative;
   height: 34px;
   border-radius: 9px;
-  background: #8e3bff;                 /* tackler (defense) side */
+  background: #3f7bff;                 /* tackler (defense) side */
   border: 3px solid rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
