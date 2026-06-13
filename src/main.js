@@ -330,7 +330,7 @@ const ball = {
   vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
   spin: 0, spinRate: 0,
   // Catch: ball homes into the catcher's hands before the play resolves.
-  catcher: null, secureT: 0, intercept: false, holder: null,
+  catcher: null, secureT: 0, intercept: false, holder: null, intRolled: false,
   trail: [], trailHist: [], // glowing comet trail (sprite pool)
 };
 function makeGlowTexture() {
@@ -897,7 +897,7 @@ function throwBall(power) {
   ball.startY = from.y; ball.airTime = 0; ball.flightTime = d / ball._solVh;
   // Spiral tighter/faster with arm strength.
   ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
-  ball.to.set(tx, 0, tz); ball.targetRecv = recv;
+  ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
   audio.throwPass();
@@ -946,7 +946,7 @@ function endPlay(result, endZ) {
 // ===========================================================================
 // Ball + outcomes
 // ===========================================================================
-const TACKLE_R = 1.5, CATCH_R = 2.4, INTERCEPT_R = 1.6;
+const TACKLE_R = 1.5, CATCH_R = 1.6, CONTEST_R = 2.7, INTERCEPT_R = 1.3;
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -1026,35 +1026,65 @@ function updateBall(dt) {
     }
   }
 }
-// Resolve a catch/interception against the ball's LIVE position (so a receiver
-// hauls it in mid-stride). Returns true when handled.
+// Begin the secure phase: the ball homes into the catcher's hands before it
+// resolves to a catch (or interception).
+function startSecure(player, isInt) {
+  player.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
+  ball.mode = 'secured'; ball.catcher = player; ball.secureT = 0.16; ball.intercept = isInt;
+  const p = ball.mesh.position;
+  if (isInt) {
+    showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
+    burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
+  } else {
+    audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
+    burst(p.x, p.y, p.z, 0xffffff, 8, 5);
+  }
+}
+function passBrokenUp(msg, color) {
+  ball.mode = 'rest';
+  showBanner(msg, color);
+  const p = ball.mesh.position;
+  burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
+  shake.add(0.12);
+  endPlay('incomplete', game.los); // endPlay blows the whistle
+}
+
+// Resolve a ball in flight against nearby players. Most throws into coverage
+// are CONTESTED — only a clear window is a clean catch; tight coverage is
+// usually an incompletion / breakup, with rare picks on blanketed throws.
 function tryReception() {
   const p = ball.mesh.position;
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
-  let bestR = null, bestRD = Infinity;
-  for (const wr of game.receivers) { const d = near(wr); if (d < bestRD) { bestRD = d; bestR = wr; } }
-  let bestDef = null, bestDD = Infinity;
-  for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < bestDD) { bestDD = d; bestDef = db; } }
-  // Catch: hand the ball off to the "secure" phase so it visibly tucks into
-  // the receiver's hands before he takes off.
-  if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) {
-    timeScale.slow(0.7, 0.18);
-    audio.catch(); audio.cheer(0.35);
-    const p = ball.mesh.position; burst(p.x, p.y, p.z, 0xffffff, 8, 5);
-    bestR.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
-    ball.mode = 'secured'; ball.catcher = bestR; ball.secureT = 0.16; ball.intercept = false;
-    return true;
+  let bestR = null, dR = Infinity;
+  for (const wr of game.receivers) { const d = near(wr); if (d < dR) { dR = d; bestR = wr; } }
+  let bestDef = null, dD = Infinity;
+  for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
+
+  // No receiver in catching range yet — but a defender right on the ball can
+  // still jump it. Otherwise keep flying (resolves incomplete at the end).
+  if (!bestR || dR > CATCH_R) {
+    if (bestDef && dD <= INTERCEPT_R && !ball.intRolled) {
+      ball.intRolled = true; // one roll per throw, not per frame
+      if (Math.random() < 0.45) { startSecure(bestDef, true); return true; }
+    }
+    return false;
   }
-  // Interception: the defender secures it into his hands, then the whistle.
-  if (bestDD <= INTERCEPT_R) {
-    showBanner('PICKED OFF!', '#ff5a3a');
-    shake.add(0.3); audio.groan();
-    const p = ball.mesh.position; burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
-    bestDef.heading = Math.atan2(ball.vx, ball.vz);
-    ball.mode = 'secured'; ball.catcher = bestDef; ball.secureT = 0.16; ball.intercept = true;
-    return true;
+
+  // A receiver is in reach. Uncontested = a clean grab (rare drop).
+  const contested = bestDef && dD <= CONTEST_R;
+  if (!contested) {
+    if (Math.random() < 0.94) { startSecure(bestR, false); return true; }
+    passBrokenUp('DROPPED!', '#dfe7ff'); return true;
   }
-  return false;
+
+  // Contested: catch odds fall as the coverage tightens; misses are mostly
+  // breakups, with a pick only when a defender is right there.
+  const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
+  let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight);
+  if (game.onFire) pCatch += 0.12;
+  if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
+  if (dD <= INTERCEPT_R && Math.random() < 0.4) { startSecure(bestDef, true); return true; } // pick
+  passBrokenUp('BROKEN UP!', '#9fd0ff'); return true; // PBU / incompletion
 }
 function checkRunOutcome() {
   const c = game.carrier.group.position;
@@ -1610,6 +1640,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
