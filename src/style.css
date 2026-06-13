@@ -167,6 +167,23 @@ html, body {
 .mini-btn.active { transform: scale(0.94); background: rgba(0,0,0,0.7); }
 .mini-btn.hidden { display: none; }
 
+/* ---------- Build badge ---------- */
+#build-badge {
+  position: fixed;
+  top: max(5px, env(safe-area-inset-top));
+  right: max(7px, env(safe-area-inset-right));
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.32);
+  padding: 2px 7px;
+  border-radius: 7px;
+  z-index: 25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 /* ---------- 1-on-1 break-tackle battle ---------- */
 #battle {
   position: fixed;
