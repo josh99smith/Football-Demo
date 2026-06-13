@@ -3,6 +3,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { PhysicsWorld, TackleRagdoll, pickVariant } from './ragdoll.js';
 import { BUILD } from './build.js';
+import { AudioManager } from './audio.js';
+
+const audio = new AudioManager();
 
 // Build/version badge (corner of screen).
 {
@@ -104,6 +107,57 @@ function makeRing(color) {
 }
 const selRing = makeRing(0xffd54a);
 const ctrlRing = makeRing(0xffffff);
+
+// Broadcast lines: line of scrimmage (blue) + first-down (yellow).
+function makeFieldLine(color) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 0.6),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.04; scene.add(m); return m;
+}
+const losLine = makeFieldLine(0x2f6bff);
+const firstDownLine = makeFieldLine(0xffe14a);
+
+// Floating target arrow that hovers over the selected receiver.
+const targetArrow = (() => {
+  const m = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.8, 4),
+    new THREE.MeshBasicMaterial({ color: 0xffe14a }));
+  m.rotation.x = Math.PI; m.visible = false; scene.add(m); return m;
+})();
+
+// Impact particle burst pool (dust/spark on hits).
+const hitParticles = [];
+(function initParticles() {
+  const geo = new THREE.SphereGeometry(0.12, 6, 5);
+  for (let i = 0; i < 40; i++) {
+    const p = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
+    p.visible = false; p.userData = { vx: 0, vy: 0, vz: 0, life: 0 }; scene.add(p); hitParticles.push(p);
+  }
+})();
+function burst(x, y, z, color, n = 14, speed = 7) {
+  let spawned = 0;
+  for (const p of hitParticles) {
+    if (p.userData.life > 0) continue;
+    p.visible = true; p.position.set(x, y, z);
+    p.material.color.setHex(color); p.material.opacity = 0.9;
+    const a = Math.random() * Math.PI * 2, up = 1 + Math.random() * 4;
+    const s = speed * (0.4 + Math.random());
+    p.userData.vx = Math.cos(a) * s; p.userData.vz = Math.sin(a) * s; p.userData.vy = up;
+    p.userData.life = 0.5 + Math.random() * 0.3;
+    if (++spawned >= n) break;
+  }
+}
+function updateParticles(dt) {
+  for (const p of hitParticles) {
+    if (p.userData.life <= 0) continue;
+    p.userData.life -= dt;
+    if (p.userData.life <= 0) { p.visible = false; continue; }
+    p.userData.vy -= 18 * dt;
+    p.position.x += p.userData.vx * dt;
+    p.position.y = Math.max(0.1, p.position.y + p.userData.vy * dt);
+    p.position.z += p.userData.vz * dt;
+    p.material.opacity = Math.min(0.9, p.userData.life * 2);
+  }
+}
 
 // ===========================================================================
 // Assets + character factory
@@ -601,6 +655,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, swit
   const knob = document.getElementById('joystick-knob');
   const maxR = 48; let id = null, cx = 0, cy = 0;
   const start = (e) => {
+    audio.unlock();
     const t = e.changedTouches ? e.changedTouches[0] : e;
     const r = base.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
     id = e.changedTouches ? t.identifier : 'mouse'; move(e);
@@ -630,7 +685,7 @@ const switchBtn = document.getElementById('switch-btn');
 const turboBtn = document.getElementById('turbo-btn');
 (function buttons() {
   const press = (el, on, off) => {
-    const d = (e) => { e.preventDefault(); el.classList.add('active'); on(); };
+    const d = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); on(); };
     const u = (e) => { if (e) e.preventDefault(); el.classList.remove('active'); off && off(); };
     el.addEventListener('touchstart', d, { passive: false });
     el.addEventListener('touchend', u, { passive: false });
@@ -645,6 +700,7 @@ const turboBtn = document.getElementById('turbo-btn');
 
 const keys = {};
 window.addEventListener('keydown', (e) => {
+  audio.unlock();
   if (!keys[e.code]) {
     if (e.code === 'Space') input.actionEdge = true;
     if (e.code === 'KeyE' || e.code === 'Tab') { input.switchEdge = true; e.preventDefault(); }
@@ -785,6 +841,9 @@ function newPlay() {
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
   ball.mode = 'carried'; ball.targetRecv = null;
   selRing.visible = true; ctrlRing.visible = false;
+  losLine.position.z = game.los;
+  firstDownLine.position.z = THREE.MathUtils.clamp(game.firstDown, -HALF_L + 1, GOAL_Z);
+  firstDownLine.visible = game.firstDown < GOAL_Z + 0.5;
   updateButtons(); updateHUD();
   setStatus(`${ordinal(game.down)} down — tap SNAP`);
 }
@@ -794,6 +853,7 @@ function snap() {
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   game.receivers.forEach((wr, i) => { wr.route = buildRoute(WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
   game.defense.forEach((db) => { db.job = db.deep ? 'zone' : 'cover'; if (db.deep) db.zonePoint = new THREE.Vector3(0, 0, game.los + 18); });
+  audio.hike();
   setStatus('Find an open receiver, then THROW');
   updateButtons();
 }
@@ -821,6 +881,7 @@ function throwBall(power) {
   ball.to.set(tx, 0, tz); ball.targetRecv = recv;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
+  audio.throwPass();
   setStatus(p > 0.6 ? 'Bullet!' : 'Pass is up…'); updateButtons();
 }
 function enterRun(player, msg) {
@@ -832,13 +893,14 @@ function enterRun(player, msg) {
   setStatus(msg); updateButtons();
 }
 function endPlay(result, endZ) {
-  game.state = STATE.DEAD; game.deadTimer = 1.4;
+  game.state = STATE.DEAD; game.deadTimer = 1.1;
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
   if (result === 'TD') {
     game.scoreOff += 7; setStatus('TOUCHDOWN! 🏈');
+    audio.touchdown();
     game.fireCount++;
     if (game.fireCount >= 3 && !game.onFire) {
-      game.onFire = true; setFireVisual(true);
+      game.onFire = true; setFireVisual(true); audio.fire();
       showBanner('ON FIRE!', '#ff7a3a');
       setStatus('3 straight TDs — your team is ON FIRE! 🔥');
     } else showBanner('TOUCHDOWN!', '#ffd23a');
@@ -846,6 +908,7 @@ function endPlay(result, endZ) {
     shake.add(0.3);
     game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
   } else {
+    if (result !== 'intercept') audio.whistle();
     const gained = result === 'incomplete' ? 0 : endZ - game.los;
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'intercept' ? 'Intercepted!'
@@ -934,6 +997,8 @@ function tryReception() {
   if (bestRD <= CATCH_R && bestRD <= bestDD + 0.3) {
     ball.mode = 'carried';
     timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
+    audio.catch(); audio.cheer(0.35);
+    const p = ball.mesh.position; burst(p.x, p.y, p.z, 0xffffff, 8, 5);
     enterRun(bestR, 'Caught it! Run!');
     playOneShot(bestR, 'catch', 0.55); // reception reach before he takes off
     return true;
@@ -941,7 +1006,7 @@ function tryReception() {
   if (bestDD <= INTERCEPT_R) {
     ball.mode = 'carried';
     showBanner('PICKED OFF!', '#ff5a3a');
-    shake.add(0.3);
+    shake.add(0.3); audio.groan();
     endPlay('intercept', game.los);
     return true;
   }
@@ -1170,15 +1235,18 @@ function beginTackle(lead, force = false) {
   // back up, with the camera zooming in for the whole beat.
   const gang = gangSize >= 3;
   shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
+  burst(cp.x, 1.0, cp.z, 0xe8d9a0, big || gang ? 18 : 11, big || gang ? 9 : 6); // dust/impact
   if (big || gang) {
     if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); }
     else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); }
     shake.add(gang ? 0.72 : 0.5);
+    audio.bigHit();
     showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a');
   } else {
     timeScale.bulletTime(0.22, 0.4, 0.7);
     hitZoom(0.9);
     shake.add(0.18);
+    audio.hit(0.6);
   }
   setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
 }
@@ -1269,6 +1337,7 @@ function doJuke(ch) {
   ch.vel.x += rx * side * 7; ch.vel.z += rz * side * 7;
   shake.kick(rx * side, rz * side, 0.25);
   playOneShot(ch, 'juke', 0.45); // dodge-roll animation
+  audio.juke();
 }
 const turboFillEl = document.getElementById('turbo-fill');
 
@@ -1354,6 +1423,15 @@ function updatePlay(dt) {
   if (ctrlRing.visible && game.controlled) {
     const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.03, p.z);
   }
+  // Target arrow bobs over the selected receiver while you're picking a throw.
+  const showArrow = (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
+  targetArrow.visible = showArrow;
+  if (showArrow) {
+    const p = game.receivers[game.selected].group.position;
+    targetArrow.position.set(p.x, 2.9 + Math.sin(performance.now() * 0.006) * 0.18, p.z);
+    targetArrow.rotation.y += dt * 2;
+  }
+  updateParticles(dt);
   if (game.battle.cd > 0) game.battle.cd -= dt;
   if (game.state === STATE.DEAD) { game.deadTimer -= dt; if (game.deadTimer <= 0) newPlay(); }
 }
@@ -1468,3 +1546,5 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
