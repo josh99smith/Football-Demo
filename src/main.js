@@ -189,9 +189,19 @@ function makeCharacter(team) {
   const group = new THREE.Group();
   group.add(model);
   scene.add(group);
-  // Hand bone the ball is tucked into while carrying.
+  // Hand bone the ball is tucked into while carrying, plus every bone's REST
+  // local pose. The ragdoll drives bone positions during a tackle; since our
+  // clips are rotation-only they never restore positions, so we snap bones
+  // back to rest when the ragdoll is cleared (else the lower body stays under
+  // the field and the next hit snapshots a broken pose).
   let handBone = null;
-  model.traverse((o) => { if (o.isBone && o.name === 'RightHand') handBone = o; });
+  const restPose = [];
+  model.traverse((o) => {
+    if (o.isBone) {
+      if (o.name === 'RightHand') handBone = o;
+      restPose.push([o, o.position.clone(), o.quaternion.clone()]);
+    }
+  });
   const mixer = new THREE.AnimationMixer(model);
   const mk = (clip) => {
     const a = mixer.clipAction(clip);
@@ -208,7 +218,7 @@ function makeCharacter(team) {
   if (catchClip) actions.catch = oneShot(catchClip);
   actions.idle.setEffectiveWeight(1);
   return {
-    group, model, mixer, actions, handBone, current: 'idle', active: actions.idle,
+    group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1125,8 +1135,15 @@ function anyRagdollActive() {
 
 function clearRagdolls() {
   for (const ch of game.all) {
+    const wasRagdoll = ch.ragdolling || (ch.ragdoll && ch.ragdoll.active);
     if (ch.ragdoll) ch.ragdoll.dispose();
     ch.ragdolling = false;
+    // Snap every bone back to its rest pose so the mixer (rotation-only) starts
+    // from a clean skeleton — fixes lower-body-under-the-field after a tackle.
+    if (wasRagdoll && ch.restPose) {
+      for (const [bone, pos, quat] of ch.restPose) { bone.position.copy(pos); bone.quaternion.copy(quat); }
+      ch.mixer.setTime(0); // re-evaluate the current clip onto the clean pose
+    }
   }
 }
 
