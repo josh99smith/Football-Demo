@@ -1622,23 +1622,28 @@ function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 function updateCamera(dt) {
   const t = game.controlled || game.qb;
   const p = t.group.position;
+  // On a throw, FOLLOW THE BALL: focus the live ball and trail its flight so
+  // you watch the pass travel to the receiver; otherwise focus the player.
+  const air = (game.state === STATE.AIR || (game.state === STATE.DEAD && ball.mode === 'flying'));
+  const fp = air ? ball.mesh.position : p;
 
-  // Eased heading: behind the runner once he takes off; otherwise locked
-  // straight downfield. Only changes when the player actually turns — the cam
-  // no longer pans sideways toward receivers, so it stays steady.
-  const wantYaw = (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE)
-    ? t.heading : 0;
-  const k = Math.min(1, dt * 3);
+  // Eased heading: trail the ball's travel in the air, behind the runner once
+  // he takes off, otherwise locked straight downfield. Eases so it stays smooth.
+  const wantYaw = air ? Math.atan2(ball.vx, ball.vz)
+    : (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE) ? t.heading : 0;
+  const k = Math.min(1, dt * (air ? 5 : 3));
   cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
   cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
   const m = Math.hypot(cam.fwdX, cam.fwdZ) || 1;
   cam.fwdX /= m; cam.fwdZ /= m;
 
-  // Steady chase: look straight ahead of the player along the cam heading.
-  const lx = p.x + cam.fwdX * 9, lz = p.z + cam.fwdZ * 9;
   const run = game.state === STATE.RUN;
-  _tp.set(p.x - cam.fwdX * (run ? 9 : 10.5), run ? 5.2 : 6.3, p.z - cam.fwdZ * (run ? 9 : 10.5));
-  _tl.set(lx, 1.3, lz);
+  const back = air ? 9 : (run ? 9 : 10.5);
+  const hgt = air ? Math.max(5.5, fp.y + 3.2) : (run ? 5.2 : 6.3);
+  const aheadL = air ? 5 : 9;                 // look ahead toward the receiver in flight
+  const lookH = air ? (fp.y * 0.55 + 0.8) : 1.3;
+  _tp.set(fp.x - cam.fwdX * back, hgt, fp.z - cam.fwdZ * back);
+  _tl.set(fp.x + cam.fwdX * aheadL, lookH, fp.z + cam.fwdZ * aheadL);
 
   // Cinematic hit push-in: a tight 3/4 close-up on the pile that eases in and
   // out on REAL time (so it's smooth no matter how slow the sim runs), plus a
@@ -1658,9 +1663,9 @@ function updateCamera(dt) {
   const wantFov = 55 - 21 * e;
   if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
 
-  // Tight follow. A constant real-time smoothing keeps the close-up gliding
-  // rather than the variable boost that made it lurch in.
-  const lt = Math.min(1, dt * (8 + cam.cine * 6));
+  // Tight follow. Snappier while tracking a thrown ball so the camera stays
+  // glued to the fast, short flight instead of lagging behind the QB.
+  const lt = Math.min(1, dt * (air ? 16 : 8 + cam.cine * 6));
   cam.pos.lerp(_tp, lt);
   cam.lookCur.lerp(_tl, Math.min(1, lt * 1.2));
 
@@ -1713,6 +1718,9 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
+
 
 
 
