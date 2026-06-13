@@ -12,7 +12,9 @@ full passing play from snap to score.
   play clock** ticks pre-snap and auto-snaps if you stall.
 - **Line-of-scrimmage (blue) and first-down (yellow) markers** stripe the field
   with sideline down-marker posts so you always know the sticks.
-- A **pick six** (interception) cashes 7 for the defense — protect the ball.
+- **Turnovers are live**: an interception can be **returned for a touchdown**
+  (you flip to defense and chase the runner — stop him and it's just a
+  turnover), and **big hits can force fumbles** that the defense may recover.
 - **Turbo meter**: hold TURBO for a 1.4x burst; the meter drains while you
   burn it and refills when you don't (including between plays).
 - **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives

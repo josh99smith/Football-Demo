@@ -344,6 +344,7 @@ function makeCharacter(team) {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
+    armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
@@ -897,7 +898,7 @@ function updateHUD() {
   elQuarter.textContent = game.gameOver ? 'FINAL' : (QLABEL[game.quarter - 1] || game.quarter + 'TH');
   const pc = Math.max(0, Math.ceil(game.snapClock));
   elPlayClock.textContent = `:${pc < 10 ? '0' : ''}${pc}`;
-  const showPC = game.state === STATE.PRESNAP && !game.gameOver;
+  const showPC = game.state === STATE.PRESNAP && !game.gameOver && !game.choosing;
   elPlayClock.style.visibility = showPC ? 'visible' : 'hidden';
   elPlayClock.classList.toggle('warn', showPC && pc <= 5);
 }
@@ -1870,7 +1871,7 @@ function updateAnimation(ch, dt) {
   ch.group.rotation.y = ch.heading;
   ch.mixer.update(dt);
   // Procedural arm overrides (after the mixer), in priority order: securing a
-  // catch, throwing, then a one-off arm action (swat / pick / tackle wrap).
+  // catch, throwing, then a one-off arm action (swat a pass / reach at a ball).
   if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
