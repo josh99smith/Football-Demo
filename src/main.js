@@ -529,6 +529,27 @@ const PLAYS = [
   },
 ];
 
+// Render a play's actual routes as a little SVG diagram for the call screen.
+// Uses the same route functions (at los=0, dir=1) so the art always matches.
+function makePlayArtSVG(play) {
+  const W = 100, H = 70, padX = 8, losY = H - 12, topY = 6, maxDepth = 40;
+  const mapX = (x) => padX + ((x + HALF_W) / (2 * HALF_W)) * (W - 2 * padX);
+  const mapY = (z) => losY - (Math.min(z, maxDepth) / maxDepth) * (losY - topY);
+  const savedDir = game.dir; game.dir = 1; // diagram is drawn downfield (+Z)
+  let art = '';
+  for (let i = 0; i < WR_X.length; i++) {
+    const sx = WR_X[i];
+    const wpts = play.route(i, sx, 0);
+    let d = `M ${mapX(sx).toFixed(1)} ${mapY(0).toFixed(1)}`;
+    for (const w of wpts) d += ` L ${mapX(w.x).toFixed(1)} ${mapY(w.z).toFixed(1)}`;
+    art += `<path d="${d}" fill="none" stroke="#ffd54a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+    art += `<circle cx="${mapX(sx).toFixed(1)}" cy="${mapY(0).toFixed(1)}" r="2.3" fill="#fff"/>`;
+  }
+  game.dir = savedDir;
+  const los = `<line x1="${padX}" y1="${losY}" x2="${W - padX}" y2="${losY}" stroke="rgba(255,255,255,0.45)" stroke-width="1.4" stroke-dasharray="3 3"/>`;
+  return `<svg class="ps-art" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${los}${art}</svg>`;
+}
+
 // Two fixed 7-man rosters: teamA = the player's red team, teamB = the CPU's
 // blue team. Each play, setupPossession() assigns offense/defense ROLES to
 // whichever team has the ball, so the same AI drives either side.
@@ -870,7 +891,9 @@ function choosePlay(i) {
   updateButtons();
 }
 for (const card of playCards) {
-  const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(+card.dataset.play); };
+  const idx = +card.dataset.play;
+  if (PLAYS[idx]) card.insertAdjacentHTML('afterbegin', makePlayArtSVG(PLAYS[idx])); // route diagram
+  const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(idx); };
   card.addEventListener('touchstart', pick, { passive: false });
   card.addEventListener('mousedown', pick);
 }
