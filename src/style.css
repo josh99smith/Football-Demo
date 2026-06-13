@@ -325,3 +325,72 @@ html, body {
   background: linear-gradient(180deg, #ff8a3a, #e23b3b);
   transition: height 0.08s linear;
 }
+
+/* ---------- Play-select screen ---------- */
+#playselect {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: rgba(4, 12, 8, 0.72);
+  backdrop-filter: blur(5px);
+  touch-action: none;
+}
+#playselect.hidden { display: none; }
+.ps-title {
+  font-size: clamp(18px, 4.5vw, 26px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 1.5px;
+  color: #fff;
+  -webkit-text-stroke: 1px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+}
+.ps-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: min(440px, 88vw);
+}
+.ps-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  background: linear-gradient(160deg, rgba(40, 64, 48, 0.95), rgba(16, 32, 22, 0.95));
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: #fff;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.ps-card:active { transform: scale(0.96); }
+.ps-card.chosen { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 6px 18px rgba(0, 0, 0, 0.45); }
+.ps-card i {
+  position: absolute;
+  top: 8px; right: 10px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.45);
+}
+.ps-card b {
+  font-size: clamp(17px, 4.5vw, 22px);
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+.ps-card span {
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  color: rgba(255, 255, 255, 0.8);
+}

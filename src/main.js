@@ -383,6 +383,7 @@ const game = {
   tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
+  playIndex: 0, choosing: false,        // selected play / play-select screen open
   // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
   turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
   playClock: 0, lastBreak: -10,
@@ -479,6 +480,48 @@ function buildRoute(sx, los) {
     default: return [P(sx, 40)];                          // go
   }
 }
+
+// Playbook: four selectable concepts. Each maps a receiver (by index/start X)
+// to a route — an array of world waypoints relative to the line of scrimmage.
+const PLAYS = [
+  {
+    name: 'BOMBS', sub: 'Four verticals',
+    route(i, sx, los) {
+      const toMid = Math.sign(-sx) || 1;
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + dz);
+      if (i === 0 || i === 5) return [P(sx, 16), P(sx, 42)];                 // outside go
+      if (i === 1 || i === 4) return [P(sx, 14), P(sx + toMid * 10, 34)];    // post
+      return [P(sx + toMid * 6, 9)];                                        // slot slant outlet
+    },
+  },
+  {
+    name: 'SLANTS', sub: 'Quick slants',
+    route(i, sx, los) {
+      const toMid = Math.sign(-sx) || 1;
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + dz);
+      return [P(sx + toMid * 6, 8), P(sx + toMid * 14, 16)];                // all slants
+    },
+  },
+  {
+    name: 'MESH', sub: 'Crossers',
+    route(i, sx, los) {
+      const toMid = Math.sign(-sx) || 1;
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + dz);
+      const depth = 5 + i * 1.5;                                            // staggered crossers
+      return [P(sx, depth), P(sx + toMid * 24, depth + 6)];
+    },
+  },
+  {
+    name: 'FLOOD', sub: 'Sideline outs',
+    route(i, sx, los) {
+      const toSide = Math.sign(sx) || 1, toMid = Math.sign(-sx) || 1;
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + dz);
+      if (i === 0 || i === 5) return [P(sx, 14), P(sx + toSide * 8, 28)];    // corner
+      if (i === 1 || i === 4) return [P(sx, 9), P(sx + toSide * 9, 11)];     // out
+      return [P(sx + toMid * 5, 12), P(sx, 9)];                             // curl/sit
+    },
+  },
+];
 
 function spawnTeams() {
   game.qb = makeCharacter('off'); game.qb.role = 'QB'; game.qb.job = 'qb'; game.qb.baseSpeed = 9.6; game.qb.strength = 0.95;
@@ -779,6 +822,28 @@ const turboBtn = document.getElementById('turbo-btn');
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
 })();
 
+// --- Play-select screen: pick one of four plays before each snap -----------
+const playSelectEl = document.getElementById('playselect');
+const playCards = playSelectEl ? [...playSelectEl.querySelectorAll('.ps-card')] : [];
+function openPlaySelect() {
+  game.choosing = true;
+  playCards.forEach((c, i) => c.classList.toggle('chosen', i === game.playIndex));
+  if (playSelectEl) playSelectEl.classList.remove('hidden');
+  updateButtons();
+}
+function choosePlay(i) {
+  if (i < 0 || i >= PLAYS.length) return;
+  game.playIndex = i; game.choosing = false;
+  if (playSelectEl) playSelectEl.classList.add('hidden');
+  setStatus(`${PLAYS[i].name} — tap SNAP`);
+  updateButtons();
+}
+for (const card of playCards) {
+  const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(+card.dataset.play); };
+  card.addEventListener('touchstart', pick, { passive: false });
+  card.addEventListener('mousedown', pick);
+}
+
 const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
@@ -788,6 +853,7 @@ window.addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') input.action = true;
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') input.turbo = true;
+  if (game.choosing && /^Digit[1-4]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -841,7 +907,8 @@ function show(el, label) { el.classList.remove('hidden'); if (label) el.textCont
 function hide(el) { el.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state;
-  if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : 'SNAP'); hide(turboBtn); }
+  if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
+  else if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : 'SNAP'); hide(turboBtn); }
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(turboBtn); }
   else if (s === STATE.AIR) { hide(actionBtn); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); show(turboBtn); }
@@ -933,7 +1000,7 @@ function showBanner(text, color = '#ffd23a') {
 // delay-of-game play clock counts down and auto-snaps at zero. The quarter only
 // rolls over between plays (the current play always finishes).
 function tickClock(dt) {
-  if (game.gameOver) return;
+  if (game.gameOver || game.choosing) return; // clock waits while you pick a play
   if (game.state === STATE.PRESNAP) {
     game.snapClock -= dt;
     if (game.snapClock <= 0) { game.snapClock = 0; setStatus('Delay of game — snapped!'); snap(); }
@@ -970,7 +1037,7 @@ function newPlay() {
   // Roll the quarter (or end the game) if the clock ran out on the last play.
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
-  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; }
+  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; }
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -984,13 +1051,14 @@ function newPlay() {
   firstDownLine.visible = game.firstDown < GOAL_Z + 0.5;
   updateButtons(); updateHUD();
   if (game.gameOver) setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
-  else setStatus(`${ordinal(game.down)} down — tap SNAP`);
+  else { setStatus('Choose your play'); openPlaySelect(); } // pick a play, then SNAP
 }
 function snap() {
   game.state = STATE.LIVE;
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
-  game.receivers.forEach((wr, i) => { wr.route = buildRoute(WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
+  const play = PLAYS[game.playIndex] || PLAYS[0];
+  game.receivers.forEach((wr, i) => { wr.route = play.route(i, WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
   game.defense.forEach((db) => { db.job = db.deep ? 'zone' : 'cover'; if (db.deep) db.zonePoint = new THREE.Vector3(0, 0, game.los + 18); });
   audio.hike();
   setStatus('Find an open receiver, then THROW');
@@ -1142,7 +1210,7 @@ function tackleReturner(tackler) {
   const big = tackler.turbo || closing > 8;
   spawnRagdoll(r, new THREE.Vector3(r.vel.x, 0, r.vel.z), hitDir,
     THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8), 0x0002, pickVariant(big, 1, closing, hitX, hitZ));
-  tackler.heading = Math.atan2(hitX, hitZ); playOneShot(tackler, 'tackle', 0.45);
+  tackler.heading = Math.atan2(hitX, hitZ); triggerArmAction(tackler, 'tackle', 0.45, rp);
   game.state = STATE.TACKLE; game.tackleTimer = 2.0; game.tackleSpotZ = rp.z; // returnActive still set
   ctrlRing.visible = false; updateButtons();
   shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
@@ -1177,7 +1245,7 @@ function returnDive() {
   const l = Math.hypot(dx, dz) || 1;
   const burst = o.baseSpeed * 1.25;
   o.vel.x = dx / l * burst; o.vel.z = dz / l * burst; o.heading = Math.atan2(dx, dz);
-  playOneShot(o, 'tackle', 0.4);
+  triggerArmAction(o, 'tackle', 0.4, r.group.position);
   if (l <= 2.4) tackleReturner(o); // diving tackle reaches a touch farther
 }
 // Route the end of a tackle: an interception runback, a lost fumble, or a
@@ -1338,10 +1406,13 @@ function startSecure(player, isInt) {
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
   }
 }
-function passBrokenUp(msg, color) {
+function passBrokenUp(msg, color, swatter, swatType) {
   ball.mode = 'rest';
   showBanner(msg, color);
   const p = ball.mesh.position;
+  // Procedural reaction on the player who made the play on the ball: a defender
+  // bats it down (swat), a receiver lunges and can't hang on (reach).
+  if (swatter) { swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
   endPlay('incomplete', game.los); // endPlay blows the whistle
@@ -1378,7 +1449,7 @@ function tryReception() {
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
     if (Math.random() < 0.94) { startSecure(bestR, false); return true; }
-    passBrokenUp('DROPPED!', '#dfe7ff'); return true;
+    passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
   }
 
   // Contested: catch odds fall as the coverage tightens; misses are mostly
@@ -1388,7 +1459,7 @@ function tryReception() {
   if (game.onFire) pCatch += 0.12;
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
   if (dD <= INTERCEPT_R && Math.random() < 0.4) { startSecure(bestDef, true); return true; } // pick
-  passBrokenUp('BROKEN UP!', '#9fd0ff'); return true; // PBU / incompletion
+  passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away
 }
 function checkRunOutcome() {
   const c = game.carrier.group.position;
@@ -1592,7 +1663,7 @@ function beginTackle(lead, force = false) {
   // ragdolling, then pops back to his feet (idle); extra gang members
   // ragdoll-recoil so a pile still tumbles.
   lead.heading = Math.atan2(hitX, hitZ); // square up on the ball carrier
-  playOneShot(lead, 'tackle', 0.45);
+  triggerArmAction(lead, 'tackle', 0.45, cp); // procedural wrap-up lunge
   const bits = [0x0004, 0x0008];
   for (let i = 1; i < Math.min(pile.length, RAGDOLL_MAX); i++) {
     const t = pile[i];
@@ -1749,9 +1820,49 @@ function applyCatchPose(ch, ballPos) {
   if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, raise); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
   if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.55); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
 }
+// Procedural ARM ACTIONS (swat a pass, dive a pick, wrap a tackle). Like the
+// throw/catch poses these run AFTER the mixer and are rig-agnostic (arm bones
+// only), easing up then back, and shaped by the target's position so every one
+// varies. Triggered by triggerArmAction with a world-space target point.
+const _armTmp = new THREE.Vector3();
+function triggerArmAction(ch, type, dur, targetPos) {
+  ch.armPose = type; ch.armPoseDur = dur; ch.armPoseT = dur;
+  ch.armPoseTarget = targetPos ? targetPos.clone() : null;
+}
+function applyArmAction(ch, dt) {
+  ch.armPoseT -= dt;
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const dur = ch.armPoseDur || 0.4;
+  const t = THREE.MathUtils.clamp(1 - ch.armPoseT / dur, 0, 1);
+  const w = Math.sin(Math.PI * t); // 0 -> peak -> 0 (wind, strike, return)
+  const tgt = ch.armPoseTarget;
+  const chestY = ch.group.position.y + 1.2;
+  const reach = tgt ? THREE.MathUtils.clamp(1.2 + (tgt.y - chestY) * 1.0, 0.4, 2.6) : 1.6;
+  if (ch.armPose === 'swat') {
+    // One arm slashes up across the ball to bat it down.
+    _tq.setFromAxisAngle(_xAxisL, -reach * w);
+    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
+    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.4 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+    ch.upperArm.updateMatrixWorld(true);
+  } else if (ch.armPose === 'pick' || ch.armPose === 'reach') {
+    // Both hands stab toward the ball (a dive at the pick / a contested grab).
+    _tq.setFromAxisAngle(_xAxisL, -reach * w);
+    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.5 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+    if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, reach * w); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
+    if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.5 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+  } else { // 'tackle' — both arms thrust forward to wrap the runner up
+    const f = 1.45 * w;
+    _tq.setFromAxisAngle(_xAxisL, -f);
+    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.7 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+    if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, -f); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
+    if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.7 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+  }
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
-  if (ch.oneShotT > 0) {     // hold a one-shot (juke roll / catch reach)
+  if (ch.oneShotT > 0) {     // hold a one-shot (juke roll)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
     ch.mixer.update(dt);
@@ -1764,10 +1875,11 @@ function updateAnimation(ch, dt) {
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
   ch.mixer.update(dt);
-  // Procedural arm overrides (after the mixer): a position-aware catch reach
-  // while securing the ball, otherwise the throwing motion.
+  // Procedural arm overrides (after the mixer), in priority order: securing a
+  // catch, throwing, then a one-off arm action (swat / pick / tackle wrap).
   if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
+  else if (ch.armPoseT > 0) applyArmAction(ch, dt);
 }
 
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
@@ -1793,8 +1905,8 @@ function updatePlay(dt) {
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
-    aimReceiver();
-    if (actionEdge) { if (game.gameOver) resetGame(); else snap(); }
+    if (!game.choosing) aimReceiver();
+    if (actionEdge && !game.choosing) { if (game.gameOver) resetGame(); else snap(); }
   } else if (game.state === STATE.LIVE) {
     aimReceiver();
     // A throw only arms on a FRESH press in LIVE — so the held snap press never

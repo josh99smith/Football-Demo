@@ -34,13 +34,16 @@ shared idle / walk / run glTF clips.
 
 You start every play as the **quarterback**.
 
-1. **Tap SNAP** to start the play. Your six receivers run their routes; the
-   defense covers them man-to-man.
+1. **Pick a play** from the four-play call screen (BOMBS / SLANTS / MESH /
+   FLOOD — tap a card or press 1–4), then **tap SNAP**. Your six receivers run
+   that concept's routes; the defense covers them man-to-man.
 2. **Aim with the left stick** — the receiver you point toward (yellow arrow +
    ring) becomes your target. Push the stick to scramble too.
 3. **Tap THROW for a lob, hold for a bullet** to the targeted receiver.
 4. On a catch you **take over the receiver** — run for the end zone. Hold
    **SPRINT** for a burst. Defenders pursue and tackle on contact.
+5. **Throw a pick and you flip to defense** — take over the nearest man and
+   chase the returner down before he takes it the other way for six.
 
 Touchdowns, tackles, incompletions and interceptions all reset for the next
 play, with **down & distance** and the **score** tracked on the HUD.
