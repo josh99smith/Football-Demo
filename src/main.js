@@ -169,7 +169,7 @@ function makeCharacter(team) {
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
     route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
-    ragdoll: null, ragdolling: false,
+    strength: 1, ragdoll: null, ragdolling: false,
   };
 }
 
@@ -185,7 +185,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', DEAD: 'dead' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', BATTLE: 'battle', DEAD: 'dead' };
 const DIR = 1; // offense attacks +Z
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -201,6 +201,7 @@ const game = {
   // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
   turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
   playClock: 0, lastBreak: -10,
+  battle: { val: 0.5, timer: 0, tackler: null, cd: 0, flash: 0 },
 };
 
 const ball = {
@@ -241,18 +242,18 @@ function buildRoute(sx, los) {
 }
 
 function spawnTeams() {
-  game.qb = makeCharacter('off'); game.qb.role = 'QB'; game.qb.job = 'qb'; game.qb.baseSpeed = 9.6;
+  game.qb = makeCharacter('off'); game.qb.role = 'QB'; game.qb.job = 'qb'; game.qb.baseSpeed = 9.6; game.qb.strength = 0.95;
   game.offense = [game.qb]; game.receivers = [];
   for (const x of WR_X) {
-    const wr = makeCharacter('off'); wr.role = 'WR'; wr.baseSpeed = 9.3;
+    const wr = makeCharacter('off'); wr.role = 'WR'; wr.baseSpeed = 9.3; wr.strength = 0.92;
     game.offense.push(wr); game.receivers.push(wr);
   }
   game.defense = [];
   for (let i = 0; i < 6; i++) {
-    const db = makeCharacter('def'); db.role = 'DB'; db.covers = i; db.baseSpeed = 9.0;
+    const db = makeCharacter('def'); db.role = 'DB'; db.covers = i; db.baseSpeed = 9.0; db.strength = 0.95;
     game.defense.push(db);
   }
-  const safety = makeCharacter('def'); safety.role = 'S'; safety.deep = true; safety.baseSpeed = 8.8;
+  const safety = makeCharacter('def'); safety.role = 'S'; safety.deep = true; safety.baseSpeed = 8.8; safety.strength = 1.05;
   game.defense.push(safety);
   game.all = [...game.offense, ...game.defense];
 }
@@ -479,7 +480,7 @@ function clampToField(ch) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, switchEdge: false };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, switchEdge: false, battleMash: 0 };
 
 (function joystick() {
   const base = document.getElementById('joystick');
@@ -578,6 +579,7 @@ function updateButtons() {
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(switchBtn, 'RECEIVER ▸'); show(turboBtn); }
   else if (s === STATE.AIR) { hide(actionBtn); hide(switchBtn); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); hide(switchBtn); show(turboBtn); }
+  else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(switchBtn); hide(turboBtn); }
   else { hide(actionBtn); hide(switchBtn); hide(turboBtn); }
 }
 
@@ -662,6 +664,7 @@ function showBanner(text, color = '#ffd23a') {
 // ===========================================================================
 function newPlay() {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
+  battleEl.classList.add('hidden'); game.battle.tackler = null;
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -818,7 +821,103 @@ function knockdownDefender(d) {
     MIDPLAY_BITS[midplayBit++ % MIDPLAY_BITS.length], 'highKnock');
 }
 
-function beginTackle(lead) {
+// Strength + momentum break check vs the whole pile (from TackleEngine.tryBreak).
+// A fast, turbo, or ON FIRE back slips a lone defender often; a gang rarely.
+function tryBreak(carrier, pile) {
+  if (game.playClock - game.lastBreak < 0.55) return false;
+  const speed = Math.hypot(carrier.vel.x, carrier.vel.z);
+  let p = input.turbo ? 0.52 : 0.34;
+  const power = carrier.strength * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1);
+  let gangStr = 0;
+  for (const t of pile) gangStr += t.strength;
+  p *= THREE.MathUtils.clamp(power / (gangStr * 0.9), 0.3, 1.25);
+  if (pile.length >= 2) p *= 0.45; // a gang is hard to slip
+  if (pile.length >= 3) p *= 0.5;
+  if (Math.random() >= p) return false;
+  game.lastBreak = game.playClock;
+  return true;
+}
+
+// --- 1-on-1 break-tackle battle (mash to break free) -----------------------
+const BATTLE_CHANCE = 0.34;  // a lone clean hit kicks off a duel this often
+const BATTLE_TIME = 2.6;     // seconds before it resolves on whoever leads
+const BATTLE_TAP = 0.085;    // meter toward break per mash
+const BATTLE_CPU = 0.24;     // meter drift/s toward the tackle
+const battleEl = document.getElementById('battle');
+const battleFill = document.getElementById('battle-fill');
+const battleDiv = document.getElementById('battle-div');
+const battlePrompt = document.getElementById('battle-prompt');
+// Tapping anywhere on the battle overlay also counts as a mash.
+battleEl.addEventListener('touchstart', (e) => { e.preventDefault(); input.battleMash++; }, { passive: false });
+battleEl.addEventListener('mousedown', () => { input.battleMash++; });
+
+function startBattle(tackler) {
+  const b = game.battle;
+  b.val = 0.5; b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
+  game.state = STATE.BATTLE;
+  // Face the two off, stopped, chest to chest.
+  const c = game.carrier;
+  const ang = Math.atan2(tackler.group.position.x - c.group.position.x, tackler.group.position.z - c.group.position.z);
+  c.vel.set(0, 0, 0); c.speed = 0; c.heading = ang;
+  tackler.vel.set(0, 0, 0); tackler.speed = 0; tackler.heading = ang + Math.PI;
+  ctrlRing.visible = false;
+  hitZoom(BATTLE_TIME + 0.4);  // punch the camera in on the duel
+  battlePrompt.textContent = 'BREAK THE TACKLE!';
+  battleEl.classList.remove('hidden');
+  setStatus('Mash to break free!');
+  updateButtons();
+}
+
+function endBattle(carrierWon) {
+  const b = game.battle;
+  const tackler = b.tackler;
+  b.tackler = null; b.cd = 3.0;
+  battleEl.classList.add('hidden');
+  if (carrierWon) {
+    game.carrier.jukeTimer = 0.5; // brief immunity so he actually escapes
+    const burst = game.carrier.baseSpeed * 0.95;
+    game.carrier.vel.set(Math.sin(game.carrier.heading) * burst, 0, Math.cos(game.carrier.heading) * burst);
+    knockdownDefender(tackler);
+    shake.add(0.3);
+    showBanner('BROKE FREE!', '#bfffd0');
+    game.state = STATE.RUN; ctrlRing.visible = true;
+    setStatus('Broke free — go!');
+  } else {
+    showBanner('STUFFED!', '#ffd23a');
+    game.state = STATE.RUN;        // beginTackle expects a live carrier
+    beginTackle(tackler, true);    // committed tackle — no escape (ragdoll fall)
+  }
+  updateButtons();
+}
+
+function updateBattle(dt) {
+  const b = game.battle;
+  if (!b.tackler) { game.state = STATE.RUN; return; }
+  b.timer -= dt;
+  b.flash = Math.max(0, b.flash - dt * 4);
+
+  // Each ACTION press is a mash; the CPU steadily drags it toward the tackle,
+  // harder when the tackler is the stronger man.
+  if (input.battleMash > 0) { b.val += input.battleMash * BATTLE_TAP; b.flash = 1; input.battleMash = 0; }
+  const cpuStr = b.tackler.strength, humanStr = game.carrier.strength;
+  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(cpuStr / humanStr, 0.6, 1.7);
+  b.val = THREE.MathUtils.clamp(b.val, 0, 1);
+
+  // Wrestle wobble: a bounded shove so the two never drift apart.
+  const wob = Math.sin(game.playClock * 26) * 0.12;
+  const c = game.carrier.group.position, ang = game.carrier.heading;
+  const half = 1.1 + wob;
+  const tk = b.tackler.group.position;
+  tk.x = c.x + Math.sin(ang) * half; tk.z = c.z + Math.cos(ang) * half;
+
+  battleFill.style.width = `${Math.round(b.val * 100)}%`;
+  battleDiv.style.left = `${Math.round(b.val * 100)}%`;
+
+  if (b.val >= 1 || (b.timer <= 0 && b.val >= 0.5)) { endBattle(true); return; }
+  if (b.val <= 0 || b.timer <= 0) { endBattle(false); return; }
+}
+
+function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
   if (!physics) { endPlay('tackle', cp.z); return; } // no physics: instant whistle
@@ -836,26 +935,31 @@ function beginTackle(lead) {
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
   const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
 
+  // A committed tackle (a lost battle) skips every escape — straight down.
   // Blitz: a well-timed JUKE makes the first man whiff right past — and down.
-  if (carrier.jukeTimer > 0) {
+  if (!force && carrier.jukeTimer > 0) {
     carrier.jukeTimer = 0;
     knockdownDefender(lead);
     shake.add(0.15);
     setStatus('WHIFF!');
     return;
   }
-  // Broken tackle: a lone arm-tackle can be shrugged (a committed big hit can't).
-  if (!big && pile.length === 1 && game.playClock - game.lastBreak > 0.55) {
-    const p = game.onFire ? 0.55 : input.turbo ? 0.45 : 0.3;
-    if (Math.random() < p) {
-      game.lastBreak = game.playClock;
-      knockdownDefender(lead);
-      carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
-      shake.add(0.2);
-      shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
-      showBanner('BROKE IT!', '#bfffd0');
-      return;
-    }
+
+  // Tecmo-style 1-on-1 BATTLE: a clean, lone hit can kick off a mash duel
+  // (ported from TackleEngine.struggle). Big committed hits go straight down.
+  if (!force && !big && gangSize === 1 && game.battle.cd <= 0 && Math.random() < BATTLE_CHANCE) {
+    startBattle(lead);
+    return;
+  }
+
+  // Broken tackle: strength + momentum vs the pile (TackleEngine.tryBreak).
+  if (!force && !big && tryBreak(carrier, pile)) {
+    knockdownDefender(lead);
+    carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
+    shake.add(0.2);
+    shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
+    showBanner('BROKE IT!', '#bfffd0');
+    return;
   }
 
   // Pile momentum: mass-weighted COM velocity of carrier + tacklers, bled by
@@ -1022,6 +1126,10 @@ function updatePlay(dt) {
     updateOffense(dt); updateDefense();
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     checkRunOutcome();
+  } else if (game.state === STATE.BATTLE) {
+    if (actionEdge) input.battleMash++;
+    for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
+    updateBattle(dt);
   } else if (game.state === STATE.TACKLE) {
     // The ragdolls own the moment: hold everyone else, let physics finish the
     // fall, then spot the ball where the pile slid to.
@@ -1041,6 +1149,7 @@ function updatePlay(dt) {
   if (ctrlRing.visible && game.controlled) {
     const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.03, p.z);
   }
+  if (game.battle.cd > 0) game.battle.cd -= dt;
   if (game.state === STATE.DEAD) { game.deadTimer -= dt; if (game.deadTimer <= 0) newPlay(); }
 }
 
@@ -1050,7 +1159,6 @@ function updatePlay(dt) {
 // ===========================================================================
 const cam = {
   fwdX: 0, fwdZ: 1,                       // eased behind-cam heading (pans, never jumps)
-  look: new THREE.Vector3(0, 1.3, 0), hasLook: false,
   pos: new THREE.Vector3(0, 7, -12),
   lookCur: new THREE.Vector3(0, 1.3, 0),
   cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
@@ -1065,32 +1173,19 @@ function updateCamera(dt) {
   const t = game.controlled || game.qb;
   const p = t.group.position;
 
-  // Eased heading: as QB look downfield; behind the runner once he takes off.
-  const wantYaw = (game.state === STATE.RUN || game.state === STATE.TACKLE) ? t.heading : 0;
-  const k = Math.min(1, dt * 4);
+  // Eased heading: behind the runner once he takes off; otherwise locked
+  // straight downfield. Only changes when the player actually turns — the cam
+  // no longer pans sideways toward receivers, so it stays steady.
+  const wantYaw = (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE)
+    ? t.heading : 0;
+  const k = Math.min(1, dt * 3);
   cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
   cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
   const m = Math.hypot(cam.fwdX, cam.fwdZ) || 1;
   cam.fwdX /= m; cam.fwdZ /= m;
 
-  // Look point: straight ahead, panned toward the receiver you're targeting
-  // (pre-throw) or the ball in flight — switching targets pans, never snaps.
-  let lx = p.x + cam.fwdX * 9, lz = p.z + cam.fwdZ * 9;
-  let panTo = null;
-  if ((game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected]) {
-    panTo = game.receivers[game.selected].group.position;
-  } else if (game.state === STATE.AIR) panTo = ball.mesh.position;
-  if (panTo) {
-    if (cam.hasLook) {
-      const lk = Math.min(1, dt * 3.5);
-      cam.look.x += (panTo.x - cam.look.x) * lk;
-      cam.look.z += (panTo.z - cam.look.z) * lk;
-    } else { cam.look.set(panTo.x, 1.3, panTo.z); cam.hasLook = true; }
-    lx += (cam.look.x - lx) * 0.55;
-    lz += (cam.look.z - lz) * 0.55;
-  } else cam.hasLook = false;
-
-  // Tight, low chase while running; pulled back as the QB to read the field.
+  // Steady chase: look straight ahead of the player along the cam heading.
+  const lx = p.x + cam.fwdX * 9, lz = p.z + cam.fwdZ * 9;
   const run = game.state === STATE.RUN;
   _tp.set(p.x - cam.fwdX * (run ? 9 : 10.5), run ? 5.2 : 6.3, p.z - cam.fwdZ * (run ? 9 : 10.5));
   _tl.set(lx, 1.3, lz);

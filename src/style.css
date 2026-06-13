@@ -167,6 +167,60 @@ html, body {
 .mini-btn.active { transform: scale(0.94); background: rgba(0,0,0,0.7); }
 .mini-btn.hidden { display: none; }
 
+/* ---------- 1-on-1 break-tackle battle ---------- */
+#battle {
+  position: fixed;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, 86vw);
+  z-index: 28;
+  text-align: center;
+  touch-action: none;
+}
+#battle.hidden { display: none; }
+#battle-prompt {
+  font-size: clamp(20px, 4.5vw, 28px);
+  font-weight: 900;
+  font-style: italic;
+  color: #fff;
+  -webkit-text-stroke: 1.5px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+  margin-bottom: 10px;
+}
+#battle-bar {
+  position: relative;
+  height: 34px;
+  border-radius: 9px;
+  background: #e23b3b;                 /* tackler side */
+  border: 3px solid rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+#battle-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 50%;
+  background: linear-gradient(180deg, #3fe08a, #1fb56b); /* carrier progress */
+}
+#battle-div {
+  position: absolute;
+  top: -4px; bottom: -4px;
+  left: 50%;
+  width: 5px;
+  margin-left: -2.5px;
+  background: #fff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+}
+#battle-tap {
+  margin-top: 12px;
+  font-size: clamp(18px, 4vw, 24px);
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #ffd23a;
+  animation: tapPulse 0.45s ease-in-out infinite;
+}
+@keyframes tapPulse { 0%, 100% { opacity: 0.55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
+
 /* ---------- Big hit / score banner ---------- */
 #banner {
   position: fixed;

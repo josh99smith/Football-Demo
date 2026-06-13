@@ -11,7 +11,12 @@ full passing play from snap to score.
   burn it and refills when you don't (including between plays).
 - **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives
   and he *whiffs right past* (and hits the turf, courtesy of the ragdolls).
-  A lone arm-tackle can also be **broken** outright; turbo helps.
+  A lone arm-tackle can also be **broken** outright (strength + momentum vs
+  the pile; turbo and ON FIRE help, a gang is hard to slip).
+- **Break-tackle battle**: a clean one-on-one hit can trigger a Tecmo-style
+  tug-of-war — **mash the action button** (or tap the on-screen bar) to break
+  free before the timer/CPU wins. Win and you burst out with a step of
+  immunity; lose and you go straight down.
 - **ON FIRE**: score 3 straight touchdowns and your whole offense ignites —
   flaming ball, +12% team speed, and unlimited turbo. An interception or a
   turnover on downs puts the fire out.
