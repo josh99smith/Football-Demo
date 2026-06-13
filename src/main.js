@@ -317,10 +317,12 @@ function makeCharacter(team) {
     const headWorldScale = (hs.x + hs.y + hs.z) / 3 || 0.0124;
     helmet = helmetScene.clone(true);
     helmet.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
-    // helmet bbox is ~2 units tall; size it to ~1.8x the head in WORLD units.
-    helmet.scale.setScalar((headH * 1.8) / (2.0 * headWorldScale));
-    // Seat it at the head centre (toward the crown), in Head-local space.
-    const centre = new THREE.Vector3().lerpVectors(hp, ep, 0.55);
+    // helmet bbox is ~2 units tall; size it to ~2x the head in WORLD units.
+    helmet.scale.setScalar((headH * 2.0) / (2.0 * headWorldScale));
+    // This character has a tall armored collar that swallows the head, so seat
+    // the helmet up at/above the crown (head_end) rather than the head centre.
+    const up = new THREE.Vector3().subVectors(ep, hp).normalize();
+    const centre = ep.clone().addScaledVector(up, headH * 0.35);
     helmet.position.copy(headBone.worldToLocal(centre));
     // Face forward: world-identity orientation at rest = headWorldQuat^-1.
     helmet.quaternion.copy(hq).invert();
