@@ -67,20 +67,23 @@ export class PhysicsWorld {
 
 // Major segments, parents before children. sw = soft swing (cone) limit,
 // tw = soft twist limit about the bone axis, fixed = welded (wrists/ankles).
+// Limits are tuned toward anatomical ranges so a downed body bends and twists
+// like a body (knees/elbows barely twist, the spine/neck only flex a little)
+// rather than folding into rubbery, impossible shapes.
 const SEGS = [
   { name: 'pelvis', top: 'Hips', bot: 'Spine01', drives: 'Hips', parent: null, r: 0.15, m: 12 },
-  { name: 'torso', top: 'Spine01', bot: 'neck', drives: 'Spine01', parent: 'pelvis', r: 0.16, m: 16, sw: 0.5, tw: 0.32 },
-  { name: 'head', top: 'neck', bot: 'head_end', drives: 'neck', parent: 'torso', r: 0.11, m: 4.5, sw: 0.6, tw: 0.45 },
-  { name: 'thighL', top: 'LeftUpLeg', bot: 'LeftLeg', drives: 'LeftUpLeg', parent: 'pelvis', r: 0.085, m: 7, sw: 1.15, tw: 0.28 },
-  { name: 'shinL', top: 'LeftLeg', bot: 'LeftFoot', drives: 'LeftLeg', parent: 'thighL', r: 0.06, m: 4, sw: 1.0, tw: 0.1 },
+  { name: 'torso', top: 'Spine01', bot: 'neck', drives: 'Spine01', parent: 'pelvis', r: 0.16, m: 16, sw: 0.4, tw: 0.22 },
+  { name: 'head', top: 'neck', bot: 'head_end', drives: 'neck', parent: 'torso', r: 0.11, m: 4.5, sw: 0.48, tw: 0.3 },
+  { name: 'thighL', top: 'LeftUpLeg', bot: 'LeftLeg', drives: 'LeftUpLeg', parent: 'pelvis', r: 0.085, m: 7, sw: 0.95, tw: 0.18 },
+  { name: 'shinL', top: 'LeftLeg', bot: 'LeftFoot', drives: 'LeftLeg', parent: 'thighL', r: 0.06, m: 4, sw: 0.62, tw: 0.06 },
   { name: 'footL', top: 'LeftFoot', bot: 'LeftToeBase', drives: 'LeftFoot', parent: 'shinL', r: 0.05, m: 1, fixed: true },
-  { name: 'thighR', top: 'RightUpLeg', bot: 'RightLeg', drives: 'RightUpLeg', parent: 'pelvis', r: 0.085, m: 7, sw: 1.15, tw: 0.28 },
-  { name: 'shinR', top: 'RightLeg', bot: 'RightFoot', drives: 'RightLeg', parent: 'thighR', r: 0.06, m: 4, sw: 1.0, tw: 0.1 },
+  { name: 'thighR', top: 'RightUpLeg', bot: 'RightLeg', drives: 'RightUpLeg', parent: 'pelvis', r: 0.085, m: 7, sw: 0.95, tw: 0.18 },
+  { name: 'shinR', top: 'RightLeg', bot: 'RightFoot', drives: 'RightLeg', parent: 'thighR', r: 0.06, m: 4, sw: 0.62, tw: 0.06 },
   { name: 'footR', top: 'RightFoot', bot: 'RightToeBase', drives: 'RightFoot', parent: 'shinR', r: 0.05, m: 1, fixed: true },
-  { name: 'uarmL', top: 'LeftArm', bot: 'LeftForeArm', drives: 'LeftArm', parent: 'torso', r: 0.05, m: 2.5, sw: 1.45, tw: 0.5 },
-  { name: 'farmL', top: 'LeftForeArm', bot: 'LeftHand', drives: 'LeftForeArm', parent: 'uarmL', r: 0.045, m: 1.5, sw: 1.3, tw: 0.18 },
-  { name: 'uarmR', top: 'RightArm', bot: 'RightForeArm', drives: 'RightArm', parent: 'torso', r: 0.05, m: 2.5, sw: 1.45, tw: 0.5 },
-  { name: 'farmR', top: 'RightForeArm', bot: 'RightHand', drives: 'RightForeArm', parent: 'uarmR', r: 0.045, m: 1.5, sw: 1.3, tw: 0.18 },
+  { name: 'uarmL', top: 'LeftArm', bot: 'LeftForeArm', drives: 'LeftArm', parent: 'torso', r: 0.05, m: 2.5, sw: 1.2, tw: 0.32 },
+  { name: 'farmL', top: 'LeftForeArm', bot: 'LeftHand', drives: 'LeftForeArm', parent: 'uarmL', r: 0.045, m: 1.5, sw: 0.82, tw: 0.1 },
+  { name: 'uarmR', top: 'RightArm', bot: 'RightForeArm', drives: 'RightArm', parent: 'torso', r: 0.05, m: 2.5, sw: 1.2, tw: 0.32 },
+  { name: 'farmR', top: 'RightForeArm', bot: 'RightHand', drives: 'RightForeArm', parent: 'uarmR', r: 0.045, m: 1.5, sw: 0.82, tw: 0.1 },
   // Hands have no finger bones on this rig: their far end is synthesized by
   // extending past the wrist (see spawn).
   { name: 'handL', top: 'LeftHand', bot: 'LeftHand', drives: 'LeftHand', parent: 'farmL', r: 0.04, m: 0.5, fixed: true },
@@ -97,7 +100,7 @@ const BONE_FALLBACKS = {
 };
 
 const LOWER = new Set(['thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR']);
-const MAX_SPIN = 10; // rad/s — a body can never spin up into a contorted blur
+const MAX_SPIN = 8; // rad/s — a body can never spin up into a contorted blur
 
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _dir = new THREE.Vector3();
 const _c = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -228,8 +231,8 @@ export class TackleRagdoll {
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
         .setLinvel(v.x, v.y, v.z)
-        .setAngularDamping(7.5)
-        .setLinearDamping(0.4)
+        .setAngularDamping(9.5)  // limbs settle instead of flailing
+        .setLinearDamping(0.5)
         .setCanSleep(true));
       const half = Math.max(0.02, len / 2 - segR);
       world.createCollider(R.ColliderDesc.capsule(half, segR)
@@ -298,8 +301,10 @@ export class TackleRagdoll {
       }
     }
     this.age += dt;
-    const swingFade = this.age < 0.8 ? 1 : Math.max(0.5, 1 - (this.age - 0.8) * 0.45);
-    const kSwing = 8 * swingFade, kTwist = 9, kDamp = 5.0, dead = 0.05, maxT = 12;
+    // Hold the joints firmly, easing the swing spring only slightly once it has
+    // settled so a limb resting on the turf doesn't buzz against the cone.
+    const swingFade = this.age < 1.0 ? 1 : Math.max(0.65, 1 - (this.age - 1.0) * 0.4);
+    const kSwing = 14 * swingFade, kTwist = 17, kDamp = 7.0, dead = 0.035, maxT = 20;
     for (const seg of this.segs) {
       const parent = seg.parentSeg;
       if (!parent || seg.sw === undefined) continue;

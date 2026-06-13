@@ -993,11 +993,14 @@ function beginTackle(lead, force = false) {
   const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
   const back = hitDir.clone().negate();
+  // Lead tackler DIVES in with the dodge-roll (a diving tackle) instead of
+  // ragdolling; any extra gang members ragdoll-recoil so a pile still tumbles.
+  lead.heading = Math.atan2(hitX, hitZ); // square up on the ball carrier
+  playOneShot(lead, 'juke', 0.75);
   const bits = [0x0004, 0x0008];
-  for (let i = 0; i < Math.min(pile.length, RAGDOLL_MAX - 1); i++) {
+  for (let i = 1; i < Math.min(pile.length, RAGDOLL_MAX); i++) {
     const t = pile[i];
-    spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), back, hitSpeed * 0.55, bits[i] ?? 0x0004,
-      i === 0 ? 'highKnock' : 'sideSwipe');
+    spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), back, hitSpeed * 0.55, bits[i - 1] ?? 0x0004, 'sideSwipe');
   }
 
   // Hold the play while physics plays the fall; the pile slides with its momentum.
