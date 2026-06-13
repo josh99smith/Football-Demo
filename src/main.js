@@ -108,7 +108,9 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 
 let charTemplate, idleClip, walkClip, runClip;
 let SCALE = 1, GROUND_Y = 0;
-const TEAM_TINT = { off: new THREE.Color(0x6fa8ff), def: new THREE.Color(0xff6b6b) };
+// Team uniforms: home offense in vivid blue, away defense in a distinct
+// purple so the two squads never read alike on the field.
+const TEAM_TINT = { off: new THREE.Color(0x3f7bff), def: new THREE.Color(0x8e3bff) };
 
 function measureBoneSpan(root) {
   root.updateWorldMatrix(true, true);
