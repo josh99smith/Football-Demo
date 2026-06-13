@@ -113,7 +113,7 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
-let charTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip;
+let charTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let SCALE = 1, GROUND_Y = 0;
 // Team uniforms: defense (the opponent) in blue, your offense in red so the
 // two squads never read alike on the field.
@@ -157,6 +157,12 @@ async function loadAssets() {
   walkClip = inPlace(byName['Walking']); runClip = inPlace(byName['Running']);
   sprintClip = inPlace(byName['RunFast'] || byName['Running']);    // turbo sprint
   jukeClip = inPlace(byName['Roll_Dodge_1']);                      // juke = dodge roll
+  // Tackle = a head-down lunge (just the hit, no roll); defender pops back up
+  // to idle when it ends. Sliced to the forward drive.
+  const charge = byName['Male_Head_Down_Charge'];
+  tackleClip = charge
+    ? inPlace(THREE.AnimationUtils.subclip(charge, 'tackle', 0, 14, 30))
+    : jukeClip;
   // Catch: slice out just the reach (the clip ends in a long fall), then in-place.
   catchClip = byName['Jump_to_Catch_and_Fall']
     ? inPlace(THREE.AnimationUtils.subclip(byName['Jump_to_Catch_and_Fall'], 'catch', 6, 34, 30))
@@ -216,6 +222,7 @@ function makeCharacter(team) {
   };
   if (jukeClip) actions.juke = oneShot(jukeClip);
   if (catchClip) actions.catch = oneShot(catchClip);
+  if (tackleClip) actions.tackle = oneShot(tackleClip);
   actions.idle.setEffectiveWeight(1);
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
@@ -257,7 +264,9 @@ const game = {
   turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
   playClock: 0, lastBreak: -10,
   battle: { val: 0.5, timer: 0, tackler: null, cd: 0, flash: 0 },
+  throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
 };
+const THROW_CHARGE_MAX = 0.5; // seconds to a full bullet pass
 
 const ball = {
   mesh: null, mode: 'carried', // 'carried' | 'flying'
@@ -265,18 +274,59 @@ const ball = {
   // Projectile state while flying.
   vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
   spin: 0, spinRate: 0,
+  trail: [], trailHist: [], // glowing comet trail (sprite pool)
 };
+function makeGlowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.35, 'rgba(255,224,150,0.65)');
+  grd.addColorStop(1, 'rgba(255,170,70,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
 function makeBall() {
-  // A stretched ellipsoid (long axis = local +Z) so it noses along its arc.
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.13, 18, 12),
+  // A bigger stretched ellipsoid (long axis = local +Z) so it noses along its arc.
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.22, 20, 14),
     new THREE.MeshStandardMaterial({ color: 0x7a3b16, roughness: 0.7, metalness: 0.05 }));
-  m.scale.z = 1.85; m.castShadow = true; scene.add(m); ball.mesh = m;
-  // Lace stripe so the spiral reads.
-  const lace = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.04, 0.16),
+  m.scale.z = 1.8; m.castShadow = true; scene.add(m); ball.mesh = m;
+  // White stripe + laces so the spiral reads.
+  const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.225, 0.022, 8, 20),
     new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
-  lace.position.set(0, 0.12, 0); m.add(lace);
-  const flame = new THREE.PointLight(0xff6622, 0, 6); // lit while ON FIRE
+  stripe.rotation.y = Math.PI / 2; stripe.position.z = 0.16; m.add(stripe);
+  const lace = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.26),
+    new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
+  lace.position.set(0, 0.2, 0); m.add(lace);
+  const flame = new THREE.PointLight(0xff6622, 0, 7); // lit while ON FIRE
   m.add(flame); ball.flame = flame;
+  // Glowing comet trail: a pool of additive sprites laid along recent positions.
+  const tex = makeGlowTexture();
+  for (let i = 0; i < 16; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, color: 0xffd27a, transparent: true, depthWrite: false,
+      blending: THREE.AdditiveBlending, opacity: 0 }));
+    s.visible = false; scene.add(s); ball.trail.push(s);
+  }
+}
+function updateTrail(airborne) {
+  if (!airborne) {
+    if (ball.trailHist.length) { ball.trailHist.length = 0; for (const s of ball.trail) s.visible = false; }
+    return;
+  }
+  ball.trailHist.unshift(ball.mesh.position.clone());
+  if (ball.trailHist.length > ball.trail.length) ball.trailHist.pop();
+  const col = game.onFire ? 0xff5522 : 0xffd27a;
+  for (let i = 0; i < ball.trail.length; i++) {
+    const s = ball.trail[i], h = ball.trailHist[i];
+    if (!h) { s.visible = false; continue; }
+    s.visible = true; s.position.copy(h);
+    const f = 1 - i / ball.trail.length; // brightest/biggest near the ball
+    s.material.opacity = f * 0.6;
+    s.material.color.setHex(col);
+    const sc = 0.45 + f * 0.85;
+    s.scale.set(sc, sc, sc);
+  }
 }
 function setFireVisual(on) {
   ball.flame.intensity = on ? 3 : 0;
@@ -745,29 +795,31 @@ function snap() {
   setStatus('Find an open receiver, then THROW');
   updateButtons();
 }
-function throwBall() {
+// power 0..1: tap (lob — slow, high arc, lazy spiral) -> hold (bullet — fast,
+// flat, tight spiral). Mirrors Football-Game's throwParams.
+function throwBall(power) {
+  const p = THREE.MathUtils.clamp(power, 0, 1);
   const recv = game.receivers[game.selected];
   const from = ball.mesh.position.clone();
   const fx = recv.group.position.x, fz = recv.group.position.z;
   const distH = Math.hypot(fx - from.x, fz - from.z);
-  // Bullet-ish pass: faster on deeper throws. Lead the receiver by the flight.
-  const speed = THREE.MathUtils.clamp(distH * 1.6, 22, 36);
-  const ft = Math.max(0.35, distH / speed);
+  const speed = THREE.MathUtils.lerp(17, 36, p);   // lob -> bullet
+  const ft = Math.max(0.3, distH / speed);
   const tx = clampX(fx + recv.vel.x * ft * 0.9);
   const tz = THREE.MathUtils.clamp(fz + recv.vel.z * ft * 0.9, -HALF_L + 1, HALF_L - 1);
   ball.vx = (tx - from.x) / ft;
   ball.vz = (tz - from.z) / ft;
-  // Real arc: pick a peak height, derive gravity + launch vy so it returns to
-  // catch height exactly at the target time (deeper throws arc higher).
-  const peak = THREE.MathUtils.clamp(distH * 0.085 + 0.8, 1.1, 4.5);
+  // Lob arcs high, bullet stays flat. Derive gravity + launch vy so it returns
+  // to catch height right at the target time.
+  const peak = THREE.MathUtils.lerp(4.6, 1.0, p);
   ball.g = (8 * peak) / (ft * ft);
   ball.vy = (4 * peak) / ft;
   ball.startY = from.y; ball.airTime = 0; ball.flightTime = ft;
-  ball.spin = 0; ball.spinRate = 30 + speed * 0.5; // tight spiral, faster on bullets
+  ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(22, 54, p); // lazy -> tight spiral
   ball.to.set(tx, 0, tz); ball.targetRecv = recv;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
-  setStatus('Pass is up…'); updateButtons();
+  setStatus(p > 0.6 ? 'Bullet!' : 'Pass is up…'); updateButtons();
 }
 function enterRun(player, msg) {
   game.state = STATE.RUN;
@@ -1091,10 +1143,11 @@ function beginTackle(lead, force = false) {
   const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
   const back = hitDir.clone().negate();
-  // Lead tackler DIVES in with the dodge-roll (a diving tackle) instead of
-  // ragdolling; any extra gang members ragdoll-recoil so a pile still tumbles.
+  // Lead tackler makes the hit with a head-down lunge (no roll) instead of
+  // ragdolling, then pops back to his feet (idle); extra gang members
+  // ragdoll-recoil so a pile still tumbles.
   lead.heading = Math.atan2(hitX, hitZ); // square up on the ball carrier
-  playOneShot(lead, 'juke', 0.75);
+  playOneShot(lead, 'tackle', 0.45);
   const bits = [0x0004, 0x0008];
   for (let i = 1; i < Math.min(pile.length, RAGDOLL_MAX); i++) {
     const t = pile[i];
@@ -1229,7 +1282,15 @@ function updatePlay(dt) {
     if (actionEdge) snap();
   } else if (game.state === STATE.LIVE) {
     if (switchEdge) game.selected = (game.selected + 1) % game.receivers.length;
-    if (actionEdge) throwBall();
+    // Tap = lob, hold = bullet: charge while THROW is held, fire on release.
+    if (input.action) {
+      game.throwCharge = Math.min(THROW_CHARGE_MAX, game.throwCharge + dt);
+    } else if (game.throwCharge > 0 || actionEdge) {
+      throwBall(game.throwCharge / THROW_CHARGE_MAX); // instant tap (charge 0) = pure lob
+      game.throwCharge = 0;
+    }
+  } else {
+    game.throwCharge = 0; // not live: never carry a stale charge
   }
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
@@ -1279,6 +1340,7 @@ function updatePlay(dt) {
 
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
+  updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
 
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
