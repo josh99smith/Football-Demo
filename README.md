@@ -46,6 +46,9 @@ You start every play as the **quarterback**.
    **SPRINT** for a burst. Defenders pursue and tackle on contact.
 5. **Throw a pick and you flip to defense** — take over the nearest man and
    chase the returner down before he takes it the other way for six.
+6. **Possession alternates (real football)**: after you score or turn it over,
+   the **CPU drives** and you play **DEFENSE** — tap **SWITCH** to take the
+   nearest defender, swat or pick the CPU QB's throws, and **TACKLE** the runner.
 
 Touchdowns, tackles, incompletions and interceptions all reset for the next
 play, with **down & distance** and the **score** tracked on the HUD.

@@ -1228,6 +1228,8 @@ function cpuQB(dt) {
 function updateCpuRun(dt, turboOn, actionEdge) {
   const c = game.carrier;
   if (!c) { endPlay('incomplete', game.los); return; }
+  // Re-acquire control if our man got knocked down (or was never set).
+  if (!game.controlled || game.controlled.ragdolling) switchDefender();
   if (actionEdge && game.controlled) { // dive/lunge tackle with the controlled defender
     const o = game.controlled, dx = c.group.position.x - o.group.position.x, dz = c.group.position.z - o.group.position.z;
     const l = Math.hypot(dx, dz) || 1; const burst = o.baseSpeed * 1.25;
@@ -1377,7 +1379,8 @@ const driveStartForUser = (u) => (u ? 1 : -1) * DRIVE_START; // that team's own 
 function giveBallTo(userBall, losZ) {
   game.userOnOffense = userBall;
   const nd = userBall ? 1 : -1;
-  game.los = THREE.MathUtils.clamp(losZ, OWN_GOAL_Z + 3, GOAL_Z - 3);
+  game.dir = nd; // keep dir in sync now so the HUD/camera read it correctly in DEAD
+  game.los = THREE.MathUtils.clamp(losZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
   game.down = 1;
   game.firstDown = game.los + nd * FIRST_DOWN_YDS;
 }
@@ -1407,7 +1410,7 @@ function endPlay(result, endZ) {
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
         : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
-    const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 3, GOAL_Z - 3);
+    const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
     const gotFirst = game.dir > 0 ? spot >= game.firstDown : spot <= game.firstDown;
     if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; }
     else {
