@@ -176,6 +176,9 @@ function makeCharacter(team) {
   const group = new THREE.Group();
   group.add(model);
   scene.add(group);
+  // Hand bone the ball is tucked into while carrying.
+  let handBone = null;
+  model.traverse((o) => { if (o.isBone && o.name === 'RightHand') handBone = o; });
   const mixer = new THREE.AnimationMixer(model);
   const mk = (clip) => {
     const a = mixer.clipAction(clip);
@@ -192,7 +195,7 @@ function makeCharacter(team) {
   if (catchClip) actions.catch = oneShot(catchClip);
   actions.idle.setEffectiveWeight(1);
   return {
-    group, model, mixer, actions, current: 'idle', active: actions.idle,
+    group, model, mixer, actions, handBone, current: 'idle', active: actions.idle,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -778,6 +781,20 @@ function updateBall(dt) {
       const hips = h.ragdoll.tryBone('Hips');
       if (hips) { hips.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z); return; }
     }
+    if (h.handBone) {
+      // Tuck the ball into the carrier's hand: follow the hand bone (so it
+      // swings with the run cycle), nudged toward the body and chest height.
+      h.handBone.updateWorldMatrix(true, false); // fresh after this frame's pose
+      h.handBone.getWorldPosition(_hips);
+      _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));   // facing
+      _r.set(Math.cos(h.heading), 0, -Math.sin(h.heading));  // right of facing
+      ball.mesh.position.set(
+        _hips.x - _r.x * 0.08 + _f.x * 0.04,
+        Math.max(0.9, _hips.y + 0.02),
+        _hips.z - _r.z * 0.08 + _f.z * 0.04);
+      ball.mesh.rotation.set(0, h.heading, 0.35); // long axis cradled along the arm
+      return;
+    }
     const p = h.group.position;
     _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));
     ball.mesh.position.set(p.x + _f.x * 0.4, 1.25, p.z + _f.z * 0.4);
@@ -1190,8 +1207,8 @@ function updatePlay(dt) {
     if (game.tackleTimer <= 0 || settled) endPlay('tackle', game.tackleSpotZ);
   }
 
-  updateBall(dt);
   for (const ch of game.all) updateAnimation(ch, dt);
+  updateBall(dt); // after the pose updates so the ball follows the hand bone
 
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
