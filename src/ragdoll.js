@@ -36,10 +36,17 @@ export class PhysicsWorld {
     if (this.#highRefs === 0) this.substeps = this.#baseSubsteps;
   }
 
-  /** Advance one 1/60 frame. `preSubstep(dt)` runs before every internal substep. */
-  step(preSubstep) {
+  /**
+   * Advance the world by `frameDt` seconds, split into substeps. Passing the
+   * real (slow-mo-scaled) frame delta — rather than a fixed 1/60 — lets the
+   * ragdoll move a little every frame, so slow motion is smooth instead of
+   * stepping in visible 1/60 chunks. `preSubstep(dt)` runs before each substep
+   * (joint-limit torques are dt-scaled, so any substep size stays stable).
+   */
+  step(frameDt, preSubstep) {
+    if (frameDt <= 0) return;
     const sub = Math.max(1, this.substeps | 0);
-    const dt = 1 / 60 / sub;
+    const dt = frameDt / sub;
     this.world.timestep = dt;
     for (let i = 0; i < sub; i++) { if (preSubstep) preSubstep(dt); this.world.step(); }
     this.world.timestep = 1 / 60;

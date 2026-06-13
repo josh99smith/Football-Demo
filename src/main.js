@@ -995,18 +995,18 @@ function beginTackle(lead, force = false) {
   // Impact juice (tiering from TackleEngine.impactFx): the camera gets SHOVED
   // the way the runner is driven, big hits freeze then play out in slow-mo
   // with a tight close-up, and the callout pops center-screen.
+  // Smooth, deep slow-mo (no freeze frame): ease down into bullet-time and ramp
+  // back up, with the camera zooming in for the whole beat.
   const gang = gangSize >= 3;
   shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
   if (big || gang) {
-    timeScale.freeze(big && gang ? 0.09 : 0.05);
-    if (gang) timeScale.bulletTime(0.12, 0.5, 0.8);
-    else timeScale.bulletTime(0.18, 0.34, 0.6);
-    hitZoom(gang ? 0.82 : 0.66);
+    if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); }
+    else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); }
     shake.add(gang ? 0.72 : 0.5);
     showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a');
   } else {
-    timeScale.bulletTime(0.3, 0.2, 0.42);
-    hitZoom(0.3);
+    timeScale.bulletTime(0.22, 0.4, 0.7);
+    hitZoom(0.9);
     shake.add(0.18);
   }
   setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
@@ -1190,23 +1190,29 @@ function updateCamera(dt) {
   _tp.set(p.x - cam.fwdX * (run ? 9 : 10.5), run ? 5.2 : 6.3, p.z - cam.fwdZ * (run ? 9 : 10.5));
   _tl.set(lx, 1.3, lz);
 
-  // Cinematic hit push-in: a tight 3/4 close-up on the pile that snaps in on
-  // REAL time (so it cuts in even through bullet-time) and eases back out.
+  // Cinematic hit push-in: a tight 3/4 close-up on the pile that eases in and
+  // out on REAL time (so it's smooth no matter how slow the sim runs), plus a
+  // real FOV zoom for a clear, smooth zoom-in on the hit.
   const wantCine = cam.cineHold > 0 ? 1 : 0;
   if (cam.cineHold > 0) cam.cineHold -= dt;
-  cam.cine = moveToward(cam.cine, wantCine, dt / (wantCine > cam.cine ? 0.09 : 0.5));
+  // Symmetric, gentle ease both ways → no snap/jerk into or out of the zoom.
+  cam.cine = moveToward(cam.cine, wantCine, dt / (wantCine > cam.cine ? 0.28 : 0.6));
+  const e = cam.cine * cam.cine * (3 - 2 * cam.cine); // smoothstep
   if (cam.cine > 0.001) {
-    const e = cam.cine * cam.cine * (3 - 2 * cam.cine);
     const f = (game.carrier || t).group.position;
-    _cinePos.set(f.x + 3.0, 3.7, f.z - 2.6);
+    _cinePos.set(f.x + 3.4, 3.6, f.z - 3.0);
     _cineLook.set(f.x, 1.0, f.z);
     _tp.lerp(_cinePos, e); _tl.lerp(_cineLook, e);
   }
+  // FOV zoom: 55° -> 34° at full push-in.
+  const wantFov = 55 - 21 * e;
+  if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
 
-  // Tight follow (+ a real-time boost while pushing in).
-  const lt = Math.min(1, dt * 9 + cam.cine * 0.5);
+  // Tight follow. A constant real-time smoothing keeps the close-up gliding
+  // rather than the variable boost that made it lurch in.
+  const lt = Math.min(1, dt * (8 + cam.cine * 6));
   cam.pos.lerp(_tp, lt);
-  cam.lookCur.lerp(_tl, Math.min(1, lt * 1.3));
+  cam.lookCur.lerp(_tl, Math.min(1, lt * 1.2));
 
   // Shake on top; never let the camera dip into the turf.
   shake.update(dt);
@@ -1221,25 +1227,21 @@ function updateCamera(dt) {
 // Loop
 // ===========================================================================
 const clock = new THREE.Clock();
-let phAcc = 0; // fixed-step physics accumulator (60 Hz, max 3 steps/frame)
 function animate() {
   const realDt = Math.min(clock.getDelta(), 0.05);
-  // Hit-stop + bullet-time scale the SIM (movement, animation, ragdolls — the
-  // slow-mo tackles) while the camera/shake run on real time and stay snappy.
+  // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
+  // tackles) while the camera/shake run on real time and stay snappy.
   const dt = realDt * timeScale.update(realDt);
   updatePlay(dt);
 
-  // Step ragdoll physics at a fixed 60 Hz; soft joint limits run per-substep,
-  // then the rigid bodies drive the skinned bones.
+  // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
+  // every frame — so the bodies move smoothly in slow motion instead of in
+  // visible 1/60 chunks. Then the rigid bodies drive the skinned bones.
   if (physics && anyRagdollActive()) {
-    phAcc = Math.min(phAcc + dt, 3 / 60);
-    while (phAcc >= 1 / 60) {
-      physics.step((subDt) => {
-        for (const ch of game.all)
-          if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.applyLimits(subDt);
-      });
-      phAcc -= 1 / 60;
-    }
+    physics.step(Math.min(dt, 1 / 30), (subDt) => {
+      for (const ch of game.all)
+        if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.applyLimits(subDt);
+    });
     for (const ch of game.all)
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
   }

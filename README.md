@@ -96,9 +96,10 @@ Controls, camera and juice follow Football-Game's systems:
   settles in low behind the runner. Tackles cut to a **cinematic 3/4 close-up**
   that pushes in on real time.
 - **Juice**: trauma-based screen shake plus a directional kick that shoves the
-  camera the way the runner is driven; **hit-stop + bullet-time slow-mo** on
-  big hits and gang tackles (the ragdolls fall in slow motion); center-screen
-  callouts (BIG HIT! / GANG TACKLE! / TOUCHDOWN! / PICKED OFF!).
+  camera the way the runner is driven; **smooth bullet-time slow-mo with a FOV
+  zoom-in** on big hits and gang tackles (no freeze-frame — ragdoll physics
+  steps by the scaled frame delta so the fall is smooth at any speed);
+  center-screen callouts (BIG HIT! / GANG TACKLE! / TOUCHDOWN! / PICKED OFF!).
 
 ## Running locally
 
