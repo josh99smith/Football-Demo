@@ -1210,7 +1210,7 @@ function tackleReturner(tackler) {
   const big = tackler.turbo || closing > 8;
   spawnRagdoll(r, new THREE.Vector3(r.vel.x, 0, r.vel.z), hitDir,
     THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8), 0x0002, pickVariant(big, 1, closing, hitX, hitZ));
-  tackler.heading = Math.atan2(hitX, hitZ); triggerArmAction(tackler, 'tackle', 0.45, rp);
+  tackler.heading = Math.atan2(hitX, hitZ); playOneShot(tackler, 'tackle', 0.45);
   game.state = STATE.TACKLE; game.tackleTimer = 2.0; game.tackleSpotZ = rp.z; // returnActive still set
   ctrlRing.visible = false; updateButtons();
   shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
@@ -1245,7 +1245,7 @@ function returnDive() {
   const l = Math.hypot(dx, dz) || 1;
   const burst = o.baseSpeed * 1.25;
   o.vel.x = dx / l * burst; o.vel.z = dz / l * burst; o.heading = Math.atan2(dx, dz);
-  triggerArmAction(o, 'tackle', 0.4, r.group.position);
+  playOneShot(o, 'tackle', 0.4);
   if (l <= 2.4) tackleReturner(o); // diving tackle reaches a touch farther
 }
 // Route the end of a tackle: an interception runback, a lost fumble, or a
@@ -1663,7 +1663,7 @@ function beginTackle(lead, force = false) {
   // ragdolling, then pops back to his feet (idle); extra gang members
   // ragdoll-recoil so a pile still tumbles.
   lead.heading = Math.atan2(hitX, hitZ); // square up on the ball carrier
-  triggerArmAction(lead, 'tackle', 0.45, cp); // procedural wrap-up lunge
+  playOneShot(lead, 'tackle', 0.45);
   const bits = [0x0004, 0x0008];
   for (let i = 1; i < Math.min(pile.length, RAGDOLL_MAX); i++) {
     const t = pile[i];
@@ -1820,10 +1820,10 @@ function applyCatchPose(ch, ballPos) {
   if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, raise); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
   if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.55); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
 }
-// Procedural ARM ACTIONS (swat a pass, dive a pick, wrap a tackle). Like the
-// throw/catch poses these run AFTER the mixer and are rig-agnostic (arm bones
-// only), easing up then back, and shaped by the target's position so every one
-// varies. Triggered by triggerArmAction with a world-space target point.
+// Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
+// poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
+// up then back, and shaped by the target's position so every one varies.
+// Triggered by triggerArmAction with a world-space target point.
 const _armTmp = new THREE.Vector3();
 function triggerArmAction(ch, type, dur, targetPos) {
   ch.armPose = type; ch.armPoseDur = dur; ch.armPoseT = dur;
@@ -1844,20 +1844,12 @@ function applyArmAction(ch, dt) {
     ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
     if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.4 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
     ch.upperArm.updateMatrixWorld(true);
-  } else if (ch.armPose === 'pick' || ch.armPose === 'reach') {
-    // Both hands stab toward the ball (a dive at the pick / a contested grab).
+  } else { // 'pick' / 'reach' — both hands stab toward the ball
     _tq.setFromAxisAngle(_xAxisL, -reach * w);
     ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
     if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.5 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
     if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, reach * w); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
     if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.5 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
-  } else { // 'tackle' — both arms thrust forward to wrap the runner up
-    const f = 1.45 * w;
-    _tq.setFromAxisAngle(_xAxisL, -f);
-    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.7 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
-    if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, -f); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
-    if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.7 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
   }
 }
 function updateAnimation(ch, dt) {
