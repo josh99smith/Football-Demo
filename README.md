@@ -116,7 +116,11 @@ python3 -m http.server 8000   # then open http://localhost:8000
   coverage AI, ball flight, scoring
 - `assets/character.glb` — rigged character + idle pose
 - `assets/animations.glb` — walk / run / directional clips (shared skeleton)
+- `assets/anims_retargeted.json` — extra clips (breathing idle, pre-snap
+  stance, catch) from the shared Football-Game project's mixamo animations,
+  retargeted offline onto this rig (rotation-only) and baked to JSON
 - `vendor/three/` — vendored three.js + GLTFLoader + SkeletonUtils (no CDN)
+- `vendor/rapier/` — vendored Rapier3D physics (ragdoll tackles)
 
 ## Deploy
 

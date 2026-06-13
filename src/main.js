@@ -107,6 +107,10 @@ const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
 let charTemplate, idleClip, walkClip, runClip;
+// Mixamo clips from the shared project, retargeted (offline) onto this rig and
+// baked rotation-only to JSON: a breathing idle, an athletic pre-snap stance,
+// and a one-shot catch reach.
+let idleBreathClip, stanceClip, catchClip;
 let SCALE = 1, GROUND_Y = 0;
 // Team uniforms: home offense in vivid blue, away defense in a distinct
 // purple so the two squads never read alike on the field.
@@ -137,6 +141,13 @@ async function loadAssets() {
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   walkClip = byName['Walking']; runClip = byName['Running'];
+  loadingText.textContent = 'Loading moves…';
+  try {
+    const rt = await fetch('assets/anims_retargeted.json').then((r) => r.json());
+    idleBreathClip = THREE.AnimationClip.parse(rt.idle);
+    stanceClip = THREE.AnimationClip.parse(rt.stance);
+    catchClip = THREE.AnimationClip.parse(rt.catch);
+  } catch (e) { console.warn('Retargeted clips unavailable — using base poses', e); }
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -162,14 +173,24 @@ function makeCharacter(team) {
     a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true;
     a.setEffectiveWeight(0); a.play(); return a;
   };
-  const actions = { idle: mk(idleClip), walk: mk(walkClip), run: mk(runClip) };
+  const actions = {
+    idle: mk(idleBreathClip || idleClip), // breathing idle (retargeted) if present
+    walk: mk(walkClip), run: mk(runClip),
+    stance: mk(stanceClip || idleClip),
+  };
+  if (catchClip) {
+    const ca = mixer.clipAction(catchClip);
+    ca.setLoop(THREE.LoopOnce, 1); ca.clampWhenFinished = true;
+    ca.enabled = true; ca.setEffectiveWeight(0);
+    actions.catch = ca;
+  }
   actions.idle.setEffectiveWeight(1);
   return {
     group, model, mixer, actions, current: 'idle', active: actions.idle,
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -667,6 +688,7 @@ function showBanner(text, color = '#ffd23a') {
 function newPlay() {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   battleEl.classList.add('hidden'); game.battle.tackler = null;
+  for (const ch of game.all) ch.oneShotT = 0;
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
@@ -773,6 +795,7 @@ function resolvePass() {
     ball.mode = 'carried';
     timeScale.slow(0.7, 0.14); // a beat on the catch so the takeover reads
     enterRun(bestR, 'Caught it! Run!');
+    playOneShot(bestR, 'catch', 0.45); // brief catch reach before he runs
     return;
   }
   if (bestDD <= INTERCEPT_R) {
@@ -1061,9 +1084,20 @@ function controlledMove(ch, dt, topSpeed) {
   if (ch.speed > 0.5) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
   clampToField(ch);
 }
+function playOneShot(ch, name, hold) {
+  if (!ch.actions[name]) return;
+  ch.oneShotT = hold; setClip(ch, name);
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
-  const want = ch.speed > 0.5 ? (ch.speed > 6 ? 'run' : 'walk') : 'idle';
+  if (ch.oneShotT > 0) {           // hold a one-shot (e.g. the catch reach)
+    ch.oneShotT -= dt;
+    ch.group.rotation.y = ch.heading;
+    ch.mixer.update(dt);
+    return;
+  }
+  const want = ch.speed > 0.5 ? (ch.speed > 6 ? 'run' : 'walk')
+    : (game.state === STATE.PRESNAP ? 'stance' : 'idle'); // athletic stance pre-snap
   setClip(ch, want);
   ch.group.rotation.y = ch.heading;
   ch.mixer.update(dt);
