@@ -167,8 +167,8 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
-let charTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
-let SCALE = 1, GROUND_Y = 0;
+let charTemplate, defTemplate, idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
+let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
   root.updateWorldMatrix(true, true);
@@ -185,12 +185,18 @@ let physics = null;
 async function loadAssets() {
   loadingText.textContent = 'Loading character…';
   const charGltf = await loadGLB('assets/character.glb');
+  // Opposing (defense) team uses its own blue rigged character — same skeleton,
+  // so the shared animation clips drive it too. Optional: fall back to the
+  // offense model (tinted) if it's missing.
+  let defGltf = null;
+  try { defGltf = await loadGLB('assets/character_def.glb'); } catch (e) { console.warn('Defense model missing', e); }
   loadingText.textContent = 'Loading animations…';
   const animGltf = await loadGLB('assets/animations.glb');
   loadingText.textContent = 'Starting physics…';
   try { physics = await PhysicsWorld.create(); }
   catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
+  defTemplate = defGltf ? defGltf.scene : null;
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
@@ -221,20 +227,27 @@ async function loadAssets() {
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
+  if (defTemplate) {
+    const dr = measureBoneSpan(defTemplate);
+    DEF_SCALE = 1.8 / dr.span;
+    DEF_GROUND_Y = -(dr.lo * DEF_SCALE - 0.05);
+  } else { DEF_SCALE = SCALE; DEF_GROUND_Y = GROUND_Y; }
 }
 
 function makeCharacter(team) {
-  const model = cloneSkeleton(charTemplate);
-  model.scale.multiplyScalar(SCALE);
-  model.position.y = GROUND_Y;
+  // Offense = original character; defense = its own blue rigged character (or a
+  // blue-tinted fallback if that model didn't load). Each keeps its own skin.
+  const isDef = team === 'def';
+  const useDefModel = isDef && defTemplate;
+  const model = cloneSkeleton(useDefModel ? defTemplate : charTemplate);
+  model.scale.multiplyScalar(isDef ? DEF_SCALE : SCALE);
+  model.position.y = isDef ? DEF_GROUND_Y : GROUND_Y;
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false;
       o.material = o.material.clone();
-      // Offense keeps the character's ORIGINAL skin/texture. The opposing
-      // defense is tinted blue (over the original texture, with a blue glow so
-      // it reads through the dark base) to tell the teams apart.
-      if (team === 'def') {
+      // Tint blue ONLY if we had to fall back to the offense model for defense.
+      if (isDef && !defTemplate) {
         o.material.color.setHex(0x4f7bff);
         o.material.emissive = new THREE.Color(0x14336e);
         o.material.emissiveIntensity = 0.55;
@@ -1739,6 +1752,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
