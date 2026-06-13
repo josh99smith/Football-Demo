@@ -108,11 +108,20 @@ function makeRing(color) {
 const selRing = makeRing(0xffd54a);
 const ctrlRing = makeRing(0xffffff);
 
-// Broadcast lines: line of scrimmage (blue) + first-down (yellow).
+// Broadcast lines: line of scrimmage (blue) + first-down (yellow). Each is a
+// bright stripe across the field flanked by tall sideline posts (down markers)
+// so it reads clearly from the chase cam.
 function makeFieldLine(color) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 0.6),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
-  m.rotation.x = -Math.PI / 2; m.position.y = 0.04; scene.add(m); return m;
+  const g = new THREE.Group();
+  const stripe = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 0.8),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92 }));
+  stripe.rotation.x = -Math.PI / 2; stripe.position.y = 0.05; g.add(stripe);
+  const postMat = new THREE.MeshBasicMaterial({ color });
+  for (const sx of [-HALF_W, HALF_W]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.8, 0.4), postMat);
+    post.position.set(sx, 0.9, 0); g.add(post);
+  }
+  scene.add(g); return g;
 }
 const losLine = makeFieldLine(0x2f6bff);
 const firstDownLine = makeFieldLine(0xffe14a);
@@ -357,8 +366,11 @@ function setClip(ch, name) {
 // ===========================================================================
 const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', TACKLE: 'tackle', BATTLE: 'battle', DEAD: 'dead' };
 const DIR = 1; // offense attacks +Z
-// NFL Blitz rules: 30 yards for a first down, drives start on your own 20.
+// NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
+// four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
+const QUARTER_LEN = 90;  // seconds of game clock per quarter (arcade-fast)
+const PLAY_CLOCK = 15;   // delay-of-game countdown before the snap
 const game = {
   state: STATE.PRESNAP,
   offense: [], defense: [], all: [],
@@ -366,6 +378,7 @@ const game = {
   selected: 5, receivers: [],
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
+  quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   deadTimer: 0,
   tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
   // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
@@ -795,12 +808,28 @@ const elScoreOff = document.getElementById('score-off');
 const elScoreDef = document.getElementById('score-def');
 const elDown = document.getElementById('downinfo');
 const elStatus = document.getElementById('status');
+const elGameClock = document.getElementById('game-clock');
+const elQuarter = document.getElementById('quarter');
+const elPlayClock = document.getElementById('playclock');
 const ordinal = (n) => ['1st', '2nd', '3rd', '4th'][n - 1] || n + 'th';
+const QLABEL = ['1ST', '2ND', '3RD', '4TH'];
+function fmtClock(s) {
+  s = Math.max(0, Math.ceil(s));
+  const m = Math.floor(s / 60), ss = s % 60;
+  return `${m}:${ss < 10 ? '0' : ''}${ss}`;
+}
 function updateHUD() {
   elScoreOff.textContent = game.scoreOff;
   elScoreDef.textContent = game.scoreDef;
   const toGo = game.firstDown >= GOAL_Z ? 'Goal' : Math.max(1, Math.ceil(game.firstDown - game.los));
   elDown.textContent = `${ordinal(game.down)} & ${toGo}`;
+  elGameClock.textContent = fmtClock(game.gameClock);
+  elQuarter.textContent = game.gameOver ? 'FINAL' : (QLABEL[game.quarter - 1] || game.quarter + 'TH');
+  const pc = Math.max(0, Math.ceil(game.snapClock));
+  elPlayClock.textContent = `:${pc < 10 ? '0' : ''}${pc}`;
+  const showPC = game.state === STATE.PRESNAP && !game.gameOver;
+  elPlayClock.style.visibility = showPC ? 'visible' : 'hidden';
+  elPlayClock.classList.toggle('warn', showPC && pc <= 5);
 }
 function setStatus(text) {
   elStatus.textContent = text;
@@ -810,7 +839,7 @@ function show(el, label) { el.classList.remove('hidden'); if (label) el.textCont
 function hide(el) { el.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state;
-  if (s === STATE.PRESNAP) { show(actionBtn, 'SNAP'); hide(turboBtn); }
+  if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : 'SNAP'); hide(turboBtn); }
   else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(turboBtn); }
   else if (s === STATE.AIR) { hide(actionBtn); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); show(turboBtn); }
@@ -897,13 +926,52 @@ function showBanner(text, color = '#ffd23a') {
 // ===========================================================================
 // Play flow
 // ===========================================================================
+// Game clock: runs while the ball is live, freezes between plays. Pre-snap a
+// delay-of-game play clock counts down and auto-snaps at zero. The quarter only
+// rolls over between plays (the current play always finishes).
+function tickClock(dt) {
+  if (game.gameOver) return;
+  if (game.state === STATE.PRESNAP) {
+    game.snapClock -= dt;
+    if (game.snapClock <= 0) { game.snapClock = 0; setStatus('Delay of game — snapped!'); snap(); }
+  } else if (game.state !== STATE.DEAD) {
+    game.gameClock = Math.max(0, game.gameClock - dt);
+  }
+  updateHUD();
+}
+function advanceQuarter() {
+  game.quarter += 1;
+  if (game.quarter > 4) { endGame(); return; }
+  game.gameClock = QUARTER_LEN;
+  audio.whistle();
+  if (game.quarter === 3) showBanner('HALFTIME', '#ffd23a');
+  else showBanner(`Q${game.quarter}`, '#ffd23a');
+}
+function endGame() {
+  game.gameOver = true; game.gameClock = 0;
+  douseFire();
+  audio.whistle();
+  showBanner('FINAL', game.scoreOff >= game.scoreDef ? '#3fe08a' : '#ff6a5a');
+}
+function resetGame() {
+  game.scoreOff = 0; game.scoreDef = 0;
+  game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false;
+  game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
+  game.fireCount = 0; douseFire();
+  showBanner('KICKOFF', '#ffd23a');
+  newPlay();
+}
+
 function newPlay() {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
+  // Roll the quarter (or end the game) if the clock ran out on the last play.
+  if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; }
   placeFormation();
   game.state = STATE.PRESNAP;
   game.controlled = game.qb; game.carrier = null; game.selected = 5;
+  game.snapClock = PLAY_CLOCK;
   ball.mode = 'carried'; ball.targetRecv = null;
   ball.holder = null; ball.catcher = null; ball.secureT = 0; ball.intercept = false;
   selRing.visible = true; ctrlRing.visible = false;
@@ -911,7 +979,8 @@ function newPlay() {
   firstDownLine.position.z = THREE.MathUtils.clamp(game.firstDown, -HALF_L + 1, GOAL_Z);
   firstDownLine.visible = game.firstDown < GOAL_Z + 0.5;
   updateButtons(); updateHUD();
-  setStatus(`${ordinal(game.down)} down — tap SNAP`);
+  if (game.gameOver) setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
+  else setStatus(`${ordinal(game.down)} down — tap SNAP`);
 }
 function snap() {
   game.state = STATE.LIVE;
@@ -1012,7 +1081,12 @@ function endPlay(result, endZ) {
       : result === 'intercept' ? 'Intercepted!'
         : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
           : `Tackled (+${Math.max(0, Math.round(gained))})`);
-    if (result === 'intercept') { douseFire(); game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS; }
+    if (result === 'intercept') {
+      // Pick six: the defense cashes the takeaway for points and the offense
+      // gets the ball back on its own 20 (arcade Blitz — no return to play out).
+      game.scoreDef += 7; showBanner('PICK SIX!', '#5a8bff');
+      douseFire(); game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
+    }
     else {
       const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 5, GOAL_Z - 1);
       if (spot >= game.firstDown) { game.los = spot; game.down = 1; game.firstDown = Math.min(GOAL_Z, game.los + FIRST_DOWN_YDS); }
@@ -1578,10 +1652,11 @@ const turboFillEl = document.getElementById('turbo-fill');
 // ===========================================================================
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
+  tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
     aimReceiver();
-    if (actionEdge) snap();
+    if (actionEdge) { if (game.gameOver) resetGame(); else snap(); }
   } else if (game.state === STATE.LIVE) {
     aimReceiver();
     // A throw only arms on a FRESH press in LIVE — so the held snap press never

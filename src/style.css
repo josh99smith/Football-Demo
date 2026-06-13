@@ -79,14 +79,52 @@ html, body {
 #scoreboard .team b { font-size: 18px; }
 #scoreboard .team.off b { color: var(--off); }
 #scoreboard .team.def b { color: var(--def); }
-#scoreboard .sep { opacity: 0.4; }
-#scoreboard .downinfo {
-  margin-left: 8px;
-  padding-left: 12px;
+#scoreboard .gameclock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  padding: 0 10px;
+  margin: 0 2px;
   border-left: 1px solid rgba(255,255,255,0.2);
-  opacity: 0.85;
-  font-size: 13px;
+  border-right: 1px solid rgba(255,255,255,0.2);
 }
+#scoreboard .gameclock b {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 19px;
+  color: #fff;
+  letter-spacing: 0.5px;
+}
+#scoreboard .gameclock i {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+/* Down & distance + play clock (chain gang row) */
+#chains {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  backdrop-filter: blur(6px);
+}
+#chains .downinfo { opacity: 0.9; }
+#chains .playclock {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,0.2);
+  color: #bfe3ff;
+}
+#chains .playclock.warn { color: #ff5a5a; animation: pcPulse 0.5s ease-in-out infinite; }
+@keyframes pcPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 #status {
   padding: 6px 14px;
   border-radius: 16px;

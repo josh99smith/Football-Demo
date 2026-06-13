@@ -7,6 +7,12 @@ full passing play from snap to score.
 
 - **30 yards for a first down**, drives start on your own 20. No punts, no
   field goals — you go for it.
+- **Four short quarters** on a running game clock (it stops between plays) with
+  a **halftime**, then a FINAL and a one-tap **REMATCH**. A **delay-of-game
+  play clock** ticks pre-snap and auto-snaps if you stall.
+- **Line-of-scrimmage (blue) and first-down (yellow) markers** stripe the field
+  with sideline down-marker posts so you always know the sticks.
+- A **pick six** (interception) cashes 7 for the defense — protect the ball.
 - **Turbo meter**: hold TURBO for a 1.4x burst; the meter drains while you
   burn it and refills when you don't (including between plays).
 - **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives
