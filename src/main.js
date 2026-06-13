@@ -650,7 +650,7 @@ function clampToField(ch) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, switchEdge: false, battleMash: 0 };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0 };
 
 (function joystick() {
   const base = document.getElementById('joystick');
@@ -683,7 +683,6 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, swit
 })();
 
 const actionBtn = document.getElementById('action-btn');
-const switchBtn = document.getElementById('switch-btn');
 const turboBtn = document.getElementById('turbo-btn');
 (function buttons() {
   const press = (el, on, off) => {
@@ -697,7 +696,6 @@ const turboBtn = document.getElementById('turbo-btn');
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
-  press(switchBtn, () => { input.switchEdge = true; });
 })();
 
 const keys = {};
@@ -705,7 +703,6 @@ window.addEventListener('keydown', (e) => {
   audio.unlock();
   if (!keys[e.code]) {
     if (e.code === 'Space') input.actionEdge = true;
-    if (e.code === 'KeyE' || e.code === 'Tab') { input.switchEdge = true; e.preventDefault(); }
   }
   keys[e.code] = true;
   if (e.code === 'Space') input.action = true;
@@ -747,12 +744,12 @@ function show(el, label) { el.classList.remove('hidden'); if (label) el.textCont
 function hide(el) { el.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state;
-  if (s === STATE.PRESNAP) { show(actionBtn, 'SNAP'); show(switchBtn, 'RECEIVER ▸'); hide(turboBtn); }
-  else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(switchBtn, 'RECEIVER ▸'); show(turboBtn); }
-  else if (s === STATE.AIR) { hide(actionBtn); hide(switchBtn); show(turboBtn); }
-  else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); hide(switchBtn); show(turboBtn); }
-  else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(switchBtn); hide(turboBtn); }
-  else { hide(actionBtn); hide(switchBtn); hide(turboBtn); }
+  if (s === STATE.PRESNAP) { show(actionBtn, 'SNAP'); hide(turboBtn); }
+  else if (s === STATE.LIVE) { show(actionBtn, 'THROW'); show(turboBtn); }
+  else if (s === STATE.AIR) { hide(actionBtn); show(turboBtn); }
+  else if (s === STATE.RUN) { show(actionBtn, 'JUKE'); show(turboBtn); }
+  else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(turboBtn); }
+  else { hide(actionBtn); hide(turboBtn); }
 }
 
 // ===========================================================================
@@ -1337,6 +1334,27 @@ function playOneShot(ch, name, hold) {
   if (!ch.actions[name]) return;
   ch.oneShotT = hold; setClip(ch, name);
 }
+
+// Target the receiver the LEFT STICK is pointing at (camera-relative), like
+// aiming the throw. Holds the last target when the stick is centered.
+function aimReceiver() {
+  const kb = kbVec();
+  const ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
+  const iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
+  if (Math.hypot(ix, iy) < 0.35) return; // no clear aim -> keep current target
+  camera.getWorldDirection(_f); _f.y = 0; _f.normalize();
+  _r.crossVectors(_f, THREE.Object3D.DEFAULT_UP).normalize();
+  _d.set(0, 0, 0).addScaledVector(_f, iy).addScaledVector(_r, ix).normalize(); // aim dir (world)
+  const qp = game.qb.group.position;
+  let best = 0.2, bestI = game.selected; // require a reasonable alignment
+  for (let i = 0; i < game.receivers.length; i++) {
+    const rp = game.receivers[i].group.position;
+    const dx = rp.x - qp.x, dz = rp.z - qp.z, l = Math.hypot(dx, dz) || 1;
+    const dot = (dx / l) * _d.x + (dz / l) * _d.z;
+    if (dot > best) { best = dot; bestI = i; }
+  }
+  game.selected = bestI;
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   if (ch.oneShotT > 0) {     // hold a one-shot (juke roll / catch reach)
@@ -1374,13 +1392,12 @@ const turboFillEl = document.getElementById('turbo-fill');
 // ===========================================================================
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
-  const switchEdge = input.switchEdge; input.switchEdge = false;
 
   if (game.state === STATE.PRESNAP) {
-    if (switchEdge) game.selected = (game.selected + 1) % game.receivers.length;
+    aimReceiver();
     if (actionEdge) snap();
   } else if (game.state === STATE.LIVE) {
-    if (switchEdge) game.selected = (game.selected + 1) % game.receivers.length;
+    aimReceiver();
     // A throw only arms on a FRESH press in LIVE — so the held snap press never
     // bleeds into an instant throw. Tap = lob, hold = bullet.
     if (actionEdge) game.throwArmed = true;
@@ -1574,6 +1591,7 @@ loadAssets().then(() => {
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 

@@ -30,9 +30,9 @@ You start every play as the **quarterback**.
 
 1. **Tap SNAP** to start the play. Your six receivers run their routes; the
    defense covers them man-to-man.
-2. **Cycle the target** with the **RECEIVER ▸** button (the yellow ring shows
-   who you're aiming at). Scramble with the joystick if you need time.
-3. **Tap THROW** to lead a pass to the targeted receiver.
+2. **Aim with the left stick** — the receiver you point toward (yellow arrow +
+   ring) becomes your target. Push the stick to scramble too.
+3. **Tap THROW for a lob, hold for a bullet** to the targeted receiver.
 4. On a catch you **take over the receiver** — run for the end zone. Hold
    **SPRINT** for a burst. Defenders pursue and tackle on contact.
 
@@ -43,14 +43,12 @@ play, with **down & distance** and the **score** tracked on the HUD.
 
 | Input | Action |
 | --- | --- |
-| **Left joystick** | Move (camera-relative) |
-| **SNAP / THROW** | Contextual action button (right) |
+| **Left joystick** | Move + aim the targeted receiver (camera-relative) |
+| **SNAP** then **THROW** (tap=lob, hold=bullet) / **JUKE** | Contextual action button |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
-| **RECEIVER ▸** | Cycle the targeted receiver |
-| **WASD / arrows** (desktop) | Move |
+| **WASD / arrows** (desktop) | Move + aim |
 | **Space** | Snap / throw |
 | **Shift** | Turbo |
-| **E or Tab** | Cycle receiver |
 
 Cross the line of scrimmage as the QB to commit to a **scramble** (the play
 becomes a run and your receivers block for you).

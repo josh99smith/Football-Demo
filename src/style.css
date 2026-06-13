@@ -266,14 +266,14 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -52%) scale(1.08) rotate(-3deg); }
 }
 
-/* TURBO sits above the action button on the right */
+/* TURBO sits just left of the action button (lower-right cluster) */
 .mini-btn.turbo {
-  right: max(34px, env(safe-area-inset-right));
-  bottom: max(170px, calc(env(safe-area-inset-bottom) + 112px));
+  right: max(150px, calc(env(safe-area-inset-right) + 150px));
+  bottom: max(64px, calc(env(safe-area-inset-bottom) + 6px));
   width: 84px;
   border-radius: 42px;
   color: #fff;
-  background: #c0392b;
+  background: #6e2018;
   border-color: rgba(255, 255, 255, 0.45);
   font-size: 14px;
 }
