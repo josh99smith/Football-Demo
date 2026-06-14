@@ -593,6 +593,9 @@ function makeCharacter(team) {
   if (tackleClip) actions.tackle = oneShot(tackleClip);
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
+  actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
+  // Per-player idle stance (subtle arm hang / head tilt) for visual variety.
+  const stance = { arm: (Math.random() - 0.5) * 0.55, fore: Math.random() * 0.45, head: (Math.random() - 0.5) * 0.3 };
 
   // Helmet: a scaled clone of the team helmet PARENTED to the Head bone, so it
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
@@ -628,7 +631,7 @@ function makeCharacter(team) {
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet, bones: restPose.map((e) => e[0]), // stable bone list for replay capture
+    headBone, headEnd, helmet, stance, bones: restPose.map((e) => e[0]), // stance variety + bone list for replay
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1550,6 +1553,10 @@ function preparePlay(teleport) {
 // the next play over a see-through overlay. teleport=true is the kickoff/reset.
 function enterReset(teleport) {
   preparePlay(teleport);
+  // Snap the camera heading to the NEW attacking end so it never starts a play
+  // (e.g. after a turnover) facing the wrong way.
+  const face = game.dir > 0 ? 0 : Math.PI;
+  cam.fwdX = Math.sin(face); cam.fwdZ = Math.cos(face);
   if (game.gameOver) {
     game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = PLAY_CLOCK;
     updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
@@ -2704,7 +2711,7 @@ function aimReceiver() {
   }
   game.selected = bestI;
 }
-const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0);
+const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0), _zAxisL = new THREE.Vector3(0, 0, 1);
 // Procedural THROW: snap the right arm up-and-over for a beat, then ease back.
 // The over-the-top amount tracks the launch angle (a lob lofts more than a
 // bullet), so it varies with the throw. Rig-agnostic (just the arm bones).
@@ -2819,6 +2826,17 @@ function updateAnimation(ch, dt) {
   else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
+  else if (want === 'idle') applyIdleStance(ch); // per-player stance variety
+}
+// A small, static per-player tweak to the idle pose (arm hang + head tilt) so
+// the team doesn't stand in identical stances.
+function applyIdleStance(ch) {
+  const s = ch.stance; if (!s || !ch.upperArm) return;
+  _tq.setFromAxisAngle(_xAxisL, s.arm); ch.upperArm.quaternion.multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+  if (ch.leftArm) { _tq.setFromAxisAngle(_xAxisL, s.arm); ch.leftArm.quaternion.multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
+  if (ch.foreArm) { _tq.setFromAxisAngle(_xAxisL, -s.fore); ch.foreArm.quaternion.multiply(_tq); }
+  if (ch.leftForeArm) { _tq.setFromAxisAngle(_xAxisL, -s.fore); ch.leftForeArm.quaternion.multiply(_tq); }
+  if (ch.headBone && s.head) { _tq.setFromAxisAngle(_zAxisL, s.head); ch.headBone.quaternion.multiply(_tq); }
 }
 
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
@@ -2927,14 +2945,14 @@ function updatePlay(dt) {
   if (game.state === STATE.PRESNAP) {
     if (game.gameOver) { if (actionEdge) resetGame(); }
     else if (!game.choosing) {
-      if (game.userOnOffense) { if (actionEdge) snap(); }                 // you snap on offense
-      else {
-        if (actionEdge) switchControlled();                              // pick your defender
-        game.autoSnapT -= dt; if (game.autoSnapT <= 0) snap();           // CPU snaps on its own
+      if (game.userOnOffense) {
+        if (actionEdge) snap();             // QB holds his spot — just snap it
+      } else {
+        if (actionEdge) switchControlled();  // pick your defender
+        const c = game.controlled;           // roam your side of the line pre-snap
+        if (c) { controlledMove(c, dt, c.baseSpeed * 0.85); clampPreSnap(c); }
+        game.autoSnapT -= dt; if (game.autoSnapT <= 0) snap(); // CPU snaps on its own
       }
-      // Roam pre-snap (jog) on your own side of the line of scrimmage.
-      const c = game.controlled;
-      if (c) { controlledMove(c, dt, c.baseSpeed * 0.85); clampPreSnap(c); }
     }
   } else if (game.state === STATE.LIVE && game.userOnOffense) {
     aimReceiver();
