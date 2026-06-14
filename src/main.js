@@ -584,6 +584,7 @@ function makeCharacter(team) {
   if (catchClip) actions.catch = oneShot(catchClip);
   if (tackleClip) actions.tackle = oneShot(tackleClip);
   actions.idle.setEffectiveWeight(1);
+  mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
 
   // Helmet: a scaled clone of the team helmet PARENTED to the Head bone, so it
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
@@ -1437,7 +1438,13 @@ function preparePlay(teleport) {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
-  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; }
+  for (const ch of game.all) {
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0;
+    // Per-player walk-back variety so they don't trudge home like robots.
+    ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
+    ch.resetDelay = teleport ? 0 : Math.random() * 0.8;        // staggered starts
+    ch.resetCurve = (Math.random() - 0.5) * 1.1;               // curved approach path
+  }
   setFumbleGlow(false);
   setupPossession();   // assign offense/defense roles for whoever has the ball
   placeFormation(teleport);
@@ -1473,11 +1480,22 @@ function updateReset(dt) {
   let settled = true;
   for (const ch of game.all) {
     const p = ch.group.position, dx = ch.home.x - p.x, dz = ch.home.z - p.z, dist = Math.hypot(dx, dz);
-    if (dist > 0.5) {
+    if (ch.resetDelay > 0 && dist > 0.6) { // hang back a beat before heading in
+      ch.resetDelay -= dt; settled = false;
+      ch.vel.x *= 0.85; ch.vel.z *= 0.85; ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+      ch.heading = turnToward(ch.heading, ch.resetHeading || 0, TURN_RATE * dt * 0.5);
+      continue;
+    }
+    if (dist > 0.6) {
       settled = false;
-      const sp = Math.min(WALK_SPEED, dist * 2.2);
-      const tvx = dx / dist * sp, tvz = dz / dist * sp, k = Math.min(1, dt * 6);
-      ch.vel.x += (tvx - ch.vel.x) * k; ch.vel.z += (tvz - ch.vel.z) * k;
+      // Curved approach: a perpendicular bias that eases out as they near home.
+      const nx = dx / dist, nz = dz / dist;
+      const curve = ch.resetCurve * Math.min(1, dist / 16);
+      let tx = nx - nz * curve, tz = nz + nx * curve;
+      const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+      const sp = Math.min(ch.resetSpeed || WALK_SPEED, dist * 2.2); // ease in as they arrive
+      const k = Math.min(1, dt * 5);
+      ch.vel.x += (tx * sp - ch.vel.x) * k; ch.vel.z += (tz * sp - ch.vel.z) * k;
       p.x += ch.vel.x * dt; p.z += ch.vel.z * dt; ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
       if (ch.speed > 0.3) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
     } else {
