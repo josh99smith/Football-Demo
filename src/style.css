@@ -605,7 +605,7 @@ html, body {
    cards never get cut off at the top, and keeps more field visible. */
 @media (orientation: landscape) {
   .ps-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); width: min(820px, 94vw); }
-  .ps-art { height: 40px; }
+  .ps-art { height: 88px; }
   .ps-card b { font-size: clamp(15px, 3.4vh, 19px); }
 }
 /* Tight landscape (short phones): pull controls in and trim chrome. */
@@ -615,8 +615,8 @@ html, body {
   .action-btn { width: 84px; height: 84px; bottom: max(22px, env(safe-area-inset-bottom)); }
   .mini-btn.turbo { bottom: max(20px, calc(env(safe-area-inset-bottom) + 4px)); }
   #status { font-size: 11px; padding: 4px 11px; }
-  .ps-art { height: 30px; margin-bottom: 4px; }
+  .ps-art { height: 66px; margin-bottom: 4px; }
   .ps-card { padding: 8px 10px; }
   .ps-card span { font-size: 10.5px; }
-  #playselect { gap: 8px; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  #playselect { gap: 6px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 }
