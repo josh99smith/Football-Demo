@@ -1935,6 +1935,9 @@ const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 // teleport=true snaps players to formation (kickoff); false lets them walk back.
 function preparePlay(teleport) {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
+  // Never build a formation from a corrupted LOS (would scatter the whole lineup).
+  if (!Number.isFinite(game.los)) game.los = THREE.MathUtils.clamp(0, OWN_GOAL_Z + 1, GOAL_Z - 1);
+  if (!Number.isFinite(game.firstDown)) game.firstDown = game.los + game.dir * FIRST_DOWN_YDS;
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   game.drag.active = false; game.drag.grabbers.length = 0;
@@ -2495,6 +2498,7 @@ function giveBallTo(userBall, losZ) {
   game.userOnOffense = userBall;
   const nd = userBall ? 1 : -1;
   game.dir = nd; // keep dir in sync now so the HUD/camera read it correctly in DEAD
+  if (!Number.isFinite(losZ)) losZ = game.los; // never let a bad spot poison the LOS
   game.los = THREE.MathUtils.clamp(losZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
   game.down = 1;
   game.firstDown = game.los + nd * FIRST_DOWN_YDS;
@@ -3806,8 +3810,20 @@ function updatePlay(dt) {
   }
 
   // Safety net: no upright player may ever be outside the cage, whatever state
-  // moved them (ragdolls are hard-clamped in the physics step instead).
-  for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
+  // moved them (ragdolls are hard-clamped in the physics step instead). Also
+  // sanitize any non-finite position/velocity (a stray NaN here would otherwise
+  // spread into the tackle spot -> game.los -> every formation, corrupting the
+  // lineups for the rest of the session — the "teleport/wrong side" bug).
+  for (const ch of game.all) if (!ch.ragdolling) {
+    const p = ch.group.position;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z) ||
+        !Number.isFinite(ch.vel.x) || !Number.isFinite(ch.vel.z)) {
+      const h = ch.home || { x: 0, z: 0 };
+      p.set(Number.isFinite(h.x) ? h.x : 0, 0, Number.isFinite(h.z) ? h.z : 0);
+      ch.vel.set(0, 0, 0); ch.speed = 0;
+    }
+    clampToField(ch);
+  }
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
