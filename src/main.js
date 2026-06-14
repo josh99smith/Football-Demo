@@ -1358,6 +1358,44 @@ const turboBtn = document.getElementById('turbo-btn');
   document.addEventListener('webkitfullscreenchange', sync);
 })();
 
+// PWA: register the service worker and show an "Install" prompt on launch (in a
+// browser tab). Uses the native beforeinstallprompt where available, with an
+// iOS Share-sheet hint as the fallback. Snoozes for a week when dismissed.
+(function pwa() {
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  if (nav && nav.serviceWorker) {
+    window.addEventListener('load', () => nav.serviceWorker.register('sw.js').catch(() => {}));
+  }
+  const pop = document.getElementById('install');
+  if (!pop || !nav) return;
+  const installBtn = document.getElementById('ip-install');
+  const dismissBtn = document.getElementById('ip-dismiss');
+  const sub = document.getElementById('ip-sub');
+  const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || nav.standalone === true;
+  if (standalone) return; // already installed — never nag
+  const snoozed = () => { try { return Date.now() - (+localStorage.getItem('pwaSnooze') || 0) < 6048e5; } catch { return false; } }; // 7 days
+  const hide = () => pop.classList.add('hidden');
+  const snooze = () => { try { localStorage.setItem('pwaSnooze', Date.now()); } catch (e) { /* ignore */ } hide(); };
+  const show = () => { if (!snoozed()) pop.classList.remove('hidden'); };
+  let deferred = null;
+  dismissBtn.addEventListener('click', snooze);
+  installBtn.addEventListener('click', async () => {
+    if (!deferred) { hide(); return; }
+    deferred.prompt();
+    const choice = await deferred.userChoice.catch(() => ({ outcome: 'dismissed' }));
+    deferred = null; hide();
+    if (choice.outcome !== 'accepted') snooze();
+  });
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; show(); });
+  window.addEventListener('appinstalled', snooze);
+  // iOS Safari has no install event — show Add-to-Home-Screen instructions.
+  if (/iphone|ipad|ipod/i.test(nav.userAgent || '')) {
+    sub.innerHTML = 'Tap the Share icon, then <b>Add to Home Screen</b>, for fullscreen play.';
+    installBtn.style.display = 'none';
+    setTimeout(show, 1600);
+  }
+})();
+
 // --- Play-select screen: called before EVERY snap — an offensive playbook on
 // your possessions and a defensive call when the CPU has the ball. ----------
 const DEF_PLAYS = [

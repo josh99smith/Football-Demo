@@ -5,7 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0b1d12" />
   <title>7-on-7 Football</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="assets/icon-192.png" />
+  <link rel="icon" href="assets/icon-192.png" />
   <link rel="stylesheet" href="src/style.css" />
   <script type="importmap">
   {
@@ -29,6 +34,19 @@
   </div>
 
   <canvas id="scene"></canvas>
+
+  <!-- Install (PWA) prompt shown on launch in a browser tab. -->
+  <div id="install" class="install-pop hidden">
+    <img src="assets/icon-192.png" alt="" class="ip-icon" />
+    <div class="ip-text">
+      <b>Install 7-on-7 Football</b>
+      <span id="ip-sub">Add it to your home screen for fullscreen, app-like play.</span>
+    </div>
+    <div class="ip-actions">
+      <button id="ip-install" class="ip-btn ip-yes">Install</button>
+      <button id="ip-dismiss" class="ip-btn ip-no">Not now</button>
+    </div>
+  </div>
 
   <div id="build-badge"></div>
   <!-- Controlled-player ratings card -->

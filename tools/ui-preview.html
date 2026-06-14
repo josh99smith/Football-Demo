@@ -63,9 +63,22 @@
     <div class="ps-dots"><span class="ps-dot on"></span><span class="ps-dot"></span></div>
   </div>
 
+  <div id="install" class="install-pop hidden">
+    <img src="../assets/icon-192.png" alt="" class="ip-icon" />
+    <div class="ip-text">
+      <b>Install 7-on-7 Football</b>
+      <span id="ip-sub">Add it to your home screen for fullscreen, app-like play.</span>
+    </div>
+    <div class="ip-actions">
+      <button class="ip-btn ip-yes">Install</button>
+      <button class="ip-btn ip-no">Not now</button>
+    </div>
+  </div>
+
   <script>
-    if (new URLSearchParams(location.search).get('screen') === 'play')
-      document.getElementById('playselect').classList.remove('hidden');
+    const scr = new URLSearchParams(location.search).get('screen');
+    if (scr === 'play') document.getElementById('playselect').classList.remove('hidden');
+    if (scr === 'install') document.getElementById('install').classList.remove('hidden');
   </script>
 </body>
 </html>

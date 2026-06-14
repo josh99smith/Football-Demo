@@ -164,6 +164,10 @@ python3 -m http.server 8000   # then open http://localhost:8000
 - `tools/strip-anim.mjs` — strips a Meshy/`withSkin` GLB down to animation-only
   (drops the redundant mesh/texture, rebuilds the BIN) so new clips add KBs, not
   MBs; run `node tools/strip-anim.mjs <in.glb> <out.glb>`
+- `manifest.webmanifest` + `sw.js` + `assets/icon-192.png` / `icon-512.png` —
+  PWA setup: the game is installable (landscape, fullscreen display) with an
+  on-launch **Install** prompt and offline play after the first load via a
+  runtime cache service worker.
 - `tools/ui-preview.html` + `tools/shoot.mjs` — a DOM-only proof of the HUD /
   controls / play-select / portrait gate (the field is a CSS stand-in) so the
   landscape layout can be screenshotted without launching the WebGL game.
