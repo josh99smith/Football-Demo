@@ -2230,8 +2230,8 @@ function updateBattle(dt) {
   // harder when the tackler is the stronger man.
   if (input.battleMash > 0) { b.val += input.battleMash * BATTLE_TAP; b.flash = 1; input.battleMash = 0; }
   // A strong TACKLER drags the meter down faster; a strong carrier resists.
-  const tk = 0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6), hu = 0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7);
-  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(tk / hu, 0.6, 1.8);
+  const tklPow = 0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6), carPow = 0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7);
+  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
   // Locked in contact: the carrier DRIVES off the anchor toward the tackler as
