@@ -953,7 +953,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
+  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -2106,6 +2106,7 @@ const REPLAY_ANGLES = [
   { name: 'END ZONE',  az: 0,               dist: 16, height: 4.2, fov: 38, orbit: 0.0009 },
   { name: 'LOW ANGLE', az: Math.PI * 0.7,   dist: 9,  height: 1.7, fov: 50, orbit: 0.0018 },
 ];
+const REPLAY_SEG = 3.2; // seconds on one camera angle before a broadcast cut to the next
 const rpFadeEl = document.getElementById('rp-fade');
 const rpAngleEl = document.getElementById('rp-angle');
 function setReplayLabel() {
@@ -2117,7 +2118,7 @@ function startReplay() {
   clearRagdolls(); // physics off; the recorded bone transforms ARE the pose
   const r = game.replay;
   game.state = STATE.REPLAY;
-  r.i = 0; r.hold = 0; r.fade = 0; r.loops = 0; r.phase = 'play'; r.snap = true;
+  r.i = 0; r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
   r.angleIdx = Math.floor(Math.random() * REPLAY_ANGLES.length);
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
@@ -2141,8 +2142,22 @@ function updateReplay(dt) {
   const r = game.replay, f = r.frames, last = f.length - 1;
   if (r.phase === 'play') {
     r.i += 0.85; // playback speed (full-play replays would drag at deep slow-mo)
+    r.seg += dt;
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
-    applyReplayFrame(r.i);
+    else if (r.seg >= REPLAY_SEG) { r.phase = 'cutout'; } // mid-play broadcast cut to a new angle
+    applyReplayFrame(Math.min(r.i, last));
+  } else if (r.phase === 'cutout') { // quick fade to black while the action keeps running
+    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
+    r.fade = Math.min(1, r.fade + dt * 3.4);
+    if (r.fade >= 1 || r.i >= last) {
+      r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.seg = 0; r.snap = true; setReplayLabel();
+      if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; } else r.phase = 'cutin';
+    }
+  } else if (r.phase === 'cutin') { // fade back up from the new angle, action continues
+    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
+    r.fade = Math.max(0, r.fade - dt * 3.4);
+    if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
+    else if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   } else if (r.phase === 'hold') {
     applyReplayFrame(last);
     r.hold += dt;
@@ -2150,12 +2165,12 @@ function updateReplay(dt) {
   } else if (r.phase === 'fadeout') {
     applyReplayFrame(last);
     r.fade = Math.min(1, r.fade + dt * 2.6);
-    if (r.fade >= 1) { // fully black — switch angle and restart the play
+    if (r.fade >= 1) { // fully black — switch angle and restart the play from the top
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.loops++;
-      r.i = 0; r.snap = true; r.phase = 'fadein'; setReplayLabel();
+      r.i = 0; r.seg = 0; r.snap = true; r.phase = 'fadein'; setReplayLabel();
     }
-  } else { // fadein: replay runs while we fade back up from black
-    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
+  } else { // fadein: replay runs from the start while we fade back up from black
+    r.i += 0.85; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 2.6);
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
@@ -3591,10 +3606,15 @@ function updateAnimation(ch, dt) {
   // a DB dropping into coverage). Pick the left/right drift by lateral velocity.
   const along = ch.vel.x * Math.sin(ch.heading) + ch.vel.z * Math.cos(ch.heading); // + forward / - backward
   if (inBattle) want = 'run';                // churning legs in the wrestle
-  else if (ch.speed > 0.7 && along < -0.6) want = (ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading)) >= 0 ? 'backR' : 'backL';
-  else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
-  else if (ch.speed > 6) want = 'run';
-  else if (ch.speed > 0.5) want = 'walk';
+  else {
+    // Hysteresis so a hard cut doesn't flicker run<->backpedal: drop into the
+    // backpedal below -0.6, but hold it until he's clearly moving forward again.
+    ch.backped = ch.speed > 0.7 && along < (ch.backped ? -0.3 : -0.6);
+    if (ch.backped) want = (ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading)) >= 0 ? 'backR' : 'backL';
+    else if (ch.speed > 11) want = 'sprint'; // turbo / RunFast
+    else if (ch.speed > 6) want = 'run';
+    else if (ch.speed > 0.5) want = 'walk';
+  }
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
   setClip(ch, want);
   // Foot-skating fix: drive the gait at the speed it was authored for, so a
@@ -3608,7 +3628,7 @@ function updateAnimation(ch, dt) {
   else if (grabbing) applyGrabLean(ch);
   else {
     ch.group.rotation.set(0, ch.heading, 0);
-    if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / 0.5) * Math.PI * 2; // 360 spin move
+    if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / SPIN_DUR) * Math.PI * 2; // 360 spin move
   }
   ch.mixer.update(dt);
   // Procedural arm overrides (after the mixer), in priority order: the battle
@@ -3657,11 +3677,12 @@ function defenderAhead(ch, dist, dotMin, list = game.defense) {
 }
 // SPIN — a 360 that keeps you moving and slips a lone tackler (immunity
 // window). If a defender is right in front, it becomes a STIFF-ARM truck.
+const SPIN_DUR = 0.5; // spin-move length (s): drives both the immunity window and the 360 visual
 function doSpin(ch) {
   if (ch.jukeCd > 0) return;
   const ahead = defenderAhead(ch, 2.8, 0.45);
   if (ahead) { stiffArm(ch, ahead); return; }
-  ch.jukeCd = 0.9; ch.jukeTimer = 0.5; ch.spinT = 0.5; // immunity + visual spin
+  ch.jukeCd = 0.9; ch.jukeTimer = 0.5; ch.spinT = SPIN_DUR; // immunity + visual spin
   shake.kick(ch.vel.x, ch.vel.z, 0.18);
   audio.juke();
   showBanner('SPIN!', '#bfffd0');
