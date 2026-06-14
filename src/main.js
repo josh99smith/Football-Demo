@@ -2716,10 +2716,17 @@ function updateBall(dt) {
       _spinQ.setFromAxisAngle(_zAxis, ball.spin);
       ball.mesh.quaternion.copy(_ballQ).multiply(_spinQ);
     }
+    // Anticipation: the targeted receiver throws his hands up as the ball drops
+    // in (so the catch isn't a late snap right as he secures it).
+    const _rcv = ball.targetRecv;
+    if (_rcv && !_rcv.ragdolling && ball.vy < 0 && p.y < 5) {
+      const rd = Math.hypot(_rcv.group.position.x - p.x, _rcv.group.position.z - p.z);
+      if (rd < 4 && _rcv.armPoseT <= 0.12) triggerArmAction(_rcv, 'reach', 0.5, p);
+    }
     // Catchable once it has descended into reach. Resolve only when it actually
     // hits the turf (so an overthrow flies to the back/side wall and bounces),
     // with a safety timeout if it caroms around forever.
-    if (ball.vy < 0 && p.y < 3.4 && tryReception()) return; // start the catch higher in the descent so the reach reads on time
+    if (ball.vy < 0 && p.y < 3.6 && tryReception()) return; // start the catch high in the descent so the reach reads on time
     if (p.y <= 0.16 || ball.airTime > ball.flightTime + 3) {
       if (tryReception()) return;
       if (ball.hitFence) { ballLooseFromAir(); return; } // a wall carom is a live loose ball, never incomplete
