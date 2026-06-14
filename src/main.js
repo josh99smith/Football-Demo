@@ -3056,6 +3056,12 @@ function beginTackle(lead, force = false) {
     return;
   }
 
+  // Rare clean STRIP going down: a big or gang hit occasionally jars the ball
+  // loose and the defense falls on it as the carrier hits the turf — no
+  // scramble, just a turnover at the spot (resolveTackleEnd routes the settle to
+  // a fumble). Distinct from the bouncing live-ball scramble above.
+  if ((big || gang) && Math.random() < 0.08) game.fumbleLost = true;
+
   // Tackle kinematics: a violent SQUARE hit (committed, or a fast/turbo collision
   // ~60% of the time) drops him on the spot — an instant ragdoll. Otherwise it's
   // a WRAP & DRAG-DOWN: the tacklers latch on and bring him down over a beat,
