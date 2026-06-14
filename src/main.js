@@ -654,6 +654,7 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
+let backLClip, backRClip; // backpedal locomotion (left/right drift)
 // Variety + new-move clips from the merged Meshy pack (assets/animations2.glb).
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
@@ -737,7 +738,7 @@ async function loadAssets() {
   // plant instead of skating. Measured via foot-vs-hip stance velocity (FK) and
   // calibrated so the run reads planted near baseSpeed; the new variety walks
   // are genuinely slow gaits, hence the much lower refs.
-  const REF_SPEED = { Walking: 2.8, Casual_Walk: 1.55, Proud_Strut: 1.25, Running: 8.5, RunFast: 11.4 };
+  const REF_SPEED = { Walking: 2.8, Casual_Walk: 1.55, Proud_Strut: 1.25, Running: 8.5, RunFast: 11.4, BackLeft_run: 4.6, BackRight_Run: 4.6 };
   const loco = (name, fallback) => {
     const src = byName[name] || fallback; if (!src) return null;
     const c = inPlace(src); c.userData = { refSpeed: REF_SPEED[name] || 0 }; return c;
@@ -745,6 +746,7 @@ async function loadAssets() {
   idleClip = inPlace(byName['Idle_11'] || charGltf.animations[0]); // breathing idle
   walkClip = loco('Walking'); runClip = loco('Running');
   sprintClip = loco('RunFast', byName['Running']) || runClip;      // turbo sprint
+  backLClip = loco('BackLeft_run') || walkClip; backRClip = loco('BackRight_Run') || backLClip; // backpedals
   jukeClip = inPlace(byName['Roll_Dodge_1']);                      // juke = dodge roll
   // Tackle = a head-down lunge (just the hit, no roll); defender pops back up
   // to idle when it ends. Sliced to the forward drive.
@@ -855,7 +857,7 @@ function makeCharacter(team) {
   // Per-player idle + walk variety (real clips, not a procedural offset).
   const myIdle = (idleClips.length ? idleClips : [idleClip])[(Math.random() * (idleClips.length || 1)) | 0] || idleClip;
   const myWalk = (walkClips.length ? walkClips : [walkClip])[(Math.random() * (walkClips.length || 1)) | 0] || walkClip;
-  const actions = { idle: mk(myIdle), walk: mk(myWalk), run: mk(runClip), sprint: mk(sprintClip) };
+  const actions = { idle: mk(myIdle), walk: mk(myWalk), run: mk(runClip), sprint: mk(sprintClip), backL: mk(backLClip), backR: mk(backRClip) };
   const oneShot = (clip) => {
     const a = mixer.clipAction(clip);
     a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true;
@@ -1357,6 +1359,13 @@ function updateDefense() {
     }
     const sep = separation(d, game.defense, 3.0);
     d.desired = addSteer(steer, sep, carrierIsRunning ? 0.18 : 0.5);
+    // Coverage drop: face the threat (man = his receiver, otherwise the QB) and
+    // hold it, so retreating into the cushion reads as a real DB backpedal. Once
+    // the ball's thrown or it's a run, go back to pursuing (face the chase).
+    if (!carrierIsRunning && !inAir && d.job !== 'rush') {
+      const t = (d.covers >= 0 && game.receivers[d.covers]) ? px(game.receivers[d.covers]) : px(game.qb);
+      d.heading = Math.atan2(t.x - dp.x, t.z - dp.z); d.holdHeading = true;
+    } else d.holdHeading = false;
   }
 }
 
@@ -3519,7 +3528,11 @@ function updateAnimation(ch, dt) {
     return;          // motion; lift the root so no joint sinks through the turf
   }
   let want = 'idle';
+  // Backpedal: when moving backward relative to where he's facing (QB drop-back,
+  // a DB dropping into coverage). Pick the left/right drift by lateral velocity.
+  const along = ch.vel.x * Math.sin(ch.heading) + ch.vel.z * Math.cos(ch.heading); // + forward / - backward
   if (inBattle) want = 'run';                // churning legs in the wrestle
+  else if (ch.speed > 0.7 && along < -0.6) want = (ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading)) >= 0 ? 'backR' : 'backL';
   else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
   else if (ch.speed > 6) want = 'run';
   else if (ch.speed > 0.5) want = 'walk';
@@ -3528,7 +3541,7 @@ function updateAnimation(ch, dt) {
   // Foot-skating fix: drive the gait at the speed it was authored for, so a
   // planted foot stays put while the body travels (instead of sliding). The
   // run band churns a touch faster in the BATTLE so it reads as a struggle.
-  if (!inBattle && (want === 'walk' || want === 'run' || want === 'sprint')) {
+  if (!inBattle && (want === 'walk' || want === 'run' || want === 'sprint' || want === 'backL' || want === 'backR')) {
     const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
     if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
   }
