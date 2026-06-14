@@ -689,7 +689,7 @@ const game = {
   scoreOff: 0, scoreDef: 0,
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   deadTimer: 0,
-  tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
+  tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
@@ -1756,6 +1756,7 @@ function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
   game.replay.frames.length = 0; game.replay.bigHit = false; // fresh footage for this play
+  game.whistled = false; // the play-ending whistle hasn't blown yet
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
@@ -2039,6 +2040,7 @@ function tackleReturner(tackler) {
     THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8), 0x0002, pickVariant(big, 1, closing, hitX, hitZ));
   tackler.heading = Math.atan2(hitX, hitZ); playOneShot(tackler, 'tackle', 0.45);
   game.state = STATE.TACKLE; game.tackleTimer = 2.0; game.tackleSpotZ = rp.z; // returnActive still set
+  blowWhistle(); // returner is down — whistle immediately, not after the ragdoll settles
   ctrlRing.visible = false; updateButtons();
   shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
   burst(rp.x, 1.0, rp.z, 0xe8d9a0, big ? 16 : 10, big ? 8 : 6);
@@ -2060,7 +2062,7 @@ function endReturn(result, spotZ) {
     shake.add(0.3); timeScale.slow(0.5, 0.4);
     giveBallTo(true, driveStartForUser(true)); // you get the ball back at your 20
   } else {
-    audio.whistle(); showBanner('TURNOVER', '#ffd23a'); setStatus('Picked off — CPU ball');
+    blowWhistle(); showBanner('TURNOVER', '#ffd23a'); setStatus('Picked off — CPU ball');
     giveBallTo(false, spotZ); // the CPU keeps it where the return ended
   }
   updateHUD();
@@ -2079,6 +2081,14 @@ function returnDive() {
 }
 // Route the end of a tackle: an interception runback, a lost fumble, or a
 // normal tackle (down & distance).
+// Blow the play-dead whistle exactly once per play. Called the instant a player
+// is down (at tackle contact) so it doesn't wait for the ragdoll to settle, and
+// again as a fallback when the play formally ends (no-op if already blown).
+function blowWhistle() {
+  if (game.whistled) return;
+  game.whistled = true;
+  audio.whistle();
+}
 function resolveTackleEnd() {
   if (game.returnActive) { endReturn('tackle', game.tackleSpotZ); return; }
   if (game.fumbleLost) { game.fumbleLost = false; endPlay('fumble', game.tackleSpotZ); return; }
@@ -2111,13 +2121,13 @@ function endPlay(result, endZ) {
     }
     giveBallTo(!userHad, driveStartForUser(!userHad)); // other team gets the ball
   } else if (result === 'intercept' || result === 'fumble') {
-    if (result !== 'intercept') audio.whistle();
+    if (result !== 'intercept') blowWhistle();
     if (userHad) douseFire(); // the player coughed it up
     showBanner('TURNOVER', '#ffd23a');
     setStatus(result === 'fumble' ? 'Fumble — turnover!' : 'Intercepted!');
     giveBallTo(!userHad, endZ); // the other team takes over at the spot
   } else {
-    audio.whistle();
+    blowWhistle();
     const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
@@ -2587,6 +2597,7 @@ function beginTackle(lead, force = false) {
   game.state = STATE.TACKLE;
   game.tackleTimer = 2.0;
   game.tackleSpotZ = cp.z + pvz * beat * 0.6;
+  blowWhistle(); // carrier is down — whistle on contact, before the fall plays out
   ctrlRing.visible = false;
   updateButtons();
 
