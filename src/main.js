@@ -953,7 +953,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], fx: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx) + looping multi-angle cam
+  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -977,7 +977,7 @@ const ball = {
   spin: 0, spinRate: 0, hitFence: false,
   // Catch: ball homes into the catcher's hands before the play resolves.
   catcher: null, secureT: 0, intercept: false, holder: null, intRolled: false,
-  trail: [], trailHist: [], mats: [], // glowing comet trail (sprite pool) + ball materials
+  trail: [], trailHist: [], trailHead: 0, trailCount: 0, mats: [], // glowing comet trail (sprite pool, ring-buffered history) + ball materials
 };
 function makeGlowTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -1023,21 +1023,25 @@ function makeBall() {
       map: tex, color: 0xffd27a, transparent: true, depthWrite: false,
       blending: THREE.AdditiveBlending, opacity: 0 }));
     s.visible = false; scene.add(s); ball.trail.push(s);
+    ball.trailHist.push(new THREE.Vector3()); // pre-allocated ring slot (no per-frame clone)
   }
 }
 function updateTrail(airborne) {
+  const N = ball.trail.length;
   if (!airborne) {
-    if (ball.trailHist.length) { ball.trailHist.length = 0; for (const s of ball.trail) s.visible = false; }
+    if (ball.trailCount) { ball.trailCount = 0; for (const s of ball.trail) s.visible = false; }
     return;
   }
-  ball.trailHist.unshift(ball.mesh.position.clone());
-  if (ball.trailHist.length > ball.trail.length) ball.trailHist.pop();
+  ball.trailHead = (ball.trailHead + 1) % N;        // advance the ring head
+  ball.trailHist[ball.trailHead].copy(ball.mesh.position); // write in place
+  if (ball.trailCount < N) ball.trailCount++;
   const col = game.onFire ? 0xff5522 : 0xffd27a;
-  for (let i = 0; i < ball.trail.length; i++) {
-    const s = ball.trail[i], h = ball.trailHist[i];
-    if (!h) { s.visible = false; continue; }
+  for (let i = 0; i < N; i++) {
+    const s = ball.trail[i];
+    if (i >= ball.trailCount) { s.visible = false; continue; }
+    const h = ball.trailHist[(ball.trailHead - i + N) % N]; // i=0 is newest (near the ball)
     s.visible = true; s.position.copy(h);
-    const f = 1 - i / ball.trail.length; // brightest/biggest near the ball
+    const f = 1 - i / N; // brightest/biggest near the ball
     s.material.opacity = f * 0.6;
     s.material.color.setHex(col);
     const sc = 0.45 + f * 0.85;
@@ -2069,7 +2073,13 @@ if (replayEl) {
 // bone pos3+quat4].
 function recordFrame() {
   const all = game.all, nb = all[0].bones.length;
-  const buf = new Float32Array(7 + all.length * (7 + nb * 7));
+  const need = 7 + all.length * (7 + nb * 7);
+  const f = game.replay.frames;
+  // Reuse a buffer instead of churning a fresh ~10KB Float32Array every frame:
+  // pull from the free-list freed by the last play, or recycle the oldest frame
+  // once the ring is full (roster size is fixed, so the length matches).
+  let buf = f.length >= REPLAY_MAX ? f.shift() : game.replay.pool.pop();
+  if (!buf || buf.length !== need) buf = new Float32Array(need);
   let o = 0;
   const b = ball.mesh; const bp = b.position, bq = b.quaternion;
   buf[o++] = bp.x; buf[o++] = bp.y; buf[o++] = bp.z; buf[o++] = bq.x; buf[o++] = bq.y; buf[o++] = bq.z; buf[o++] = bq.w;
@@ -2078,12 +2088,14 @@ function recordFrame() {
     buf[o++] = gp.x; buf[o++] = gp.y; buf[o++] = gp.z; buf[o++] = gq.x; buf[o++] = gq.y; buf[o++] = gq.z; buf[o++] = gq.w;
     for (const bo of ch.bones) { const p = bo.position, q = bo.quaternion; buf[o++] = p.x; buf[o++] = p.y; buf[o++] = p.z; buf[o++] = q.x; buf[o++] = q.y; buf[o++] = q.z; buf[o++] = q.w; }
   }
-  const f = game.replay.frames; f.push(buf); if (f.length > REPLAY_MAX) f.shift();
+  f.push(buf);
   // Capture the flame state too (so ON FIRE / turbo fx replay on the right body).
+  // Recycle the per-frame fx record object the same way.
   const fs = computeFlame();
   const fx = game.replay.fx;
-  fx.push({ pIdx: fs.player ? game.all.indexOf(fs.player) : -1, pCol: fs.pCol, ballCol: fs.ballCol });
-  if (fx.length > REPLAY_MAX) fx.shift();
+  const rec = fx.length >= REPLAY_MAX ? fx.shift() : (game.replay.fxPool.pop() || {});
+  rec.pIdx = fs.player ? game.all.indexOf(fs.player) : -1; rec.pCol = fs.pCol; rec.ballCol = fs.ballCol;
+  fx.push(rec);
 }
 // Broadcast camera presets the replay cycles through, one per loop (azimuth
 // around the ball, distance, height, fov, slow orbit speed).
@@ -2156,8 +2168,18 @@ function endReplay() {
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   document.body.classList.remove('replay-mode'); // restore the gameplay HUD
   if (ballFlame) { ballFlame.update(0, 0, 0, 0, null); playerFlame.update(0, 0, 0, 0, null); } // clear replay flames
-  game.replay.frames = []; game.replay.fx = [];
+  recycleReplayBuffers();
   beginReset(); // possession was already set when the play ended
+}
+// Move this play's recorded buffers onto the free-lists (capped) so the next
+// play reuses them instead of allocating, then clear the live arrays.
+function recycleReplayBuffers() {
+  const r = game.replay;
+  for (const b of r.frames) r.pool.push(b);
+  for (const x of r.fx) r.fxPool.push(x);
+  r.frames.length = 0; r.fx.length = 0;
+  if (r.pool.length > REPLAY_MAX) r.pool.length = REPLAY_MAX;
+  if (r.fxPool.length > REPLAY_MAX) r.fxPool.length = REPLAY_MAX;
 }
 // Apply a defensive call to game.defense (on top of the base assignments).
 function applyDefCall(call) {
@@ -2175,7 +2197,7 @@ function applyDefCall(call) {
 function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
-  game.replay.frames.length = 0; game.replay.fx.length = 0; game.replay.bigHit = false; // fresh footage for this play
+  recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
