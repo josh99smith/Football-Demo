@@ -914,7 +914,7 @@ function makeCharacter(team) {
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0, recoverT: 0, cageJumpCd: 0, engaged: false,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, recoverT: 0, cageJumpCd: 0, engaged: false,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -1969,7 +1969,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
     ch.resetDelay = teleport ? 0 : Math.random() * 0.8;        // staggered starts
@@ -3130,7 +3130,7 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
   const d = game.drag;
   game.state = STATE.TACKLE;
   d.active = true; d.t = 0; d.hx = hitDir.x; d.hz = hitDir.z; d.grabbers = pile.slice();
-  carrier.oneShotT = 0; carrier.diveT = 0; // cancel a leftover move so it can't keep the body lifted/floating during the drag
+  carrier.oneShotT = 0; // cancel a leftover move so it can't keep the body lifted/floating during the drag
   // Takedown time: wrap-up power (count + TACKLING) vs the carrier's strength/speed.
   let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? t.rt.tackle : 0.6);
   const car = 0.6 + (carrier.rt ? carrier.rt.strength : 0.7) + Math.hypot(carrier.vel.x, carrier.vel.z) / 22;
@@ -3140,7 +3140,7 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
   pile.forEach((t, i) => {
     t.grabbing = true;
     t.grabSlot = baseAng + (i === 0 ? 0 : (i % 2 ? 1 : -1) * (0.55 + 0.22 * i));
-    t.vel.set(0, 0, 0); t.diveT = 0; t.oneShotT = 0; // no leftover one-shot fighting the wrap pose
+    t.vel.set(0, 0, 0); t.oneShotT = 0; // no leftover one-shot fighting the wrap pose
   });
   const cp = carrier.group.position;
   shake.kick(hitDir.x, hitDir.z, big ? 0.6 : 0.4);
@@ -3674,7 +3674,7 @@ function doHurdle(ch, def) {
 // redirecting back inbound (and downfield) with a burst + a beat of immunity,
 // instead of getting pinned to the wall. Parkour vault-with-roll animation.
 function tryCageJump(c, downDir = game.dir) {
-  if (c.cageJumpCd > 0 || c.diveT > 0) return false;
+  if (c.cageJumpCd > 0) return false;
   if (Math.hypot(c.vel.x, c.vel.z) < 6) return false; // need real pace into the wall
   const p = c.group.position, mx = CAGE_X - 1.8, mz = CAGE_Z - 1.8;
   const intoX = (p.x > mx && c.vel.x > 0) || (p.x < -mx && c.vel.x < 0);
