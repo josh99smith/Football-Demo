@@ -23,16 +23,45 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+// Richer, punchier color/contrast (cinematic tone mapping).
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8fc7ff);
-scene.fog = new THREE.Fog(0x8fc7ff, 90, 280);
+scene.fog = new THREE.Fog(0xbfe0ff, 110, 300); // blends distant field into the sky
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(0, 7, -12);
 
-scene.add(new THREE.HemisphereLight(0xbfe3ff, 0x3a6b3a, 0.95));
-const sun = new THREE.DirectionalLight(0xffffff, 2.1);
+// --- Sky dome (vertical gradient) + a crowd-filled stadium bowl ---
+function gradientCanvas(stops, w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); const grd = g.createLinearGradient(0, 0, 0, h);
+  for (const [o, col] of stops) grd.addColorStop(o, col);
+  g.fillStyle = grd; g.fillRect(0, 0, w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+{
+  const skyTex = gradientCanvas([[0, '#16407a'], [0.5, '#4f9be0'], [0.84, '#bfe0ff'], [1, '#eaf5ff']], 8, 256);
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(440, 32, 16),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
+  scene.add(sky);
+  // Crowd: a noisy speckle texture wrapped on a slightly flared bowl wall.
+  const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
+  const cg = cc.getContext('2d'); cg.fillStyle = '#0b1420'; cg.fillRect(0, 0, 256, 128);
+  for (let i = 0; i < 3000; i++) { cg.fillStyle = `hsl(${Math.random() * 360},${25 + Math.random() * 45}%,${28 + Math.random() * 48}%)`; cg.fillRect(Math.random() * 256, Math.random() * 128, 2, 2); }
+  const crowdTex = new THREE.CanvasTexture(cc); crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping; crowdTex.repeat.set(26, 3); crowdTex.colorSpace = THREE.SRGBColorSpace;
+  const stands = new THREE.Mesh(new THREE.CylinderGeometry(96, 80, 34, 56, 1, true),
+    new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 }));
+  stands.position.y = 13; scene.add(stands);
+  // Dark wall / advertising boards at field level under the stands.
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(79, 79, 4, 56, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x12202e, side: THREE.BackSide, roughness: 0.9 }));
+  wall.position.y = 2; scene.add(wall);
+}
+
+scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x3a6b3a, 1.0));
+const sun = new THREE.DirectionalLight(0xfff2d8, 2.3); // warm key light
 sun.position.set(40, 70, 20);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -42,6 +71,9 @@ sun.shadow.camera.left = -sh; sun.shadow.camera.right = sh;
 sun.shadow.camera.top = sh; sun.shadow.camera.bottom = -sh;
 sun.shadow.bias = -0.0004;
 scene.add(sun, sun.target);
+const rim = new THREE.DirectionalLight(0x9fc6ff, 0.7); // cool back/rim fill for shape
+rim.position.set(-50, 40, -30);
+scene.add(rim);
 
 // ===========================================================================
 // Field  (1 unit = 1 yard, long axis = Z; offense attacks +Z)
@@ -173,6 +205,22 @@ function burst(x, y, z, color, n = 14, speed = 7) {
     p.userData.vx = Math.cos(a) * s; p.userData.vz = Math.sin(a) * s; p.userData.vy = up;
     p.userData.life = 0.5 + Math.random() * 0.3;
     if (++spawned >= n) break;
+  }
+}
+// Touchdown confetti: a full-pool, multi-color shower that rains down.
+function confetti(z) {
+  const x = game.carrier ? game.carrier.group.position.x : 0;
+  const zc = THREE.MathUtils.clamp(z, -HALF_L + 2, HALF_L - 2);
+  const cols = [0xffd23a, 0xff5a5a, 0x5a8bff, 0x5aff8a, 0xff8af0, 0xffffff];
+  let i = 0;
+  for (const p of hitParticles) {
+    p.visible = true;
+    p.position.set(x + (Math.random() - 0.5) * 3, 3 + Math.random() * 2.5, zc + (Math.random() - 0.5) * 3);
+    p.material.color.setHex(cols[i % cols.length]); p.material.opacity = 0.95;
+    const a = Math.random() * Math.PI * 2, s = 3 + Math.random() * 5;
+    p.userData.vx = Math.cos(a) * s; p.userData.vz = Math.sin(a) * s; p.userData.vy = 6 + Math.random() * 5;
+    p.userData.life = 1.1 + Math.random() * 0.6;
+    if (++i >= hitParticles.length) break;
   }
 }
 function updateParticles(dt) {
@@ -453,7 +501,7 @@ function makeBall() {
     const model = footballTemplate.clone(true);
     model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; o.material = o.material.clone(); ball.mats.push(o.material); } });
     model.rotation.y = -Math.PI / 2;       // model's long axis (local +X) -> group +Z
-    model.scale.setScalar(0.85 / 1.894);   // ~0.85 yd long (arcade size)
+    model.scale.setScalar(0.6 / 1.894);    // ~0.6 yd long
     group.add(model);
   } else {
     // Fallback: a stretched ellipsoid (long axis = local +Z).
@@ -1496,6 +1544,7 @@ function endPlay(result, endZ) {
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
+    confetti(endZ); // celebratory shower in the end zone
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
       if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); }
