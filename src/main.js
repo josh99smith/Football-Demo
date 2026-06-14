@@ -3902,21 +3902,15 @@ const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
 function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
-// Hide only the cage panel / perimeter wall that's DIRECTLY IN FRONT of the camera
-// on the camera's own side — i.e. the one it's standing behind AND looking through.
-// Walls on the far side (not blocking) and same-side walls behind/beside the camera
-// stay visible. A 1yd margin hides it just before the camera crosses.
-const _occF = new THREE.Vector3(), _occP = new THREE.Vector3();
+// Hide whichever cage panel / perimeter wall the camera is standing BEHIND (per
+// side, 1yd margin) so it never stares at the back of a wall seeing nothing.
 function cullOccluders() {
   const cp = camera.position;
-  camera.getWorldDirection(_occF); // camera forward
   for (const o of camOccluders) {
     const s = o.userData.cullSide, at = o.userData.cullAt;
-    const behind = (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
-                   (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1);
-    let hide = false;
-    if (behind) { o.getWorldPosition(_occP); hide = _occP.sub(cp).dot(_occF) > 0; } // only if it's in front of the camera
-    o.visible = !hide;
+    o.visible = !(
+      (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
+      (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1));
   }
 }
 
