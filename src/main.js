@@ -2800,6 +2800,7 @@ function tryReception() {
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away (no direct pick — only off the fence)
 }
 function checkRunOutcome() {
+  if (!game.carrier) return; // a botched pitch/fumble can clear the carrier mid-frame
   const c = game.carrier.group.position;
   if (reachedGoal(c.z)) { endPlay('TD', c.z); return; }
   // No out of bounds — the cage keeps the carrier in (clampToField).
@@ -3092,6 +3093,7 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
   const d = game.drag;
   game.state = STATE.TACKLE;
   d.active = true; d.t = 0; d.hx = hitDir.x; d.hz = hitDir.z; d.grabbers = pile.slice();
+  carrier.oneShotT = 0; carrier.diveT = 0; // cancel a leftover move so it can't keep the body lifted/floating during the drag
   // Takedown time: wrap-up power (count + TACKLING) vs the carrier's strength/speed.
   let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? t.rt.tackle : 0.6);
   const car = 0.6 + (carrier.rt ? carrier.rt.strength : 0.7) + Math.hypot(carrier.vel.x, carrier.vel.z) / 22;
@@ -3101,7 +3103,7 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
   pile.forEach((t, i) => {
     t.grabbing = true;
     t.grabSlot = baseAng + (i === 0 ? 0 : (i % 2 ? 1 : -1) * (0.55 + 0.22 * i));
-    t.vel.set(0, 0, 0); t.diveT = 0;
+    t.vel.set(0, 0, 0); t.diveT = 0; t.oneShotT = 0; // no leftover one-shot fighting the wrap pose
   });
   const cp = carrier.group.position;
   shake.kick(hitDir.x, hitDir.z, big ? 0.6 : 0.4);
@@ -3141,6 +3143,7 @@ function updateDrag(dt) {
 }
 function collapseDrag() {
   const d = game.drag, carrier = game.carrier;
+  if (!carrier) { d.active = false; for (const t of d.grabbers) t.grabbing = false; return; }
   d.active = false;
   const cp = carrier.group.position;
   const hitDir = new THREE.Vector3(d.hx, 0, d.hz);
