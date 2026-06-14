@@ -446,6 +446,81 @@ function updateParticles(dt) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Flame effect (ON FIRE / turbo). r160 dropped THREE.Fire, so this is a pooled
+// additive billboard-sprite emitter: soft blobs spawn at the target, rise and
+// flicker while fading hot->dark, giving a volumetric flame. Tinted orange for
+// ON FIRE, blue for turbo. No external texture (drawn to a canvas).
+const FLAME_ORANGE = new THREE.Color(0xff6a18), FLAME_BLUE = new THREE.Color(0x3aa6ff);
+function flameTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.4, 'rgba(255,240,210,0.7)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+class FlameEmitter {
+  constructor(count = 36) {
+    const tex = flameTexture();
+    this.sprites = []; this.parts = []; this.acc = 0;
+    for (let i = 0; i < count; i++) {
+      const m = new THREE.SpriteMaterial({ map: tex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 });
+      const s = new THREE.Sprite(m); s.visible = false; s.renderOrder = 5; scene.add(s);
+      this.sprites.push(s); this.parts.push({ life: 0, max: 1, vx: 0, vy: 0, vz: 0, base: 0.5 });
+    }
+    this.i = 0;
+  }
+  spawn(x, y, z, color) {
+    const idx = this.i++ % this.sprites.length, s = this.sprites[idx], p = this.parts[idx];
+    s.position.set(x + (Math.random() - 0.5) * 0.5, y + Math.random() * 0.3, z + (Math.random() - 0.5) * 0.5);
+    p.life = 0; p.max = 0.45 + Math.random() * 0.4;
+    p.vx = (Math.random() - 0.5) * 0.7; p.vy = 1.8 + Math.random() * 1.8; p.vz = (Math.random() - 0.5) * 0.7;
+    p.base = 0.55 + Math.random() * 0.5;
+    s.material.color.copy(color); s.material.opacity = 0.9; s.visible = true;
+  }
+  // color=null -> stop spawning (existing flames age out so it tapers smoothly).
+  update(dt, x, y, z, color, rate = 70) {
+    if (color) { this.acc += rate * dt; while (this.acc >= 1) { this.acc -= 1; this.spawn(x, y, z, color); } }
+    else this.acc = 0;
+    for (let k = 0; k < this.sprites.length; k++) {
+      const s = this.sprites[k], p = this.parts[k];
+      if (!s.visible) continue;
+      p.life += dt; const t = p.life / p.max;
+      if (t >= 1) { s.visible = false; s.material.opacity = 0; continue; }
+      s.position.x += p.vx * dt; s.position.y += p.vy * dt; s.position.z += p.vz * dt;
+      const sc = p.base * (1.1 - t * 0.7); s.scale.set(sc, sc, 1);
+      s.material.opacity = (1 - t) * 0.85;
+    }
+  }
+}
+let ballFlame, playerFlame;
+// Per-frame: flame the ON FIRE ball/carrier (orange) and whoever you're turboing
+// (blue). Tapers off smoothly when the condition ends (color=null).
+function updateFlames(dt) {
+  if (!ballFlame) return;
+  const st = game.state;
+  const live = st !== STATE.REPLAY && st !== STATE.DEAD && st !== STATE.RESET;
+  const c = game.controlled;
+  const turboOn = live && input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0) && c && !c.ragdolling;
+  // Hot player: the ball handler on offense, your controlled defender on defense.
+  const hot = live ? (game.userOnOffense ? (game.carrier || ball.holder || game.qb) : c) : null;
+  let pcol = null, ptarget = null;
+  if (turboOn) { pcol = FLAME_BLUE; ptarget = c; }                                   // turbo = blue
+  else if (game.onFire && hot && !hot.ragdolling) { pcol = FLAME_ORANGE; ptarget = hot; } // ON FIRE = orange
+  if (ptarget) { const p = ptarget.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pcol, 85); }
+  else playerFlame.update(dt, 0, 0, 0, null);
+  // The ball: blue when its turboing carrier has it, orange when the ON FIRE team carries/throws it.
+  const userHasBall = game.userOnOffense && (ball.mode === 'carried' || ball.mode === 'flying');
+  let bcol = null;
+  if (turboOn && (game.carrier === c || ball.holder === c)) bcol = FLAME_BLUE;
+  else if (game.onFire && userHasBall) bcol = FLAME_ORANGE;
+  if (bcol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, bcol, 60); }
+  else ballFlame.update(dt, 0, 0, 0, null);
+}
+
 // ===========================================================================
 // Assets + character factory
 // ===========================================================================
@@ -3602,6 +3677,7 @@ function updatePlay(dt) {
     targetArrow.rotation.y += dt * 2;
   }
   updateParticles(dt);
+  updateFlames(dt);
   if (game.battle.cd > 0) game.battle.cd -= dt;
   if (game.state === STATE.DEAD) {
     // Whistle beat: everyone still up brakes to a stop (run -> walk -> idle),
@@ -3798,6 +3874,7 @@ window.addEventListener('resize', () => {
 
 loadAssets().then(() => {
   spawnTeams(); makeBall();
+  ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   newPlay();
   loadingEl.classList.add('hidden');
