@@ -197,7 +197,7 @@ const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
-let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate;
+let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
@@ -231,6 +231,7 @@ async function loadAssets() {
   // Team helmets (static meshes attached to each head).
   try { helmetOffTemplate = (await loadGLB('assets/helmet_off.glb')).scene; } catch (e) { console.warn('off helmet missing', e); }
   try { helmetDefTemplate = (await loadGLB('assets/helmet_def.glb')).scene; } catch (e) { console.warn('def helmet missing', e); }
+  try { footballTemplate = (await loadGLB('assets/football.glb')).scene; } catch (e) { console.warn('football model missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
@@ -431,7 +432,7 @@ const ball = {
   spin: 0, spinRate: 0,
   // Catch: ball homes into the catcher's hands before the play resolves.
   catcher: null, secureT: 0, intercept: false, holder: null, intRolled: false,
-  trail: [], trailHist: [], // glowing comet trail (sprite pool)
+  trail: [], trailHist: [], mats: [], // glowing comet trail (sprite pool) + ball materials
 };
 function makeGlowTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -444,19 +445,32 @@ function makeGlowTexture() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 function makeBall() {
-  // A bigger stretched ellipsoid (long axis = local +Z) so it noses along its arc.
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.22, 20, 14),
-    new THREE.MeshStandardMaterial({ color: 0x7a3b16, roughness: 0.7, metalness: 0.05 }));
-  m.scale.z = 1.8; m.castShadow = true; scene.add(m); ball.mesh = m;
-  // White stripe + laces so the spiral reads.
-  const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.225, 0.022, 8, 20),
-    new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
-  stripe.rotation.y = Math.PI / 2; stripe.position.z = 0.16; m.add(stripe);
-  const lace = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.26),
-    new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
-  lace.position.set(0, 0.2, 0); m.add(lace);
+  // The ball lives in a GROUP whose local +Z is the long axis; the flight code
+  // noses that axis along the arc and spins about it (the spiral).
+  const group = new THREE.Group();
+  ball.mats = [];
+  if (footballTemplate) {
+    const model = footballTemplate.clone(true);
+    model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; o.material = o.material.clone(); ball.mats.push(o.material); } });
+    model.rotation.y = -Math.PI / 2;       // model's long axis (local +X) -> group +Z
+    model.scale.setScalar(0.85 / 1.894);   // ~0.85 yd long (arcade size)
+    group.add(model);
+  } else {
+    // Fallback: a stretched ellipsoid (long axis = local +Z).
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.22, 20, 14),
+      new THREE.MeshStandardMaterial({ color: 0x7a3b16, roughness: 0.7, metalness: 0.05 }));
+    m.scale.z = 1.8; m.castShadow = true; ball.mats.push(m.material);
+    const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.225, 0.022, 8, 20),
+      new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
+    stripe.rotation.y = Math.PI / 2; stripe.position.z = 0.16; m.add(stripe);
+    const lace = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.26),
+      new THREE.MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.6 }));
+    lace.position.set(0, 0.2, 0); m.add(lace);
+    group.add(m);
+  }
+  scene.add(group); ball.mesh = group;
   const flame = new THREE.PointLight(0xff6622, 0, 7); // lit while ON FIRE
-  m.add(flame); ball.flame = flame;
+  group.add(flame); ball.flame = flame;
   // Glowing comet trail: a pool of additive sprites laid along recent positions.
   const tex = makeGlowTexture();
   for (let i = 0; i < 16; i++) {
@@ -485,10 +499,12 @@ function updateTrail(airborne) {
     s.scale.set(sc, sc, sc);
   }
 }
+function setBallEmissive(hex, intensity) {
+  for (const m of ball.mats) { if (m.emissive) { m.emissive.setHex(hex); m.emissiveIntensity = intensity; m.needsUpdate = true; } }
+}
 function setFireVisual(on) {
   ball.flame.intensity = on ? 3 : 0;
-  ball.mesh.material.emissive.setHex(on ? 0xff5500 : 0x000000);
-  ball.mesh.material.emissiveIntensity = on ? 0.9 : 1;
+  setBallEmissive(on ? 0xff5500 : 0x000000, on ? 0.9 : 0);
 }
 function douseFire() {
   game.fireCount = 0;
@@ -1950,8 +1966,7 @@ function nearestTeamToBall(team) {
   return best || team[0];
 }
 function setFumbleGlow(on) {
-  const m = ball.mesh.material;
-  if (m) { m.emissive.setHex(on ? 0xffcc33 : 0x000000); m.emissiveIntensity = on ? 0.9 : 0; m.needsUpdate = true; }
+  setBallEmissive(on ? 0xffcc33 : 0x000000, on ? 0.9 : 0);
   if (ball.flame) { ball.flame.color.setHex(on ? 0xffd23a : 0xff6622); ball.flame.intensity = on ? 3.5 : (game.onFire ? 2 : 0); ball.flame.distance = on ? 10 : 7; }
 }
 function startFumble(carrier, hitX, hitZ) {
