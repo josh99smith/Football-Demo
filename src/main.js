@@ -650,7 +650,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead', RESET: 'reset' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead', RESET: 'reset', REPLAY: 'replay' };
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -670,6 +670,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
+  replay: { frames: [], i: 0, hold: 0, angle: 0 }, // instant-replay buffer + cam
   playIndex: 0, defCall: 0, choosing: false, cpuLastPlay: -1, // offense play / def call / select open / CPU's last call
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
@@ -1574,6 +1575,64 @@ function finalizeReset() {
   updateButtons();
   setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — tap SNAP`);
 }
+
+// --- Instant replay -------------------------------------------------------
+// While the ball is live we record a lightweight per-frame snapshot (positions,
+// headings, current clip + mixer time, ball transform). On a touchdown we play
+// it back in slow motion from a cinematic broadcast angle.
+const REPLAY_MAX = 320; // ~5s at 60fps
+const replayEl = document.getElementById('replay');
+function recordFrame() {
+  const p = new Array(game.all.length);
+  for (let i = 0; i < game.all.length; i++) {
+    const ch = game.all[i];
+    p[i] = { x: ch.group.position.x, z: ch.group.position.z, h: ch.heading, c: ch.current, t: ch.mixer.time };
+  }
+  const b = ball.mesh;
+  const f = game.replay.frames;
+  f.push({ bx: b.position.x, by: b.position.y, bz: b.position.z, brx: b.rotation.x, bry: b.rotation.y, brz: b.rotation.z, p });
+  if (f.length > REPLAY_MAX) f.shift();
+}
+function poseAt(ch, clip, t) {
+  for (const k in ch.actions) ch.actions[k].setEffectiveWeight(k === clip ? 1 : 0);
+  ch.mixer.setTime(Math.max(0, t || 0));
+}
+function startReplay() {
+  if (game.replay.frames.length < 40) return false; // not enough footage — skip
+  clearRagdolls();
+  game.state = STATE.REPLAY; game.replay.i = 0; game.replay.hold = 0;
+  game.replay.angle = (Math.random() < 0.5 ? 1 : -1) * (Math.PI * 0.42); // low ~3/4 sideline angle
+  if (replayEl) replayEl.classList.remove('hidden');
+  audio.whistle();
+  return true;
+}
+function applyReplayFrame(fi) {
+  const f = game.replay.frames, n = f.length;
+  const a = f[Math.min(n - 1, Math.floor(fi))], b = f[Math.min(n - 1, Math.ceil(fi))], u = fi - Math.floor(fi);
+  ball.mesh.position.set(a.bx + (b.bx - a.bx) * u, a.by + (b.by - a.by) * u, a.bz + (b.bz - a.bz) * u);
+  ball.mesh.rotation.set(a.brx, a.bry, a.brz);
+  for (let i = 0; i < game.all.length; i++) {
+    const ch = game.all[i], pa = a.p[i], pb = b.p[i];
+    ch.group.position.x = pa.x + (pb.x - pa.x) * u; ch.group.position.z = pa.z + (pb.z - pa.z) * u;
+    ch.group.rotation.y = pa.h; poseAt(ch, pa.c, pa.t);
+  }
+}
+function updateReplay(dt) {
+  const f = game.replay.frames;
+  game.replay.i += 0.6; // ~0.6x slow-mo playback
+  if (game.replay.i >= f.length - 1) {
+    applyReplayFrame(f.length - 1);
+    game.replay.hold += dt;
+    if (game.replay.hold > 1.3) endReplay();
+    return;
+  }
+  applyReplayFrame(game.replay.i);
+}
+function endReplay() {
+  if (replayEl) replayEl.classList.add('hidden');
+  game.replay.frames = [];
+  beginReset(); // possession was already set when the play ended
+}
 // Apply a defensive call to game.defense (on top of the base assignments).
 function applyDefCall(call) {
   const d = game.dir, L = game.los;
@@ -1589,6 +1648,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
+  game.replay.frames.length = 0; // fresh footage for this play
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
@@ -1941,6 +2001,7 @@ function endPlay(result, endZ) {
     }
   }
   updateHUD();
+  if (result === 'TD') startReplay(); // broadcast-style instant replay of the score
 }
 
 // ===========================================================================
@@ -2794,6 +2855,7 @@ function updatePlay(dt) {
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
+  if (game.state === STATE.REPLAY) { if (actionEdge) endReplay(); else updateReplay(dt); return; }
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
@@ -2908,6 +2970,8 @@ function updatePlay(dt) {
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
+  // Record footage while the ball is live (for the touchdown replay).
+  if (game.state !== STATE.PRESNAP && game.state !== STATE.DEAD && game.state !== STATE.RESET) recordFrame();
 
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
@@ -2960,6 +3024,18 @@ const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
 function updateCamera(dt) {
+  if (game.state === STATE.REPLAY) {
+    // Cinematic broadcast shot: a low, tight angle that slowly orbits the ball.
+    const b = ball.mesh.position;
+    const a = game.replay.angle + game.replay.i * 0.0016; // gentle dolly/orbit
+    _tp.set(b.x + Math.sin(a) * 13, 3.4, b.z + Math.cos(a) * 13);
+    cam.pos.lerp(_tp, Math.min(1, dt * 3));
+    cam.lookCur.lerp(b, Math.min(1, dt * 5));
+    const wantFov = 40; if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
+    camera.position.copy(cam.pos); camera.lookAt(cam.lookCur);
+    sun.position.set(b.x + 40, 70, b.z + 20); sun.target.position.set(b.x, 0, b.z);
+    return;
+  }
   const t = game.controlled || game.qb;
   const ret = game.state === STATE.RETURN || game.returnActive;
   const air = ball.mode === 'flying';                       // the ball is in the air

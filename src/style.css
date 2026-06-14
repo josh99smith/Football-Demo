@@ -351,6 +351,21 @@ html, body {
 #dive-btn  { right: max(120px, calc(env(safe-area-inset-right) + 120px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(120, 80, 30, 0.82); }
 #pitch-btn { right: max(200px, calc(env(safe-area-inset-right) + 200px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(110, 40, 110, 0.82); }
 
+/* ---------- Instant replay ---------- */
+#replay { position: fixed; inset: 0; z-index: 32; pointer-events: auto; }
+#replay.hidden { display: none; }
+#replay .rp-bar { position: fixed; left: 0; right: 0; height: 9vh; background: #000; }
+#replay .rp-top { top: 0; } #replay .rp-bottom { bottom: 0; }
+#replay .rp-tag {
+  position: fixed; top: calc(9vh + 12px); left: max(16px, env(safe-area-inset-left));
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 900; font-style: italic; letter-spacing: 1.5px; font-size: clamp(14px, 3.4vw, 20px);
+  color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,0.7);
+}
+#replay .rp-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: rpBlink 1s steps(1) infinite; }
+@keyframes rpBlink { 50% { opacity: 0.2; } }
+#replay .rp-skip { position: fixed; bottom: calc(9vh + 10px); right: max(16px, env(safe-area-inset-right)); color: rgba(255,255,255,0.6); font-size: 12px; letter-spacing: 0.5px; }
+
 /* ---------- Player ratings card ---------- */
 #ratecard {
   position: fixed;
