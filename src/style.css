@@ -451,6 +451,7 @@ html, body {
    (letterbox + REPLAY tag + CONTINUE) shows. */
 body.replay-mode #hud,
 body.replay-mode #ratecard,
+body.replay-mode #playresult,
 body.replay-mode #joystick,
 body.replay-mode .action-btn,
 body.replay-mode .mini-btn,
@@ -485,6 +486,25 @@ body.replay-mode #build-badge { display: none !important; }
 }
 .rp-continue:active { transform: scale(0.93); }
 @keyframes rpPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+
+/* ---------- Play-result readout (top-left, Blitz style) ---------- */
+#playresult {
+  position: fixed;
+  top: max(128px, calc(env(safe-area-inset-top) + 128px));
+  left: max(12px, env(safe-area-inset-left));
+  z-index: 21;
+  font-weight: 900;
+  font-style: italic;
+  font-size: 22px;
+  letter-spacing: 0.5px;
+  color: #fff;
+  text-shadow: 0 2px 0 #000, 0 0 12px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+#playresult.loss { color: #ff6a5a; }
+#playresult.gain { color: #7dffa6; }
+#playresult.hidden { opacity: 0; }
 
 /* ---------- Player ratings card ---------- */
 #ratecard {

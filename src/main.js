@@ -461,8 +461,26 @@ function makeRing(color) {
   m.rotation.x = -Math.PI / 2; m.position.y = 0.03; m.visible = false;
   scene.add(m); return m;
 }
+// Blitz-style selection reticle: concentric pulsing blue rings + a center marker
+// on the turf under the controlled player. (A Group, so .visible/.position still
+// work like the old single ring.) Pulse is driven in updateReticles().
+function makeBlueReticle() {
+  const g = new THREE.Group();
+  g.rotation.x = -Math.PI / 2; g.position.y = 0.035; g.visible = false;
+  const rings = [];
+  for (const [ri, ro] of [[0.5, 0.64], [0.8, 0.92]]) {
+    const m = new THREE.Mesh(new THREE.RingGeometry(ri, ro, 44),
+      new THREE.MeshBasicMaterial({ color: 0x49b6ff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
+    g.add(m); rings.push(m);
+  }
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.14, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
+  g.add(dot);
+  g.userData.rings = rings;
+  scene.add(g); return g;
+}
 const selRing = makeRing(0xffd54a);
-const ctrlRing = makeRing(0xffffff);
+const ctrlRing = makeBlueReticle();
 // Landing indicator: a target reticle on the turf where a thrown/loose ball
 // will come down, so you can anticipate the play.
 const landRing = (() => {
@@ -476,9 +494,129 @@ const landRing = (() => {
   g.position.y = 0.06; g.visible = false; scene.add(g); return g;
 })();
 
-// Broadcast lines: line of scrimmage (blue) + first-down (yellow). Each is a
-// bright stripe across the field flanked by tall sideline posts (down markers)
-// so it reads clearly from the chase cam.
+// Red feathered "flame" swirl under the ball carrier (the Blitz carrier marker).
+const carrierSwirl = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'); const cx = 64, cy = 64;
+  // Jagged double-ring of red/orange spokes, feathered toward the rim.
+  for (let pass = 0; pass < 2; pass++) {
+    const spokes = 30, rIn = 30 + pass * 6, rOut = 58 - pass * 4;
+    for (let i = 0; i < spokes; i++) {
+      const a = (i / spokes) * Math.PI * 2 + pass * 0.1;
+      const wob = 0.06 * Math.sin(i * 1.7);
+      const x0 = cx + Math.cos(a) * rIn, y0 = cy + Math.sin(a) * rIn;
+      const x1 = cx + Math.cos(a + wob) * rOut, y1 = cy + Math.sin(a + wob) * rOut;
+      const grd = g.createLinearGradient(x0, y0, x1, y1);
+      grd.addColorStop(0, 'rgba(255,180,40,0.9)'); grd.addColorStop(1, 'rgba(220,30,20,0)');
+      g.strokeStyle = grd; g.lineWidth = 3.2; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 3.2),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.05; m.visible = false; scene.add(m); return m;
+})();
+
+// Turbo as a segmented radial gauge on the turf around the controlled player
+// (blue -> yellow -> red), instead of only the corner bar. Redrawn when the
+// fill quantum changes; positioned/shown in updateReticles().
+const turboArc = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(2.9, 2.9),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.04; m.visible = false; scene.add(m);
+  m.userData.canvas = c; m.userData.tex = tex; m.userData.key = '';
+  return m;
+})();
+const TURBO_SEGS = 22;
+function drawTurboArc(frac, locked, fire) {
+  const key = `${Math.round(frac * TURBO_SEGS)}|${locked ? 1 : 0}|${fire ? 1 : 0}`;
+  if (key === turboArc.userData.key) return; turboArc.userData.key = key;
+  const g = turboArc.userData.canvas.getContext('2d'); g.clearRect(0, 0, 128, 128);
+  const cx = 64, cy = 64, rO = 60, rI = 49, gap = 0.10;
+  for (let i = 0; i < TURBO_SEGS; i++) {
+    const t = i / TURBO_SEGS, lit = t < frac;
+    const a0 = -Math.PI / 2 + t * Math.PI * 2 + gap;
+    const a1 = -Math.PI / 2 + (i + 1) / TURBO_SEGS * Math.PI * 2 - gap;
+    let col;
+    if (!lit) col = 'rgba(255,255,255,0.10)';
+    else if (fire) col = '#ff7a1e';
+    else if (locked) col = 'rgba(255,90,70,0.55)';
+    else col = `hsl(${Math.round(205 - t * 205)}, 90%, 55%)`; // 205=blue -> 0=red
+    g.beginPath(); g.arc(cx, cy, rO, a0, a1); g.arc(cx, cy, rI, a1, a0, true); g.closePath();
+    g.fillStyle = col; g.fill();
+  }
+  turboArc.userData.tex.needsUpdate = true;
+}
+
+// Floating surname tag that hangs under each player (Blitz on-field labels). A
+// billboard sprite child of the group, so it follows + always faces the camera;
+// brightness/tint is set per-frame in updateNameTags().
+function makeNameTag(text) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.font = '700 34px Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 7; g.strokeStyle = 'rgba(0,0,0,0.9)'; g.strokeText(text, 128, 36);
+  g.fillStyle = '#ffffff'; g.fillText(text, 128, 36);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, opacity: 0 }));
+  s.scale.set(2.6, 0.65, 1); s.center.set(0.5, 1.15); s.renderOrder = 7; s.position.set(0, 0.12, 0);
+  return s;
+}
+const SURNAMES = ['HICKS', 'WATT', 'ALLAR', 'METCALF', 'BATTAGLIA', 'ROSS', 'HUNTER', 'REED',
+  'CARTER', 'VANCE', 'DOBBS', 'MOSS', 'SHARP', 'BOONE', 'KANE', 'PIERCE', 'GREER', 'STORM',
+  'COLE', 'RHODES', 'FOX', 'WADE', 'TATE', 'NIX', 'BELL', 'LANE', 'KRUG', 'DRAKE'];
+// Is the ball live enough to show on-field selection chrome?
+function reticleLive() {
+  const s = game.state;
+  return s === STATE.LIVE || s === STATE.AIR || s === STATE.RUN || s === STATE.RETURN ||
+    s === STATE.TACKLE || s === STATE.BATTLE || s === STATE.LOOSE;
+}
+function updateReticles() {
+  const t = performance.now() * 0.001;
+  // Blue concentric reticle on the controlled player, pulsing outward.
+  if (ctrlRing.visible && game.controlled) {
+    const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.035, p.z);
+    const rings = ctrlRing.userData.rings;
+    for (let i = 0; i < rings.length; i++) {
+      const ph = (t * 1.5 - i * 0.5) % 1; rings[i].material.opacity = 0.35 + 0.5 * (1 - (ph < 0 ? ph + 1 : ph));
+    }
+  }
+  // Red feathered swirl on the ball carrier during live play.
+  const c = game.carrier, swirlOn = c && !c.ragdolling && reticleLive();
+  carrierSwirl.visible = swirlOn;
+  if (swirlOn) {
+    const p = c.group.position; carrierSwirl.position.set(p.x, 0.05, p.z);
+    carrierSwirl.material.rotation = t * 0.7;
+    const pul = 1 + Math.sin(t * 6) * 0.04; carrierSwirl.scale.set(pul, pul, 1);
+  }
+  // Turbo gauge ring under the controlled player.
+  const cc = game.controlled, arcOn = cc && !cc.ragdolling && reticleLive();
+  turboArc.visible = arcOn;
+  if (arcOn) {
+    const p = cc.group.position; turboArc.position.set(p.x, 0.04, p.z);
+    drawTurboArc(game.onFire ? 1 : game.turboMeter, game.turboLock, game.onFire);
+  }
+}
+function updateNameTags() {
+  if (!(reticleLive() || game.state === STATE.PRESNAP)) {
+    for (const ch of game.all) if (ch.nameTag) ch.nameTag.visible = false; return;
+  }
+  const ctl = game.controlled;
+  const myTeam = ctl && game.teamB.includes(ctl) ? game.teamB : game.teamA; // show your squad + the carrier
+  for (const ch of game.all) {
+    const tag = ch.nameTag; if (!tag) continue;
+    const hot = ch === ctl || ch === game.carrier;
+    const vis = !ch.ragdolling && (myTeam.includes(ch) || hot);
+    tag.visible = vis; if (!vis) continue;
+    tag.material.opacity = hot ? 1 : 0.3;
+    tag.material.color.setHex(ch === game.carrier ? 0xff7a5a : (ch === ctl ? 0x8fdcff : 0xffffff));
+  }
+}
+
+
 function makeFieldLine(color) {
   const g = new THREE.Group();
   const stripe = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 0.8),
@@ -1192,10 +1330,14 @@ function applyRatings(p) {
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
+  const pool = SURNAMES.slice().sort(() => Math.random() - 0.5); // unique surnames across both squads
   for (let i = 0; i < 7; i++) {
     const jit = () => Array.from({ length: 5 }, () => Math.round((Math.random() - 0.5) * 10)); // ±5 per attr
     const a = makeCharacter('off'); a.jitter = jit();
     const b = makeCharacter('def'); b.jitter = jit();
+    a.surname = pool[i] || 'PLAYER'; b.surname = pool[i + 7] || 'PLAYER';
+    a.nameTag = makeNameTag(a.surname); a.group.add(a.nameTag);
+    b.nameTag = makeNameTag(b.surname); b.group.add(b.nameTag);
     game.teamA.push(a); game.teamB.push(b);
   }
   game.all = [...game.teamA, ...game.teamB];
@@ -1752,6 +1894,20 @@ const elStatus = document.getElementById('status');
 const elGameClock = document.getElementById('game-clock');
 const elQuarter = document.getElementById('quarter');
 const elPlayClock = document.getElementById('playclock');
+const elPlayResult = document.getElementById('playresult');
+// Top-left play-result readout: +N YD / N YD LOSS / INCOMPLETE / TURNOVER.
+function setPlayResult(text, cls = '') {
+  if (!elPlayResult) return;
+  elPlayResult.textContent = text;
+  elPlayResult.className = cls; // '', 'gain', or 'loss' (no 'hidden' => visible)
+}
+function clearPlayResult() { if (elPlayResult) elPlayResult.className = 'hidden'; }
+// Format signed yardage the Blitz way.
+function yardResult(gained) {
+  const g = Math.round(gained);
+  if (g <= 0) return { text: `${Math.abs(g)} YD LOSS`, cls: g < 0 ? 'loss' : '' };
+  return { text: `+${g} YD`, cls: 'gain' };
+}
 const elRateCard = document.getElementById('ratecard');
 const RC_LABELS = ['SPD', 'STR', 'STA', 'SKL', 'TKL'];
 let rcLast = '';
@@ -2212,6 +2368,7 @@ function applyDefCall(call) {
 function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
+  clearPlayResult(); // wipe last play's readout
   recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
   game.playClock = 0; game.lastBreak = -10;
@@ -2585,16 +2742,20 @@ function endPlay(result, endZ) {
     } else {
       game.scoreDef += 7; douseFire(); showBanner('CPU TOUCHDOWN', '#5a8bff'); setStatus('CPU scores');
     }
+    setPlayResult('TOUCHDOWN', 'gain');
     giveBallTo(!userHad, driveStartForUser(!userHad)); // other team gets the ball
   } else if (result === 'intercept' || result === 'fumble') {
     if (result !== 'intercept') blowWhistle();
     if (userHad) douseFire(); // the player coughed it up
     showBanner('TURNOVER', '#ffd23a');
     setStatus(result === 'fumble' ? 'Fumble — turnover!' : 'Intercepted!');
+    setPlayResult(result === 'fumble' ? 'FUMBLE' : 'INTERCEPTED', 'loss');
     giveBallTo(!userHad, endZ); // the other team takes over at the spot
   } else {
     blowWhistle();
     const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
+    if (result === 'incomplete') setPlayResult('INCOMPLETE');
+    else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); }
     setStatus(result === 'incomplete' ? 'Incomplete'
       : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
         : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
@@ -3949,9 +4110,8 @@ function updatePlay(dt) {
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
   }
-  if (ctrlRing.visible && game.controlled) {
-    const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.03, p.z);
-  }
+  updateReticles(dt);
+  updateNameTags();
   // Target arrow bobs over the selected receiver while you're picking a throw.
   const showArrow = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
   targetArrow.visible = showArrow;
