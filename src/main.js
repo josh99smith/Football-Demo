@@ -3096,23 +3096,39 @@ function applyArmAction(ch, dt) {
 const _qLeanY = new THREE.Quaternion(), _qLeanX = new THREE.Quaternion();
 const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
 function applyBattleLean(ch, isTackler) {
-  const lean = (isTackler ? 0.42 : 0.34) + Math.sin(performance.now() * 0.012) * 0.05; // forward tilt + strain
-  _qLeanY.setFromAxisAngle(_UP, ch.heading);
+  const now = performance.now();
+  const v = game.battle.val; // carrier's break meter (high = carrier winning)
+  // Whoever's winning leans IN; the loser gets stood up. Plus a strain shimmer
+  // and a little side-to-side sway so the lock isn't a frozen statue.
+  const push = isTackler ? (0.5 - v * 0.32) : (0.22 + v * 0.34);
+  const lean = push + Math.sin(now * 0.013 + (isTackler ? 0 : 1.5)) * 0.05;
+  const sway = Math.sin(now * 0.009 + (isTackler ? 1 : 0)) * 0.05;
+  _qLeanY.setFromAxisAngle(_UP, ch.heading + sway);
   _qLeanX.setFromAxisAngle(_XAX, lean);
   ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
 }
 function applyBattleArms(ch, isTackler) {
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = performance.now() * 0.001;
+  const pump = Math.sin(t * 9);
   const set = (bone, rest, a) => { if (bone && rest) { _tq.setFromAxisAngle(_xAxisL, a); bone.quaternion.copy(rest).multiply(_tq); bone.updateMatrixWorld(true); } };
-  if (isTackler) { // both arms reach in to wrap, pumping with the struggle
-    const a = 1.55 + Math.sin(t * 9) * 0.12;
-    set(ch.upperArm, ch.upperArmRest, -a); set(ch.foreArm, ch.foreArmRest, -0.85);
-    set(ch.leftArm, ch.leftArmRest, -a); set(ch.leftForeArm, ch.leftForeArmRest, -0.85);
-  } else {        // carrier: right arm stiff-arms out, left cradles the ball
-    const a = 1.35 + Math.sin(t * 9 + 1) * 0.18;
-    set(ch.upperArm, ch.upperArmRest, -a); set(ch.foreArm, ch.foreArmRest, -0.15); // straight stiff-arm
-    set(ch.leftArm, ch.leftArmRest, -0.5); set(ch.leftForeArm, ch.leftForeArmRest, -1.5); // tuck/cradle
+  if (isTackler) {
+    // Wrap up: both arms reach forward, forearms fold in to clamp the carrier
+    // (hands come back to the body, not straight out), head buried in the chest.
+    // A small L/R stagger keeps it from looking robotic.
+    set(ch.upperArm, ch.upperArmRest, -(1.45 + pump * 0.12));
+    set(ch.foreArm, ch.foreArmRest, -(1.55 + pump * 0.15));
+    set(ch.leftArm, ch.leftArmRest, -(1.4 - pump * 0.12));
+    set(ch.leftForeArm, ch.leftForeArmRest, -(1.55 - pump * 0.15));
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.5); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
+  } else {
+    // Drive through: right arm stiff-arms into the tackler, left tucks the ball;
+    // chin up as he churns forward.
+    set(ch.upperArm, ch.upperArmRest, -(1.4 + pump * 0.1));
+    set(ch.foreArm, ch.foreArmRest, -0.12);                 // straight stiff-arm
+    set(ch.leftArm, ch.leftArmRest, -0.45);
+    set(ch.leftForeArm, ch.leftForeArmRest, -1.6);           // tuck/cradle the ball
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.18); ch.headBone.quaternion.multiply(_tq); } // chin up
   }
 }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
