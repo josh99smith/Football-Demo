@@ -368,6 +368,7 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
   }
 }
 function drawJumbo(quarter, clock, scoreLine, downLine) {
+  if (jumboMode === 'ad') return;            // an ad is on the board — don't overwrite it
   const key = quarter + clock + scoreLine + downLine;
   if (key === jumboLast || !jumboCtx) return; jumboLast = key;
   const g = jumboCtx, w = 512, h = 256;
@@ -379,6 +380,65 @@ function drawJumbo(quarter, clock, scoreLine, downLine) {
   g.font = 'bold 40px Arial, sans-serif'; g.fillStyle = '#7fe0ff'; g.fillText(`${quarter}   ${clock}`, w / 2, 186);
   g.font = 'bold 26px Arial, sans-serif'; g.fillStyle = '#cfe0ff'; g.fillText(downLine, w / 2, 226);
   jumboTex.needsUpdate = true;
+}
+
+// ---- Jumbotron ad rotation: cycle SCOREBOARD -> AD -> SCOREBOARD ----------
+// Each ad is a function that paints the 512x256 board. To use a real image ad,
+// drop a file in assets/ and add imageAd('assets/whatever.jpg') to JUMBO_ADS.
+let jumboMode = 'score', jumboT = 14, jumboAdIdx = -1;
+function imageAd(src) {
+  const img = new Image(); let ok = false; img.onload = () => { ok = true; }; img.src = src;
+  return (g, w, h) => {
+    g.fillStyle = '#05070c'; g.fillRect(0, 0, w, h);
+    if (!ok) return false; // not loaded yet — try again next cycle
+    const r = Math.max(w / img.width, h / img.height); // cover-fit
+    const dw = img.width * r, dh = img.height * r;
+    g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    return true;
+  };
+}
+function adBG(g, w, h, a, b) { const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, a); grd.addColorStop(0.55, b); grd.addColorStop(1, '#0a0c14'); g.fillStyle = grd; g.fillRect(0, 0, w, h); }
+function adBolt(g, x, y, s) { g.fillStyle = '#ffd23a'; g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.5, y - s); g.lineTo(x + s * 0.1, y); g.lineTo(x + s * 0.6, y); g.lineTo(x - s * 0.4, y + s * 1.2); g.lineTo(x - s * 0.05, y + s * 0.2); g.lineTo(x - s * 0.55, y + s * 0.2); g.closePath(); g.fill(); }
+function drawAdBlitz(g, w, h) {
+  adBG(g, w, h, '#7a0f1a', '#3a0a12');
+  g.strokeStyle = 'rgba(90,160,255,0.45)'; g.lineWidth = 7;
+  for (let i = -1; i < 5; i++) { g.beginPath(); g.moveTo(i * 120, h); g.lineTo(i * 120 + 90, 0); g.stroke(); }
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  adBolt(g, 56, 90, 30); adBolt(g, w - 56, 90, 30);
+  g.font = 'italic 900 86px Arial Black, sans-serif'; g.lineWidth = 9; g.strokeStyle = '#0a0e1a';
+  g.strokeText('BLITZ', w / 2, 96); g.fillStyle = '#ff3a4a'; g.fillText('BLITZ', w / 2, 96);
+  g.font = 'italic 900 52px Arial Black, sans-serif'; g.strokeText('COLA', w / 2, 160); g.fillStyle = '#dfe7ff'; g.fillText('COLA', w / 2, 160);
+  g.font = 'bold 28px Arial, sans-serif'; g.fillStyle = '#ffd23a'; g.fillText('HARDCORE FUEL', w / 2, 214);
+}
+function drawAdReaper(g, w, h) {
+  adBG(g, w, h, '#2a0808', '#120a0a');
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'italic 900 70px Arial Black, sans-serif'; g.lineWidth = 8; g.strokeStyle = '#000';
+  g.strokeText('REAPER', w / 2, 100); g.fillStyle = '#ff4a2a'; g.fillText('REAPER', w / 2, 100);
+  g.font = 'italic 900 66px Arial Black, sans-serif'; g.strokeText('ENERGY', w / 2, 168); g.fillStyle = '#ffffff'; g.fillText('ENERGY', w / 2, 168);
+  g.font = 'bold 24px Arial, sans-serif'; g.fillStyle = '#ff8a6a'; g.fillText('FEAR NOTHING.', w / 2, 220);
+}
+function drawAdTurf(g, w, h) {
+  adBG(g, w, h, '#0d3a22', '#0a1a12');
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'italic 900 88px Arial Black, sans-serif'; g.lineWidth = 8; g.strokeStyle = '#04140c';
+  g.strokeText('TURF KING', w / 2, 110); g.fillStyle = '#3fe08a'; g.fillText('TURF KING', w / 2, 110);
+  g.font = 'bold 30px Arial, sans-serif'; g.fillStyle = '#dfffe9'; g.fillText('THE PROS PLAY ON', w / 2, 184);
+  g.font = 'bold 24px Arial, sans-serif'; g.fillStyle = '#bff0d2'; g.fillText('REAPERS  STADIUM  TURF', w / 2, 222);
+}
+// Real photo ads drop in here once their files exist, e.g. imageAd('assets/ad_blitzcola.jpg').
+const JUMBO_ADS = [drawAdBlitz, drawAdReaper, drawAdTurf];
+function tickJumbo(dt) {
+  if (!jumboCtx) return;
+  jumboT -= dt;
+  if (jumboT > 0) return;
+  if (jumboMode === 'score') {                 // flip to the next ad
+    jumboMode = 'ad'; jumboT = 6;
+    jumboAdIdx = (jumboAdIdx + 1) % JUMBO_ADS.length;
+    JUMBO_ADS[jumboAdIdx](jumboCtx, 512, 256); jumboTex.needsUpdate = true;
+  } else {                                      // back to the scoreboard
+    jumboMode = 'score'; jumboT = 12; jumboLast = ''; updateHUD();
+  }
 }
 
 function makeRing(color) {
@@ -3773,6 +3833,7 @@ function updatePlay(dt) {
   }
   updateParticles(dt);
   updateFlames(dt);
+  tickJumbo(dt); // rotate jumbotron between the scoreboard and ads
   if (game.battle.cd > 0) game.battle.cd -= dt;
   if (game.state === STATE.DEAD) {
     // Whistle beat: everyone still up brakes to a stop (run -> walk -> idle),
