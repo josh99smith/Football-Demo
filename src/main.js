@@ -835,6 +835,22 @@ const PLAYS = [
       return [P(sx + toMid * 4, 10), P(sx, 8)];                   // slot out/sit
     },
   },
+  {
+    name: 'DIVE', sub: 'HB up the gut', run: true,
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 4, 2), P(1, 9), P(0, 22)];      // RB cuts inside, upfield
+      return [P(sx, 4)];                                          // WRs stalk-block
+    },
+  },
+  {
+    name: 'SWEEP', sub: 'HB bounce outside', run: true,
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 7, 1), P(-19, 7), P(-21, 24)];  // RB bounces wide then up
+      return [P(sx, 5)];                                          // WRs stalk-block
+    },
+  },
 ];
 
 // Render a play's actual routes as a little SVG diagram for the call screen.
@@ -1258,14 +1274,18 @@ const offCardHTML = PLAYS.map((pl, i) => `${makePlayArtSVG(pl)}<i>${i + 1}</i><b
 const defCardHTML = DEF_PLAYS.map((d, i) => `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>`);
 function openPlaySelect() {
   game.choosing = true;
-  const off = game.userOnOffense, sel = off ? game.playIndex : game.defCall;
+  const off = game.userOnOffense, html = off ? offCardHTML : defCardHTML, sel = off ? game.playIndex : game.defCall;
   if (psTitle) psTitle.textContent = off ? 'CHOOSE YOUR PLAY' : 'CALL YOUR DEFENSE';
-  playCards.forEach((c, i) => { c.innerHTML = off ? offCardHTML[i] : defCardHTML[i]; c.classList.toggle('chosen', i === sel); });
+  playCards.forEach((c, i) => {
+    if (i < html.length) { c.innerHTML = html[i]; c.classList.toggle('chosen', i === sel); c.classList.remove('hidden'); }
+    else c.classList.add('hidden'); // fewer calls than card slots (defense)
+  });
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
 }
 function choosePlay(i) {
-  if (i < 0 || i > 3) return;
+  const len = game.userOnOffense ? PLAYS.length : DEF_PLAYS.length;
+  if (i < 0 || i >= len) return;
   if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
   else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
   game.choosing = false;
@@ -1287,7 +1307,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
     if (e.code === 'KeyE') input.diveEdge = true;   // dive
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
-    if (game.choosing && /^Digit[1-4]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
+    if (game.choosing && /^Digit[1-6]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
   }
   keys[e.code] = true;
   if (e.code === 'Space') input.action = true;
@@ -1667,7 +1687,7 @@ function snap() {
     game.cpuLastPlay = idx; play = PLAYS[idx];
   }
   game.receivers.forEach((r, e) => { r.route = play.route(e, r.align.x, game.los); r.wp = 0; r.cutTimer = 0; r.job = 'route'; });
-  game.offense.forEach((o) => { if (o.role === 'OL') o.job = 'block'; }); // linemen pass-protect
+  game.offense.forEach((o) => { if (o.role === 'OL') o.job = 'block'; }); // linemen block
   game.defense.forEach((d) => {
     d.job = d.role === 'DL' ? 'rush' : d.deep ? 'zone' : 'cover'; // DL rush, S deep, rest cover
     if (d.deep) d.zonePoint = new THREE.Vector3(0, 0, game.los + game.dir * 18);
@@ -1679,6 +1699,13 @@ function snap() {
     ctrlRing.visible = true; selRing.visible = false;
   } else { applyDefCall((Math.random() * 4) | 0); }
   audio.hike();
+  if (play.run) {                          // RUN PLAY: hand it to the back and go
+    const rb = game.receivers[3];
+    game.offense.forEach((o) => { if (o !== rb && o.role !== 'QB') o.job = 'block'; }); // everyone blocks
+    ball.holder = rb; rb.jukeTimer = 0;
+    enterRun(rb, 'Handoff — find a lane!');
+    return;
+  }
   setStatus(game.userOnOffense ? 'Find an open receiver, then THROW' : 'Defense! Stop the throw');
   updateButtons();
 }
@@ -2239,6 +2266,19 @@ function checkRunOutcome() {
   for (const db of game.defense) {
     if (db.ragdolling) continue;
     if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { beginTackle(db); return; }
+  }
+}
+// SACK: a rusher (or your driven defender) who reaches the QB in the pocket
+// before the throw drops him for a loss — committed tackle, ragdoll, can strip.
+function checkSack() {
+  const qp = game.qb.group.position;
+  for (const d of game.defense) {
+    if (d.ragdolling) continue;
+    if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
+      game.carrier = game.qb; beginTackle(d, true);
+      showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit();
+      return;
+    }
   }
 }
 
@@ -2952,6 +2992,7 @@ function updatePlay(dt) {
       }
     }
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+    if (game.state === STATE.LIVE) checkSack(); // a rusher at the QB = sack
   } else if (game.state === STATE.RUN && !game.userOnOffense) {
     updateCpuRun(dt, turboOn, actionEdge); // CPU carrier; you tackle on defense
   } else if (game.state === STATE.RUN) {
