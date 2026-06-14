@@ -1359,7 +1359,9 @@ function applySteer(ch, dt) {
   ch.group.position.x += ch.vel.x * dt;
   ch.group.position.z += ch.vel.z * dt;
   ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
-  if (ch.speed > 0.3) ch.heading = Math.atan2(ch.vel.x, ch.vel.z);
+  // holdHeading: keep facing where we're told (e.g. the CPU QB squared to his
+  // target) instead of snapping to the travel direction (backpedal = backwards).
+  if (ch.speed > 0.3 && !ch.holdHeading) ch.heading = Math.atan2(ch.vel.x, ch.vel.z);
   clampToField(ch);
 }
 function clampToField(ch) {
@@ -1842,7 +1844,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; ch.grabbing = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
     ch.resetDelay = teleport ? 0 : Math.random() * 0.8;        // staggered starts
@@ -2166,7 +2168,7 @@ function throwBall(power) {
 }
 function enterRun(player, msg) {
   game.state = STATE.RUN;
-  game.carrier = player; player.route = null;
+  game.carrier = player; player.route = null; player.holdHeading = false; // a runner faces where he runs
   ball.mode = 'carried';
   // You drive the carrier on your possession; on a CPU run you take over the
   // nearest defender to chase him down.
@@ -2209,6 +2211,11 @@ function cpuQB(dt) {
   else qb.desired = { x: 0, z: 0 };
   if (ball.mode !== 'carried') return;
   const target = mostOpenReceiver();
+  // Square up to the target (or straight downfield) and HOLD that facing so the
+  // backpedal/scramble velocity can't spin him around — no more throwing backwards.
+  qb.holdHeading = true;
+  const fz = target ? target.group.position : { x: 0, z: qb.group.position.z + game.dir };
+  qb.heading = Math.atan2(fz.x - qb.group.position.x, fz.z - qb.group.position.z);
   const cov = target ? nearestDefenderTo(px(target)) : null;
   const sep = (target && cov) ? distXZ(px(target), px(cov)) : 9;
   const ready = game.cpuQBTimer <= 0;   // dropback finished — only then look to throw
@@ -2825,10 +2832,9 @@ function updateBattle(dt) {
   const drive = (b.val - 0.5) * 2.2;             // yards the carrier pushes the pile
   const c = game.carrier.group.position;
   c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
-  // Pressed chest-to-chest. Body depth ~0.45yd, so center-to-center a touch under
-  // that overlaps the torsos slightly and the wrapped arms land on each other (a
-  // real lock, not two figures with a gap). The inward lean closes any remainder.
-  const half = 0.48 + wob;
+  // Locked at arm's length: bodies ~one depth apart with both players' arms shot
+  // straight forward so their hands meet/push on each other (see applyBattleArms).
+  const half = 0.6 + wob;
   const tk = b.tackler.group.position;
   tk.x = c.x + sa * half; tk.z = c.z + ca * half;
 
@@ -3320,22 +3326,22 @@ function applyBattleArms(ch, isTackler) {
   const pump = Math.sin(t * 9);
   const set = (bone, rest, a) => { if (bone && rest) { _tq.setFromAxisAngle(_xAxisL, a); bone.quaternion.copy(rest).multiply(_tq); bone.updateMatrixWorld(true); } };
   if (isTackler) {
-    // Wrap up: both arms reach forward, forearms fold in to clamp the carrier
-    // (hands come back to the body, not straight out), head buried in the chest.
-    // A small L/R stagger keeps it from looking robotic.
-    set(ch.upperArm, ch.upperArmRest, -(1.45 + pump * 0.12));
-    set(ch.foreArm, ch.foreArmRest, -(1.55 + pump * 0.15));
-    set(ch.leftArm, ch.leftArmRest, -(1.4 - pump * 0.12));
-    set(ch.leftForeArm, ch.leftForeArmRest, -(1.55 - pump * 0.15));
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.5); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
+    // Both arms shoot STRAIGHT forward (upper arm up, forearm extended) so the
+    // hands reach across and lock onto the carrier — pushing, not wrapping back.
+    // The pump shoves them in and out so it reads as a live struggle.
+    set(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12));
+    set(ch.foreArm, ch.foreArmRest, -(0.2 + pump * 0.1));
+    set(ch.leftArm, ch.leftArmRest, -(1.5 - pump * 0.12));
+    set(ch.leftForeArm, ch.leftForeArmRest, -(0.2 - pump * 0.1));
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.35); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
   } else {
-    // Drive through: right arm stiff-arms into the tackler, left tucks the ball;
-    // chin up as he churns forward.
-    set(ch.upperArm, ch.upperArmRest, -(1.4 + pump * 0.1));
-    set(ch.foreArm, ch.foreArmRest, -0.12);                 // straight stiff-arm
+    // Carrier shoves back: right arm extended into the tackler (hands lock), left
+    // tucks/cradles the ball low.
+    set(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12));
+    set(ch.foreArm, ch.foreArmRest, -(0.18 + pump * 0.1));   // straight push, locking hands
     set(ch.leftArm, ch.leftArmRest, -0.45);
     set(ch.leftForeArm, ch.leftForeArmRest, -1.6);           // tuck/cradle the ball
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.18); ch.headBone.quaternion.multiply(_tq); } // chin up
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.12); ch.headBone.quaternion.multiply(_tq); } // chin up
   }
 }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
