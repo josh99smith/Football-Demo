@@ -50,7 +50,9 @@ function makeAdTexture() {
   g.font = 'bold 36px Arial Black, sans-serif'; g.textBaseline = 'middle';
   let x = 10, i = 0;
   while (x < 1024) { const [t, col] = ads[i++ % ads.length]; g.fillStyle = col; g.fillText(t, x, 34); x += g.measureText(t).width + 70; }
-  const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(7, 1); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+  // Negative repeat.x flips U so the text reads correctly on the BackSide ring
+  // (seen from inside the cylinder it would otherwise be mirrored).
+  const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(-7, 1); tex.offset.x = 1; tex.colorSpace = THREE.SRGBColorSpace; return tex;
 }
 {
   // Night sky: deep blue overhead fading to a city-glow horizon.
@@ -276,7 +278,8 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
 {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256; jumboCtx = c.getContext('2d');
   jumboTex = new THREE.CanvasTexture(c); jumboTex.colorSpace = THREE.SRGBColorSpace;
-  jumboTex.wrapS = THREE.RepeatWrapping; jumboTex.repeat.x = -1; jumboTex.offset.x = 1; // un-mirror after the 180° flip
+  // The screen plane's group is rotated 180° to face the field; that rotation
+  // already presents the texture the right way round, so no U-flip is needed.
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.7, metalness: 0.3 });
   const jt = new THREE.Group();
   const frame = new THREE.Mesh(new THREE.BoxGeometry(26, 13, 1.2), frameMat); jt.add(frame);
