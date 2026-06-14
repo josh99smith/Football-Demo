@@ -72,7 +72,7 @@ always shows what it'll do right now.
 | Input | Action |
 | --- | --- |
 | **Left joystick** | Move + aim the targeted receiver (camera-relative) |
-| **ACTION** (one button) | Context-sensitive: **SNAP** → **THROW** (tap=lob, hold=bullet) → while running it reads the field — **HURDLE** a man in your path, **TRUCK** (stiff-arm) one in close, **DIVE** at the sticks/pylon, or **JUKE** in open space; **TACKLE** on defense, **DIVE** on a loose ball, **SWITCH** defenders. It **glows red** the instant a HURDLE/TRUCK is available |
+| **ACTION** (one button) | Context-sensitive: **SNAP** → **THROW** (tap=lob, hold=bullet) → while running it reads the field — **HURDLE** a man in your path, **STIFF ARM** one in close, or **JUKE** in open space; **TACKLE** on defense, **DIVE** on a loose ball, **SWITCH** defenders. It **glows red** the instant a HURDLE / STIFF ARM is available |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
 | **⛶ (top-right)** | Toggle fullscreen — hides the mobile browser bar so the play isn't cut off |
 | **WASD / arrows** (desktop) | Move + aim |

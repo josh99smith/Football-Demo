@@ -1684,7 +1684,7 @@ window.addEventListener('keydown', (e) => {
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
     if (e.code === 'Space') input.actionEdge = true;
     if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
-    if (e.code === 'KeyE') input.diveEdge = true;   // dive
+    if (e.code === 'KeyE') input.diveEdge = true;   // stiff arm
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (game.choosing) {
       if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
@@ -1765,7 +1765,7 @@ function setStatus(text) {
 function show(el, label) { el.classList.remove('hidden'); if (label != null) el.textContent = label; }
 function hide(el) { el.classList.add('hidden'); }
 // The single contextual ACTION button: set its label (+ optional "hot" glow when
-// a special move like HURDLE/TRUCK is available so it's obvious you can do it).
+// a special move like HURDLE / STIFF ARM is available so it's obvious you can do it).
 function setAction(label, hot = false) {
   actionBtn.classList.remove('hidden');
   if (actionLabel) actionLabel.textContent = label; else actionBtn.textContent = label;
@@ -1787,23 +1787,19 @@ function updateButtons() {
 }
 // Decide what the contextual ACTION does for the ball carrier right now, and the
 // label to show. Captures the exact defender in the path and gates on cooldown,
-// so HURDLE / TRUCK only light up when they're actually available.
+// so HURDLE / STIFF ARM only light up when they're actually available.
 function carrierContext(c) {
   if (!c) return { label: 'JUKE', hot: false, run: () => {} };
   const ahead = defenderAhead(c, 2.8, 0.48); // a man square in the path
   const fast = c.speed > 7.5;
-  if (ahead && fast && c.jukeCd <= 0.6 && c.diveT <= 0)
+  if (ahead && fast && c.jukeCd <= 0.6)
     return { label: 'HURDLE', hot: true, run: (x) => doHurdle(x, ahead) };
   if (ahead && c.jukeCd <= 0)
-    return { label: 'TRUCK', hot: true, run: (x) => stiffArm(x, ahead) };
-  const p = c.group.position;
-  const nearGoal = Math.abs(atkGoalZ() - p.z) < 6 ||
-    (game.dir > 0 ? p.z >= game.firstDown - 2 : p.z <= game.firstDown + 2); // at the sticks/pylon
-  if (nearGoal) return { label: 'DIVE', hot: false, run: doDive };
+    return { label: 'STIFF ARM', hot: true, run: (x) => stiffArm(x, ahead) };
   return { label: 'JUKE', hot: false, run: doJuke };
 }
 // Refresh the action button to the carrier's current context (called per-frame
-// during your run so HURDLE/TRUCK light up the instant they're available).
+// during your run so HURDLE / STIFF ARM light up the instant they're available).
 function refreshRunAction(c) {
   const ctx = carrierContext(c);
   setAction(ctx.label, ctx.hot);
@@ -3410,7 +3406,13 @@ function applyArmAction(ch, dt) {
   const tgt = ch.armPoseTarget;
   const chestY = ch.group.position.y + 1.2;
   const reach = tgt ? THREE.MathUtils.clamp(1.2 + (tgt.y - chestY) * 1.0, 0.4, 2.6) : 1.6;
-  if (ch.armPose === 'swat') {
+  if (ch.armPose === 'stiffarm') {
+    // The off-arm punches straight out to ward off / truck — extends fast and
+    // HOLDS for the move (not a quick wind-and-return), so it reads as a stiff-arm.
+    const e = Math.min(1, t * 5);
+    _tq.setFromAxisAngle(_xAxisL, -1.45 * e); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.12 * e); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); } // arm held straight
+  } else if (ch.armPose === 'swat') {
     // One arm slashes up across the ball to bat it down.
     _tq.setFromAxisAngle(_xAxisL, -reach * w);
     ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
@@ -3569,6 +3571,7 @@ function doSpin(ch) {
 }
 function stiffArm(ch, def) {
   ch.jukeCd = 1.0; ch.jukeTimer = 0.25; // brief immunity as you barrel through
+  triggerArmAction(ch, 'stiffarm', 0.45, def.group.position); // procedural arm thrust into him
   knockdownDefender(def);               // truck him to the turf (ragdoll)
   ch.vel.x *= 0.82; ch.vel.z *= 0.82;   // small speed cost
   shake.add(0.22); shake.kick(Math.sin(ch.heading), Math.cos(ch.heading), 0.5);
@@ -3576,21 +3579,17 @@ function stiffArm(ch, def) {
   audio.hit(0.7);
   showBanner('STIFF ARM!', '#ffd23a');
 }
-// DIVE — a committed forward lunge (hurdles a lone tackler), then you're DOWN.
-// Great to reach the sticks or the pylon; risky if you go too early. But if a
-// defender is right in front and you're moving, DIVE becomes a HURDLE: you
-// vault clean over him and KEEP RUNNING (no down) — like SPIN -> stiff-arm.
-function doDive(ch) {
-  if (ch.diveT > 0 || ch.jukeCd > 0.6) return;
-  const ahead = defenderAhead(ch, 2.6, 0.5);
-  if (ahead && (ch.turbo || ch.speed > 8)) { doHurdle(ch, ahead); return; }
-  const fx = Math.sin(ch.heading), fz = Math.cos(ch.heading);
-  const burstSpd = ch.baseSpeed * 1.35;
-  ch.vel.x = fx * burstSpd; ch.vel.z = fz * burstSpd;
-  ch.diveT = 0.45; ch.jukeTimer = 0.32; // hurdle window
-  playOneShot(ch, 'juke', 0.45);
+// STIFF ARM — thrust the off-arm out (procedural pose). If a defender is in front
+// he gets trucked to the turf; otherwise it's just the arm-out warding stance
+// with a beat of immunity. (Replaces the old committed DIVE.)
+function doStiffArm(ch) {
+  if (ch.jukeCd > 0) return;
+  const ahead = defenderAhead(ch, 3.0, 0.4); // a bit wider/looser than the truck
+  if (ahead) { stiffArm(ch, ahead); return; }
+  ch.jukeCd = 0.8; ch.jukeTimer = 0.3; // arm out, ward off — short immunity
+  triggerArmAction(ch, 'stiffarm', 0.45, null);
   audio.juke();
-  showBanner('DIVE!', '#bfffd0');
+  showBanner('STIFF ARM!', '#ffd23a');
 }
 // HURDLE — leap over a low/diving defender and land still running. The jukeTimer
 // immunity makes the man he's vaulting whiff (see beginTackle).
@@ -3764,11 +3763,11 @@ function updatePlay(dt) {
     updateCpuRun(dt, turboOn, actionEdge); // CPU carrier; you tackle on defense
   } else if (game.state === STATE.RUN) {
     // The single ACTION button picks the right move for the moment (HURDLE /
-    // TRUCK / DIVE / JUKE — see carrierContext). Desktop Q/E/F stay as explicit
-    // spin / dive / pitch shortcuts for power users.
+    // STIFF ARM / JUKE — see carrierContext). Desktop Q/E/F stay as explicit
+    // spin / stiff-arm / pitch shortcuts for power users.
     if (actionEdge) carrierContext(game.carrier).run(game.carrier);
     if (spinEdge) doSpin(game.carrier);
-    if (diveEdge) doDive(game.carrier);
+    if (diveEdge) doStiffArm(game.carrier);
     if (pitchEdge) doPitch(game.carrier);
     if (game.state === STATE.RUN) refreshRunAction(game.carrier); // keep the label live
     if (game.state === STATE.RUN) { // a botched pitch can have ended the play
@@ -3778,23 +3777,11 @@ function updatePlay(dt) {
       if (c.spinT > 0) c.spinT -= dt;
       if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
       tryCageJump(c); // driven into the fence at speed -> kick off it, stay in play
-      if (c.diveT > 0) {
-        // Locked into the dive: coast forward, then go down at the end of it.
-        c.diveT -= dt;
-        c.group.position.x += c.vel.x * dt; c.group.position.z += c.vel.z * dt;
-        c.vel.x *= 0.95; c.vel.z *= 0.95; c.speed = Math.hypot(c.vel.x, c.vel.z);
-        clampToField(c);
-        updateOffense(dt); updateDefense();
-        for (const ch of game.all) if (ch !== c && !ch.ragdolling) applySteer(ch, dt);
-        checkRunOutcome(); // can still score / be gang-tackled mid-dive
-        if (game.state === STATE.RUN && c.diveT <= 0) endPlay('tackle', c.group.position.z);
-      } else {
-        const top = c.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
-        controlledMove(c, dt, top);
-        updateOffense(dt); updateDefense();
-        for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
-        checkRunOutcome();
-      }
+      const top = c.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+      controlledMove(c, dt, top);
+      updateOffense(dt); updateDefense();
+      for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+      checkRunOutcome();
     }
   } else if (game.state === STATE.RETURN) {
     if (actionEdge) returnDive();
