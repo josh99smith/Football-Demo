@@ -14,7 +14,9 @@ full passing play from snap to score.
   with sideline down-marker posts so you always know the sticks.
 - **Turnovers are live**: an interception can be **returned for a touchdown**
   (you flip to defense and chase the runner — stop him and it's just a
-  turnover), and **big hits can force fumbles** that the defense may recover.
+  turnover). **Big hits force fumbles** — the ball pops loose, **glows and
+  bounces on the turf**, and both teams scramble; **DIVE** on it to recover
+  (whoever falls on it gets the ball).
 - **Turbo meter**: hold TURBO for a 1.4x burst; the meter drains while you
   burn it and refills when you don't (including between plays).
 - **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives

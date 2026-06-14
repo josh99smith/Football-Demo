@@ -351,7 +351,7 @@ function makeCharacter(team) {
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0, recoverT: 0, engaged: false,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -369,7 +369,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', DEAD: 'dead' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead' };
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -387,6 +387,7 @@ const game = {
   tackleTimer: 0, tackleSpotZ: 0, // ragdoll tackle: hold while physics plays the fall
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
+  looseTimer: 0,                        // live-fumble scramble countdown
   playIndex: 0, choosing: false,        // selected play / play-select screen open
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
@@ -1013,6 +1014,7 @@ function updateButtons() {
   else if (s === STATE.AIR) { onO ? hide(actionBtn) : show(actionBtn, 'SWITCH'); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, onO ? 'JUKE' : 'TACKLE'); show(turboBtn); }
   else if (s === STATE.RETURN) { show(actionBtn, 'TACKLE'); show(turboBtn); }
+  else if (s === STATE.LOOSE) { show(actionBtn, 'DIVE'); show(turboBtn); }
   else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
 }
@@ -1138,7 +1140,8 @@ function newPlay() {
   // Roll the quarter (or end the game) if the clock ran out on the last play.
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
-  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; }
+  for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; }
+  setFumbleGlow(false); // make sure a recovered fumble's glow is cleared
   setupPossession();   // assign offense/defense roles for whoever has the ball
   placeFormation();
   game.state = STATE.PRESNAP;
@@ -1499,6 +1502,7 @@ const _zAxis = new THREE.Vector3(0, 0, 1);
 const _hips = new THREE.Vector3();
 function updateBall(dt) {
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
+  if (ball.mode === 'loose') return; // a live fumble — physics handled in updateLoose
   if (ball.mode === 'carried') {
     const h = game.carrier || ball.holder || game.qb;
     if (h.ragdolling && h.ragdoll && h.ragdoll.active) {
@@ -1813,6 +1817,7 @@ function beginTackle(lead, force = false) {
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
   const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
+  const gang = gangSize >= 3;
 
   // A committed tackle (a lost battle) skips every escape — straight down.
   // Blitz: a well-timed JUKE makes the first man whiff right past — and down.
@@ -1840,6 +1845,18 @@ function beginTackle(lead, force = false) {
     shake.add(0.2);
     shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
     showBanner('BROKE IT!', '#bfffd0');
+    return;
+  }
+
+  // Random FUMBLE: a jarring hit can knock the ball loose. Bigger hits and gang
+  // tackles pop it more often. The carrier goes down and the ball pops free for
+  // a live scramble (see startFumble) instead of the play ending.
+  if (Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0)) {
+    const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
+    const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
+    spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
+    lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'tackle', 0.45);
+    startFumble(carrier, hitX, hitZ);
     return;
   }
 
@@ -1882,12 +1899,6 @@ function beginTackle(lead, force = false) {
   // with a tight close-up, and the callout pops center-screen.
   // Smooth, deep slow-mo (no freeze frame): ease down into bullet-time and ramp
   // back up, with the camera zooming in for the whole beat.
-  const gang = gangSize >= 3;
-  // Random fumble: a jarring hit can knock the ball loose. Bigger hits and gang
-  // tackles pop it more often; about half the time the defense recovers it (a
-  // turnover) — otherwise the offense falls on it (a normal tackle).
-  const fumbled = Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0);
-  game.fumbleLost = fumbled && Math.random() < 0.5;
   shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
   burst(cp.x, 1.0, cp.z, 0xe8d9a0, big || gang ? 18 : 11, big || gang ? 9 : 6); // dust/impact
   if (big || gang) {
@@ -1903,11 +1914,90 @@ function beginTackle(lead, force = false) {
     audio.hit(0.6);
   }
   setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
-  if (fumbled) {
-    audio.groan();
-    showBanner(game.fumbleLost ? 'FUMBLE!' : 'FUMBLE — RECOVERED!', game.fumbleLost ? '#ff3a3a' : '#ffd23a');
-    setStatus(game.fumbleLost ? 'Fumble — defense recovers!' : 'Fumble — offense falls on it!');
+}
+
+// --- Live fumble: the ball pops loose, glows, bounces, and both teams dive ---
+function nearestTeamToBall(team) {
+  const bp = ball.mesh.position; let best = null, bestD = Infinity;
+  for (const p of team) { if (p.ragdolling) continue; const d = dist2(px(p), bp); if (d < bestD) { bestD = d; best = p; } }
+  return best || team[0];
+}
+function setFumbleGlow(on) {
+  const m = ball.mesh.material;
+  if (m) { m.emissive.setHex(on ? 0xffcc33 : 0x000000); m.emissiveIntensity = on ? 0.9 : 0; m.needsUpdate = true; }
+  if (ball.flame) { ball.flame.color.setHex(on ? 0xffd23a : 0xff6622); ball.flame.intensity = on ? 3.5 : (game.onFire ? 2 : 0); ball.flame.distance = on ? 10 : 7; }
+}
+function startFumble(carrier, hitX, hitZ) {
+  game.state = STATE.LOOSE; game.looseTimer = 5.0;
+  const cp = carrier.group.position;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null;
+  ball.mesh.position.set(cp.x, 1.2, cp.z);
+  const ang = Math.atan2(hitX, hitZ) + (Math.random() - 0.5) * 1.2, sp = 5 + Math.random() * 5;
+  ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 5.5 + Math.random() * 3.5;
+  ball.g = 24; ball.spin = 0; ball.spinRate = 10;
+  setFumbleGlow(true);
+  game.controlled = nearestTeamToBall(game.teamA); // scramble with your team
+  ctrlRing.visible = true; selRing.visible = false;
+  showBanner('FUMBLE!!!', '#ff3a2a'); audio.bigHit(); audio.groan();
+  shake.add(0.6); timeScale.bulletTime(0.2, 0.4, 0.8); hitZoom(1.0);
+  burst(cp.x, 1.1, cp.z, 0xffd23a, 20, 9);
+  setStatus('FUMBLE — recover it!'); updateButtons();
+}
+function updateLoose(dt, turboOn, actionEdge) {
+  const p = ball.mesh.position;
+  // Bouncing, glowing loose ball.
+  ball.vy -= ball.g * dt;
+  p.x += ball.vx * dt; p.y += ball.vy * dt; p.z += ball.vz * dt;
+  const gy = 0.22;
+  if (p.y <= gy) { p.y = gy; if (ball.vy < 0) { ball.vy = -ball.vy * 0.45; if (ball.vy < 1.4) ball.vy = 0; } ball.vx *= 0.62; ball.vz *= 0.62; }
+  ball.vx *= (1 - dt * 0.85); ball.vz *= (1 - dt * 0.85);
+  ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
+  ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
+  if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
+  if (Math.abs(p.x) > HALF_W || Math.abs(p.z) > HALF_L) { recoverDead(p.z); return; } // out of bounds
+  // Everyone scrambles to the ball; you drive your nearest man.
+  for (const ch of game.all) {
+    if (ch.recoverT > 0) ch.recoverT -= dt;
+    if (ch.ragdolling || ch === game.controlled) continue;
+    ch.desired = seek(px(ch), p.x, p.z); ch.turbo = true;
   }
+  if (game.controlled) {
+    const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1);
+    controlledMove(game.controlled, dt, top);
+    if (actionEdge) { // dive on the ball — extends your reach for a beat
+      const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
+      o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
+      o.recoverT = 0.45; triggerArmAction(o, 'pick', 0.45, p); // procedural dive-reach
+    }
+  }
+  for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+  // Recovery: a player on the low ball falls on it (a dive reaches farther).
+  if (p.y < 1.3) {
+    let rec = null, recD = Infinity;
+    for (const ch of game.all) {
+      if (ch.ragdolling) continue;
+      const reach = ch.recoverT > 0 ? 2.3 : 1.3;
+      const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
+      if (d <= reach && d < recD) { recD = d; rec = ch; }
+    }
+    if (rec) { recoverFumble(rec); return; }
+  }
+  game.looseTimer -= dt;
+  if (game.looseTimer <= 0) recoverDead(p.z);
+}
+function recoverFumble(ch) {
+  setFumbleGlow(false);
+  ball.mode = 'carried'; ball.holder = ch; game.carrier = ch; // ball follows the recoverer, not the downed runner
+  triggerArmAction(ch, 'pick', 0.5, ball.mesh.position); // procedural dive-on-the-ball
+  audio.catch(); shake.add(0.25);
+  const spotZ = ch.group.position.z;
+  if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense keeps it
+  else { showBanner('TURNOVER!', '#5a8bff'); audio.cheer(0.5); endPlay('fumble', spotZ); }          // defense takes it
+}
+function recoverDead(spotZ) {
+  setFumbleGlow(false); ball.mode = 'rest';
+  showBanner('BALL IS DEAD', '#ffd23a');
+  endPlay('tackle', THREE.MathUtils.clamp(spotZ, OWN_GOAL_Z + 1, GOAL_Z - 1)); // offense keeps it
 }
 
 function anyRagdollActive() {
@@ -2155,12 +2245,9 @@ function doPitch(ch) {
   const cover = nearestDefenderTo(px(mate));
   const risky = cover && distXZ(px(cover), px(mate)) < 3.0;
   if (risky && Math.random() < 0.5) {
-    // Botched pitch: a live ball. The defense scoops it more often than not.
-    game.fumbleLost = Math.random() < 0.6;
-    showBanner('BOBBLED PITCH!', '#ff6a4a'); audio.groan(); shake.add(0.2);
-    const p = ch.group.position; burst(p.x, 0.6, p.z, 0xdfe7ff, 10, 6);
-    if (game.fumbleLost) { game.fumbleLost = false; endPlay('fumble', p.z); }
-    else { mate.jukeTimer = 0.3; enterRun(mate, 'Recovered the pitch — go!'); ball.holder = mate; }
+    // Botched pitch: a live, bouncing ball — scramble to recover it.
+    showBanner('BOBBLED PITCH!', '#ff6a4a'); audio.groan();
+    startFumble(ch, mate.group.position.x - ch.group.position.x, mate.group.position.z - ch.group.position.z);
     return;
   }
   mate.jukeTimer = 0.4; // a step of immunity as he gathers it
@@ -2204,7 +2291,7 @@ function updatePlay(dt) {
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
   // unlimited turbo + a hotter whole offense.
-  const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN;
+  const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN || game.state === STATE.LOOSE;
   const turboOn = input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0);
   if (liveBall) game.playClock += dt;
   if (liveBall && turboOn && !game.onFire) {
@@ -2272,6 +2359,8 @@ function updatePlay(dt) {
   } else if (game.state === STATE.RETURN) {
     if (actionEdge) returnDive();
     if (game.state === STATE.RETURN) updateReturn(dt, turboOn, fireMul);
+  } else if (game.state === STATE.LOOSE) {
+    updateLoose(dt, turboOn, actionEdge); // scramble for the bouncing ball
   } else if (game.state === STATE.BATTLE) {
     if (actionEdge) input.battleMash++;
     for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
@@ -2334,9 +2423,10 @@ function updateCamera(dt) {
   // On a throw, FOLLOW THE BALL: focus the live ball and trail its flight so
   // you watch the pass travel to the receiver; otherwise focus the player.
   const air = (game.state === STATE.AIR || (game.state === STATE.DEAD && ball.mode === 'flying'));
+  const loose = game.state === STATE.LOOSE;
   // An interception runback is a legit reason to look the OTHER way (-Z).
   const ret = game.state === STATE.RETURN || game.returnActive;
-  const fp = air ? ball.mesh.position : p;
+  const fp = (air || loose) ? ball.mesh.position : p; // a loose ball is the star
 
   // Eased heading: trail the ball's travel in the air, behind the runner once
   // he takes off, otherwise locked straight downfield. Eases so it stays smooth.
