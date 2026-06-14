@@ -737,6 +737,7 @@ const game = {
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   deadTimer: 0,
   tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
+  drag: { active: false, t: 0, dur: 0, hx: 0, hz: 0, grabbers: [] }, // wrap-and-drag-down before the pile collapses to ragdolls
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
@@ -1744,8 +1745,9 @@ function preparePlay(teleport) {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
+  game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; ch.grabbing = false;
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
     ch.resetDelay = teleport ? 0 : Math.random() * 0.8;        // staggered starts
@@ -2601,9 +2603,9 @@ function checkSack() {
 // ===========================================================================
 // Ragdoll tackles (tackle resolution ported from Football-Game/TackleEngine)
 // ===========================================================================
-const SWARM_R = 3.5;   // defenders within this of the carrier join the pile
-const GANG_MAX = 3;    // max bodies in the pile
-const RAGDOLL_MAX = 3; // carrier + 2 tacklers ragdoll; the rest just wrap
+const SWARM_R = 4.2;   // defenders within this of the carrier join the pile
+const GANG_MAX = 4;    // max bodies that latch on (wrap + drag)
+const RAGDOLL_MAX = 3; // carrier + 2 tacklers ragdoll on collapse; the rest just wrap
 
 function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
   if (!physics) return false;
@@ -2794,6 +2796,15 @@ function beginTackle(lead, force = false) {
     return;
   }
 
+  // Tackle kinematics: a violent SQUARE hit (committed, or a fast/turbo collision
+  // ~60% of the time) drops him on the spot — an instant ragdoll. Otherwise it's
+  // a WRAP & DRAG-DOWN: the tacklers latch on and bring him down over a beat,
+  // longer for a lone man and quicker as the gang piles on.
+  if (!(force || (big && Math.random() < 0.6))) {
+    beginDrag(carrier, pile, big, hitDir, closing);
+    return;
+  }
+
   // Pile momentum: mass-weighted COM velocity of carrier + tacklers, bled by
   // wrap-up friction as the pile grows, plus a shove off the lead tackler.
   let mx = carrier.vel.x * 1.15, mz = carrier.vel.z * 1.15, mass = 1.15;
@@ -2849,6 +2860,94 @@ function beginTackle(lead, force = false) {
     audio.hit(0.6);
   }
   setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
+}
+
+// WRAP & DRAG-DOWN: the tacklers latch onto the still-upright runner and drive
+// him down over a short struggle (more/stronger tacklers => quicker), then the
+// whole pile collapses into ragdolls (collapseDrag). This is the non-instant
+// path so tackles read as real contact, not a snap to the turf.
+function beginDrag(carrier, pile, big, hitDir, closing) {
+  const d = game.drag;
+  game.state = STATE.TACKLE;
+  d.active = true; d.t = 0; d.hx = hitDir.x; d.hz = hitDir.z; d.grabbers = pile.slice();
+  // Takedown time: wrap-up power (count + TACKLING) vs the carrier's strength/speed.
+  let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? t.rt.tackle : 0.6);
+  const car = 0.6 + (carrier.rt ? carrier.rt.strength : 0.7) + Math.hypot(carrier.vel.x, carrier.vel.z) / 22;
+  d.dur = THREE.MathUtils.clamp(1.05 - (pile.length - 1) * 0.2 - (wrap - car) * 0.22, 0.32, 1.15);
+  // Latch each man into a slot fanned around the carrier's back/sides.
+  const baseAng = Math.atan2(-hitDir.x, -hitDir.z);
+  pile.forEach((t, i) => {
+    t.grabbing = true;
+    t.grabSlot = baseAng + (i === 0 ? 0 : (i % 2 ? 1 : -1) * (0.55 + 0.22 * i));
+    t.vel.set(0, 0, 0); t.diveT = 0;
+  });
+  const cp = carrier.group.position;
+  shake.kick(hitDir.x, hitDir.z, big ? 0.6 : 0.4);
+  burst(cp.x, 1.0, cp.z, 0xe8d9a0, pile.length >= 2 ? 13 : 9, 6);
+  audio.hit(0.55);
+  timeScale.bulletTime(0.55, 0.18, 0.3); // a beat of slow-mo on contact
+  const gang = pile.length >= 2;
+  showBanner(gang ? 'WRAPPED UP!' : 'TACKLE!', '#ffd23a');
+  setStatus(gang ? `${pile.length}-man gang tackle!` : 'Wrapped up — bringing him down!');
+  ctrlRing.visible = false; updateButtons();
+}
+function updateDrag(dt) {
+  const d = game.drag, carrier = game.carrier;
+  if (!carrier) { d.active = false; return; }
+  d.t += dt;
+  // The runner is dragged: hard deceleration + a little forward fight, churning.
+  carrier.vel.x *= Math.pow(0.03, dt); carrier.vel.z *= Math.pow(0.03, dt);
+  carrier.group.position.x += carrier.vel.x * dt; carrier.group.position.z += carrier.vel.z * dt;
+  carrier.speed = Math.hypot(carrier.vel.x, carrier.vel.z);
+  clampToField(carrier);
+  const cp = carrier.group.position;
+  // Forward progress can still carry him across the goal while being dragged.
+  if (reachedGoal(cp.z)) { d.active = false; for (const t of d.grabbers) t.grabbing = false; endPlay('TD', cp.z); return; }
+  // Latch grabbers around him, easing into their slot and churning to drive him.
+  for (const t of d.grabbers) {
+    if (t.ragdolling) continue;
+    const tx = cp.x + Math.sin(t.grabSlot) * 0.5, tz = cp.z + Math.cos(t.grabSlot) * 0.5;
+    const k = Math.min(1, dt * 12);
+    t.group.position.x += (tx - t.group.position.x) * k;
+    t.group.position.z += (tz - t.group.position.z) * k;
+    t.heading = Math.atan2(cp.x - t.group.position.x, cp.z - t.group.position.z);
+    t.speed = 8; // churn the legs (driving him back) — see updateAnimation grab pose
+  }
+  for (const ch of game.all) if (!ch.ragdolling && ch !== carrier && !d.grabbers.includes(ch)) { ch.speed = 0; ch.vel.set(0, 0, 0); }
+  if (d.t >= d.dur) collapseDrag();
+}
+function collapseDrag() {
+  const d = game.drag, carrier = game.carrier;
+  d.active = false;
+  const cp = carrier.group.position;
+  const hitDir = new THREE.Vector3(d.hx, 0, d.hz);
+  // The pile gives way: carrier + the nearest grabbers ragdoll and tumble down.
+  spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, 3.4, 0x0002,
+    pickVariant(false, d.grabbers.length, 6, d.hx, d.hz));
+  const bits = [0x0004, 0x0008, 0x0010];
+  let ragged = 0;
+  for (const t of d.grabbers) {
+    t.grabbing = false;
+    if (ragged < RAGDOLL_MAX - 1 && !t.ragdolling) {
+      const toC = new THREE.Vector3(cp.x - t.group.position.x, 0, cp.z - t.group.position.z);
+      if (toC.lengthSq() < 1e-4) toC.copy(hitDir); else toC.normalize();
+      spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), toC, 3.0, bits[ragged] ?? 0x0004, 'sideSwipe');
+      ragged++;
+    }
+  }
+  game.tackleTimer = 2.0; game.tackleSpotZ = cp.z;
+  blowWhistle();
+  shake.add(0.34); shake.kick(d.hx, d.hz, 0.5);
+  burst(cp.x, 0.8, cp.z, 0xe8d9a0, 14, 7);
+  audio.hit(0.7);
+}
+// Grabber pose during the drag: lean into the carrier and wrap him up (reuses the
+// tackler grapple arms), legs churning from the artificial drive speed above.
+function applyGrabLean(ch) {
+  const lean = 0.4 + Math.sin(performance.now() * 0.014) * 0.06;
+  _qLeanY.setFromAxisAngle(_UP, ch.heading);
+  _qLeanX.setFromAxisAngle(_XAX, lean);
+  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
 }
 
 // --- Live fumble: the ball pops loose, glows, bounces, and both teams dive ---
@@ -3163,6 +3262,7 @@ function updateAnimation(ch, dt) {
   else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
   else if (ch.speed > 6) want = 'run';
   else if (ch.speed > 0.5) want = 'walk';
+  const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
   setClip(ch, want);
   // Foot-skating fix: drive the gait at the speed it was authored for, so a
   // planted foot stays put while the body travels (instead of sliding). The
@@ -3172,14 +3272,16 @@ function updateAnimation(ch, dt) {
     if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
   }
   if (inBattle) applyBattleLean(ch, ch === game.battle.tackler);
+  else if (grabbing) applyGrabLean(ch);
   else {
     ch.group.rotation.set(0, ch.heading, 0);
     if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / 0.5) * Math.PI * 2; // 360 spin move
   }
   ch.mixer.update(dt);
   // Procedural arm overrides (after the mixer), in priority order: the battle
-  // grapple, securing a catch, throwing, then a one-off arm action.
+  // grapple, the gang-tackle wrap, securing a catch, throwing, then a one-off arm action.
   if (inBattle) applyBattleArms(ch, ch === game.battle.tackler);
+  else if (grabbing) applyBattleArms(ch, true); // wrap him up like a tackler
   else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
@@ -3467,6 +3569,8 @@ function updatePlay(dt) {
     if (actionEdge) input.battleMash++;
     for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
     updateBattle(dt);
+  } else if (game.state === STATE.TACKLE && game.drag.active) {
+    updateDrag(dt); // wrap-and-drag-down struggle before the pile collapses
   } else if (game.state === STATE.TACKLE) {
     // The ragdolls own the moment: hold everyone else, let physics finish the
     // fall, then spot the ball where the pile slid to.
