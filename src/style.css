@@ -205,7 +205,9 @@ html, body {
   0%, 40% { transform: rotate(0deg); }
   60%, 100% { transform: rotate(-90deg); }
 }
-@media (orientation: portrait) and (max-width: 1024px) and (pointer: coarse) {
+/* Force-landscape gate is for phones only — narrow enough that landscape-capable
+   tablets (iPad portrait is 810–834px) keep playing without a rotate prompt. */
+@media (orientation: portrait) and (max-width: 820px) and (pointer: coarse) {
   #rotate { display: flex; }
   #hud, #joystick, .action-btn, .mini-btn, #ratecard, #build-badge, #playselect { visibility: hidden; }
 }
