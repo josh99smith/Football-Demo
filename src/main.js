@@ -2593,7 +2593,7 @@ function celebrateTD() {
 // Ball + outcomes
 // ===========================================================================
 const TACKLE_R = 1.5, CATCH_R = 1.6, CATCH_R_INTENDED = 2.6, CONTEST_R = 2.7;
-const THROW_ANIM_DUR = 0.45; // procedural throwing-motion length (s)
+const THROW_ANIM_DUR = 0.5; // procedural throwing-motion length (s) — matches THROW_CHARGE_MAX so a full-hold bullet doesn't snap back to idle before release
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
