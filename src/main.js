@@ -2411,8 +2411,9 @@ const cam = {
   pos: new THREE.Vector3(0, 7, -12),
   lookCur: new THREE.Vector3(0, 1.3, 0),
   cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
+  back: 11, hgt: 6.8, aheadL: 11, lookH: 1.5, // eased framing (smooths transitions)
 };
-const _tp = new THREE.Vector3(), _tl = new THREE.Vector3();
+const _tp = new THREE.Vector3(), _tl = new THREE.Vector3(), _fp = new THREE.Vector3();
 const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
@@ -2420,49 +2421,56 @@ function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
 function updateCamera(dt) {
   const t = game.controlled || game.qb;
-  const p = t.group.position;
-  // On a throw, FOLLOW THE BALL: focus the live ball and trail its flight so
-  // you watch the pass travel to the receiver; otherwise focus the player.
-  const air = (game.state === STATE.AIR || (game.state === STATE.DEAD && ball.mode === 'flying'));
-  const loose = game.state === STATE.LOOSE;
-  // An interception runback is a legit reason to look the OTHER way (-Z).
   const ret = game.state === STATE.RETURN || game.returnActive;
-  const fp = (air || loose) ? ball.mesh.position : p; // a loose ball is the star
+  const air = ball.mode === 'flying';                       // the ball is in the air
+  const loose = game.state === STATE.LOOSE;
+  const chase = game.state === STATE.RUN || ret;            // behind a ball carrier
+  // A pass play is a wide, high broadcast shot so the whole field reads.
+  const passPlay = game.state === STATE.PRESNAP || game.state === STATE.LIVE || air;
 
-  // Eased heading: trail the ball's travel in the air, behind the runner once
-  // he takes off, otherwise locked straight downfield. Eases so it stays smooth.
+  // Focus the BALL / the PLAY — never a single player. Follow the ball in flight
+  // or loose; the carrier's body while it's tucked; the landing spot when dead.
+  // (On defense this means the camera tracks the action, not your defender.)
+  if (air || loose || ball.mode === 'rest' || ball.mode === 'secured') _fp.copy(ball.mesh.position);
+  else if (ball.mode === 'carried') _fp.copy((game.carrier || ball.holder || game.qb).group.position);
+  else _fp.copy((game.controlled || game.qb).group.position);
+
+  // Heading: behind the ball carrier's travel on a run; toward the returner on a
+  // runback; otherwise a steady shot facing the attacking end (the whole play
+  // stays in frame instead of yawing around with the ball).
+  const headObj = game.carrier || game.controlled || game.qb;
   let wantYaw;
-  if (air) wantYaw = Math.atan2(ball.vx, ball.vz);
-  else if (ret) {
-    const rb = game.returner || game.carrier;
-    const rp = rb ? rb.group.position : p;
-    wantYaw = Math.atan2(rp.x - p.x, rp.z - p.z); // chaser looks toward the returner
-  } else if (game.state === STATE.RUN || game.state === STATE.TACKLE || game.state === STATE.BATTLE) {
-    wantYaw = t.heading;
-  } else wantYaw = game.dir > 0 ? 0 : Math.PI; // face the attacking end
+  if (ret) { const rb = game.returner || game.carrier, rp = rb ? rb.group.position : _fp; wantYaw = Math.atan2(rp.x - _fp.x, rp.z - _fp.z); }
+  else if (chase || game.state === STATE.TACKLE || game.state === STATE.BATTLE) wantYaw = headObj.heading;
+  else wantYaw = game.dir > 0 ? 0 : Math.PI; // face the attacking end
   while (wantYaw > Math.PI) wantYaw -= Math.PI * 2;
   while (wantYaw < -Math.PI) wantYaw += Math.PI * 2;
-  // Keep the camera framed on the attacking end (game.dir): +Z on your drive,
-  // -Z on a CPU drive, and the opposite end during an interception runback.
+  // Keep framed on the attacking end (game.dir), or the opposite end on a runback.
   const center = ret ? Math.PI : (game.dir > 0 ? 0 : Math.PI);
   let rel = wantYaw - center;
   while (rel > Math.PI) rel -= Math.PI * 2;
   while (rel < -Math.PI) rel += Math.PI * 2;
   wantYaw = center + THREE.MathUtils.clamp(rel, -1.15, 1.15); // ~±66° off downfield
-  const k = Math.min(1, dt * (air ? 5 : 3));
+  const k = Math.min(1, dt * (chase ? 4 : 3));
   cam.fwdX += (Math.sin(wantYaw) - cam.fwdX) * k;
   cam.fwdZ += (Math.cos(wantYaw) - cam.fwdZ) * k;
   const m = Math.hypot(cam.fwdX, cam.fwdZ) || 1;
   cam.fwdX /= m; cam.fwdZ /= m;
 
-  const run = game.state === STATE.RUN || game.state === STATE.RETURN;
-  // Pulled in closer so players read clearly (was too far to see the heads).
-  const back = air ? 8 : (run ? 6.8 : 7.6);
-  const hgt = air ? Math.max(4.6, fp.y + 2.6) : (run ? 4.0 : 4.6);
-  const aheadL = air ? 4.5 : 7.5;             // look ahead toward the receiver in flight
-  const lookH = air ? (fp.y * 0.55 + 0.8) : 1.5;
-  _tp.set(fp.x - cam.fwdX * back, hgt, fp.z - cam.fwdZ * back);
-  _tl.set(fp.x + cam.fwdX * aheadL, lookH, fp.z + cam.fwdZ * aheadL);
+  // Framing: wide & high for pass plays (see the QB, the arc and the routes);
+  // tighter & lower behind a ball carrier. Eased so a catch / incompletion
+  // glides instead of snapping.
+  const back = passPlay ? 11 : chase ? 7 : loose ? 9.5 : 8.5;
+  const hgt = air ? Math.max(6.8, _fp.y + 3) : passPlay ? 6.8 : chase ? 4.3 : 5.6;
+  const aheadL = passPlay ? 11 : chase ? 7.5 : loose ? 6 : 6.5;
+  const lookH = air ? (_fp.y * 0.5 + 1.0) : 1.5;
+  const fe = Math.min(1, dt * 4); // framing ease
+  cam.back += (back - cam.back) * fe;
+  cam.hgt += (hgt - cam.hgt) * fe;
+  cam.aheadL += (aheadL - cam.aheadL) * fe;
+  cam.lookH += (lookH - cam.lookH) * fe;
+  _tp.set(_fp.x - cam.fwdX * cam.back, cam.hgt, _fp.z - cam.fwdZ * cam.back);
+  _tl.set(_fp.x + cam.fwdX * cam.aheadL, cam.lookH, _fp.z + cam.fwdZ * cam.aheadL);
 
   // Cinematic hit push-in: a tight 3/4 close-up on the pile that eases in and
   // out on REAL time (so it's smooth no matter how slow the sim runs), plus a
@@ -2478,13 +2486,15 @@ function updateCamera(dt) {
     _cineLook.set(f.x, 1.0, f.z);
     _tp.lerp(_cinePos, e); _tl.lerp(_cineLook, e);
   }
-  // FOV zoom: 55° -> 34° at full push-in.
-  const wantFov = 55 - 21 * e;
+  // FOV: a touch wider on pass plays so more of the field fits; the hit close-up
+  // zooms in from there (down to ~34°).
+  const baseFov = passPlay ? 60 : 55;
+  const wantFov = baseFov - (baseFov - 34) * e;
   if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
 
-  // Tight follow. Snappier while tracking a thrown ball so the camera stays
-  // glued to the fast, short flight instead of lagging behind the QB.
-  const lt = Math.min(1, dt * (air ? 16 : 8 + cam.cine * 6));
+  // Eased follow — gentle while tracking the ball so the broadcast shot glides
+  // (no jitter), snappier into the cinematic hit close-up.
+  const lt = Math.min(1, dt * (air ? 8 : 6 + cam.cine * 6));
   cam.pos.lerp(_tp, lt);
   cam.lookCur.lerp(_tl, Math.min(1, lt * 1.2));
 
@@ -2494,7 +2504,7 @@ function updateCamera(dt) {
   camera.position.set(cam.pos.x + shake.offX, cy, cam.pos.z + shake.offZ);
   camera.lookAt(cam.lookCur);
 
-  sun.position.set(p.x + 40, 70, p.z + 20); sun.target.position.set(p.x, 0, p.z);
+  sun.position.set(_fp.x + 40, 70, _fp.z + 20); sun.target.position.set(_fp.x, 0, _fp.z);
 }
 
 // ===========================================================================

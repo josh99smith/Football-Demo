@@ -111,10 +111,12 @@ Controls, camera and juice follow Football-Game's systems:
 - **Movement** integrates toward the stick at a real acceleration, braking
   harder than it accelerates (hardest with no input) for crisp cuts and stops;
   heading is rate-limited so players carve through turns. Turbo is 1.35x.
-- **Camera** is an eased chase cam that pans (never snaps): as QB it drifts
-  toward the receiver you're targeting, follows the ball in flight, then
-  settles in low behind the runner. Tackles cut to a **cinematic 3/4 close-up**
-  that pushes in on real time.
+- **Camera** follows the *ball/play*, never a single player. Pass plays get a
+  wide, high **broadcast shot** facing downfield so you see the QB, the arc and
+  the routes (the same on defense — it tracks the action, not your defender);
+  it then **settles in low behind the ball carrier** on a run and frames a
+  loose ball on a fumble. Everything is eased so catches and incompletions glide
+  instead of snapping, and tackles cut to a **cinematic 3/4 close-up**.
 - **Juice**: trauma-based screen shake plus a directional kick that shoves the
   camera the way the runner is driven; **smooth bullet-time slow-mo with a FOV
   zoom-in** on big hits and gang tackles (no freeze-frame — ragdoll physics
