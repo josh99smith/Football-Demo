@@ -66,17 +66,23 @@
     <div id="battle-tap">TAP! &nbsp; TAP! &nbsp; TAP!</div>
   </div>
 
-  <!-- Pre-snap play-select screen (pick one of four) -->
+  <!-- Pre-snap play-select screen: 4 cards per page with scroll arrows -->
   <div id="playselect" class="hidden">
-    <div class="ps-title">CHOOSE YOUR PLAY</div>
-    <div class="ps-grid">
-      <button class="ps-card" data-play="0"><i>1</i><b>BOMBS</b><span>Four verticals</span></button>
-      <button class="ps-card" data-play="1"><i>2</i><b>SLANTS</b><span>Quick slants</span></button>
-      <button class="ps-card" data-play="2"><i>3</i><b>MESH</b><span>Crossers</span></button>
-      <button class="ps-card" data-play="3"><i>4</i><b>FLOOD</b><span>Sideline outs</span></button>
-      <button class="ps-card" data-play="4"><i>5</i><b>DIVE</b><span>HB up the gut</span></button>
-      <button class="ps-card" data-play="5"><i>6</i><b>SWEEP</b><span>HB outside</span></button>
+    <div class="ps-head">
+      <span class="ps-side" id="ps-side">OFFENSE</span>
+      <span class="ps-title" id="ps-title">CHOOSE YOUR PLAY</span>
     </div>
+    <div class="ps-deck">
+      <button class="ps-arrow" id="ps-prev" aria-label="Previous plays">‹</button>
+      <div class="ps-grid">
+        <button class="ps-card" data-slot="0"></button>
+        <button class="ps-card" data-slot="1"></button>
+        <button class="ps-card" data-slot="2"></button>
+        <button class="ps-card" data-slot="3"></button>
+      </div>
+      <button class="ps-arrow" id="ps-next" aria-label="More plays">›</button>
+    </div>
+    <div class="ps-dots" id="ps-dots"></div>
   </div>
 
   <!-- Mobile touch joystick (left) -->

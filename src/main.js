@@ -527,6 +527,21 @@ async function loadAssets() {
   } else { DEF_SCALE = SCALE; DEF_GROUND_Y = GROUND_Y; }
 }
 
+// Distinct idle stances (X-axis arm rotations + head tilt) so a lineup of
+// players reads as individuals instead of clones. Each: ua/fa = right upper/fore
+// arm, la/lfa = left upper/fore arm, head = side tilt. Picked at random per
+// player, then jittered slightly so even two with the same preset differ.
+const STANCES = [
+  { ua: 0.10, fa: 0.20, la: 0.10, lfa: 0.20, head: 0.05 },   // relaxed neutral
+  { ua: 0.18, fa: 1.30, la: 0.18, lfa: 1.30, head: 0.00 },   // arms folded high
+  { ua: 0.05, fa: 0.10, la: 0.40, lfa: 0.55, head: -0.12 },  // one hand on hip (left)
+  { ua: 0.40, fa: 0.55, la: 0.05, lfa: 0.10, head: 0.12 },   // one hand on hip (right)
+  { ua: 0.30, fa: 0.80, la: 0.30, lfa: 0.80, head: 0.00 },   // hands-on-knees ready
+  { ua: -0.22, fa: 0.15, la: -0.22, lfa: 0.15, head: 0.08 }, // loose arms back
+  { ua: 0.12, fa: 0.35, la: 0.55, lfa: 0.95, head: -0.06 },  // left arm tucked
+  { ua: 0.08, fa: 0.25, la: 0.08, lfa: 0.25, head: 0.18 },   // big head-cock
+];
+
 function makeCharacter(team) {
   // Offense = original character; defense = its own blue rigged character (or a
   // blue-tinted fallback if that model didn't load). Each keeps its own skin.
@@ -594,8 +609,14 @@ function makeCharacter(team) {
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
-  // Per-player idle stance (subtle arm hang / head tilt) for visual variety.
-  const stance = { arm: (Math.random() - 0.5) * 0.55, fore: Math.random() * 0.45, head: (Math.random() - 0.5) * 0.3 };
+  // Per-player idle stance: a random preset + small jitter so the team reads as
+  // individuals (some arms-folded, hands-on-hip, head-cocked, etc.).
+  const base = STANCES[(Math.random() * STANCES.length) | 0];
+  const jit = () => (Math.random() - 0.5) * 0.18;
+  const stance = {
+    ua: base.ua + jit(), fa: base.fa + jit(), la: base.la + jit(), lfa: base.lfa + jit(),
+    head: base.head + (Math.random() - 0.5) * 0.12,
+  };
 
   // Helmet: a scaled clone of the team helmet PARENTED to the Head bone, so it
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
@@ -674,7 +695,7 @@ const game = {
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
   replay: { frames: [], i: 0, hold: 0, angle: 0, bigHit: false }, // instant-replay buffer + cam
-  playIndex: 0, defCall: 0, choosing: false, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / CPU last call / CPU snap timer
+  playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -1272,37 +1293,82 @@ const DEF_PLAYS = [
   { name: 'BLITZ', sub: 'Send the house', tag: '⚡', col: '#ff5a3a' },
   { name: 'SPY', sub: 'Contain the QB', tag: 'S', col: '#ffd23a' },
 ];
+const PS_PAGE = 4; // cards shown per page
 const playSelectEl = document.getElementById('playselect');
-const psTitle = playSelectEl ? playSelectEl.querySelector('.ps-title') : null;
+const psTitle = document.getElementById('ps-title');
+const psSide = document.getElementById('ps-side');
+const psPrev = document.getElementById('ps-prev');
+const psNext = document.getElementById('ps-next');
+const psDots = document.getElementById('ps-dots');
 const playCards = playSelectEl ? [...playSelectEl.querySelectorAll('.ps-card')] : [];
 // Precompute card bodies once: offense = route art, defense = a scheme tag.
 const offCardHTML = PLAYS.map((pl, i) => `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>`);
 const defCardHTML = DEF_PLAYS.map((d, i) => `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>`);
+function psList() { return game.userOnOffense ? offCardHTML : defCardHTML; }
+function psPageCount() { return Math.max(1, Math.ceil(psList().length / PS_PAGE)); }
+// Render the cards for the current page, plus arrows + dot indicators.
+function renderPSPage() {
+  const off = game.userOnOffense, html = psList(), sel = off ? game.playIndex : game.defCall;
+  const pages = psPageCount();
+  game.psPage = Math.max(0, Math.min(game.psPage, pages - 1));
+  const start = game.psPage * PS_PAGE;
+  playSelectEl.classList.toggle('def-call', !off);
+  playCards.forEach((c, slot) => {
+    const idx = start + slot;
+    if (idx < html.length) {
+      c.innerHTML = html[idx]; c.dataset.idx = idx;
+      c.classList.toggle('chosen', idx === sel); c.classList.remove('hidden');
+    } else { c.classList.add('hidden'); c.dataset.idx = -1; }
+  });
+  // Arrows only matter when there's more than one page.
+  const multi = pages > 1;
+  psPrev.classList.toggle('hidden', !multi);
+  psNext.classList.toggle('hidden', !multi);
+  psPrev.disabled = game.psPage === 0;
+  psNext.disabled = game.psPage === pages - 1;
+  psDots.innerHTML = multi
+    ? Array.from({ length: pages }, (_, p) => `<span class="ps-dot${p === game.psPage ? ' on' : ''}"></span>`).join('')
+    : '';
+}
 function openPlaySelect() {
   game.choosing = true;
-  const off = game.userOnOffense, html = off ? offCardHTML : defCardHTML, sel = off ? game.playIndex : game.defCall;
+  const off = game.userOnOffense;
   if (psTitle) psTitle.textContent = off ? 'CHOOSE YOUR PLAY' : 'CALL YOUR DEFENSE';
-  playCards.forEach((c, i) => {
-    if (i < html.length) { c.innerHTML = html[i]; c.classList.toggle('chosen', i === sel); c.classList.remove('hidden'); }
-    else c.classList.add('hidden'); // fewer calls than card slots (defense)
-  });
+  if (psSide) psSide.textContent = off ? 'OFFENSE' : 'DEFENSE';
+  // Open on the page that holds the current selection.
+  const sel = off ? game.playIndex : game.defCall;
+  game.psPage = Math.floor((sel || 0) / PS_PAGE);
+  renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
+}
+function psFlip(dir) {
+  const pages = psPageCount();
+  const next = Math.max(0, Math.min(game.psPage + dir, pages - 1));
+  if (next === game.psPage) return;
+  game.psPage = next; audio.juke(); renderPSPage();
 }
 function choosePlay(i) {
   const len = game.userOnOffense ? PLAYS.length : DEF_PLAYS.length;
   if (i < 0 || i >= len) return;
   if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
   else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
+  audio.catch();
   game.choosing = false;
   if (playSelectEl) playSelectEl.classList.add('hidden');
   updateButtons();
 }
 for (const card of playCards) {
-  const idx = +card.dataset.play;
-  const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(idx); };
+  const pick = (e) => { e.preventDefault(); audio.unlock(); const idx = +card.dataset.idx; if (idx >= 0) choosePlay(idx); };
   card.addEventListener('touchstart', pick, { passive: false });
   card.addEventListener('mousedown', pick);
+}
+if (psPrev && psNext) {
+  const arrow = (dir) => (e) => { e.preventDefault(); audio.unlock(); psFlip(dir); };
+  psPrev.addEventListener('touchstart', arrow(-1), { passive: false });
+  psPrev.addEventListener('mousedown', arrow(-1));
+  psNext.addEventListener('touchstart', arrow(1), { passive: false });
+  psNext.addEventListener('mousedown', arrow(1));
 }
 
 const keys = {};
@@ -1313,7 +1379,11 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
     if (e.code === 'KeyE') input.diveEdge = true;   // dive
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
-    if (game.choosing && /^Digit[1-6]$/.test(e.code)) choosePlay(+e.code.slice(5) - 1);
+    if (game.choosing) {
+      if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
+      else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
+      else if (e.code === 'ArrowRight' || e.code === 'KeyD') psFlip(1);
+    }
   }
   keys[e.code] = true;
   if (e.code === 'Space') input.action = true;
@@ -2836,10 +2906,10 @@ function updateAnimation(ch, dt) {
 // the team doesn't stand in identical stances.
 function applyIdleStance(ch) {
   const s = ch.stance; if (!s || !ch.upperArm) return;
-  _tq.setFromAxisAngle(_xAxisL, s.arm); ch.upperArm.quaternion.multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-  if (ch.leftArm) { _tq.setFromAxisAngle(_xAxisL, s.arm); ch.leftArm.quaternion.multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
-  if (ch.foreArm) { _tq.setFromAxisAngle(_xAxisL, -s.fore); ch.foreArm.quaternion.multiply(_tq); }
-  if (ch.leftForeArm) { _tq.setFromAxisAngle(_xAxisL, -s.fore); ch.leftForeArm.quaternion.multiply(_tq); }
+  _tq.setFromAxisAngle(_xAxisL, s.ua); ch.upperArm.quaternion.multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+  if (ch.foreArm) { _tq.setFromAxisAngle(_xAxisL, -s.fa); ch.foreArm.quaternion.multiply(_tq); }
+  if (ch.leftArm) { _tq.setFromAxisAngle(_xAxisL, s.la); ch.leftArm.quaternion.multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
+  if (ch.leftForeArm) { _tq.setFromAxisAngle(_xAxisL, -s.lfa); ch.leftForeArm.quaternion.multiply(_tq); }
   if (ch.headBone && s.head) { _tq.setFromAxisAngle(_zAxisL, s.head); ch.headBone.quaternion.multiply(_tq); }
 }
 
