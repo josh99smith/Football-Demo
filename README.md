@@ -151,6 +151,9 @@ python3 -m http.server 8000   # then open http://localhost:8000
 - `assets/animations.glb` — locomotion + action clips on the character's own
   rig: breathing idle, walk, run, RunFast (sprint), dodge-roll juke, catch,
   get-ups, backpedals, sharp turn
+- `assets/sfx/` — recorded sound effects (referee whistle, ball catch, tackle
+  pad-pop with grunts, chain-link fence carom, crowd goal reaction) layered
+  over the procedural WebAudio cues, with a synth fallback if one fails to load
 - `vendor/three/` — vendored three.js + GLTFLoader + SkeletonUtils (no CDN)
 - `vendor/rapier/` — vendored Rapier3D physics (ragdoll tackles)
 

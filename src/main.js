@@ -2158,7 +2158,7 @@ function cageBounce(p, restitution) {
     // The chain-link soaks up energy: bleed the tangential + vertical speed too,
     // so the ball clearly slows after a carom.
     ball.vx *= 0.88; ball.vz *= 0.88; ball.vy *= 0.85;
-    audio.hit(0.25); shake.add(0.06);
+    audio.fence(0.4); shake.add(0.06);
   }
   return hit;
 }
@@ -2630,7 +2630,7 @@ function ballLooseFromAir() {
   setFumbleGlow(true); landRing.visible = false;
   game.controlled = nearestTeamToBall(game.teamA);
   ctrlRing.visible = true; selRing.visible = false;
-  showBanner('OFF THE FENCE!', '#7fe0ff'); audio.hit(0.4); shake.add(0.15);
+  showBanner('OFF THE FENCE!', '#7fe0ff'); audio.fence(0.6); shake.add(0.15);
   setStatus('Loose ball — recover it!'); updateButtons();
 }
 function startFumble(carrier, hitX, hitZ) {
