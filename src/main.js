@@ -1021,7 +1021,7 @@ function nearestOffenseTo(point, maxDist) {
 function nearestBlockerTo(point) {
   let best = null, bestD = Infinity;
   for (const o of game.offense) {
-    if (o.role !== 'OL' || o.ragdolling) continue;
+    if (o.ragdolling || (o.role !== 'OL' && o.job !== 'block')) continue; // linemen + anyone blocking
     const d = dist2(px(o), point); if (d < bestD) { bestD = d; best = o; }
   }
   return best;
@@ -1039,6 +1039,9 @@ function updateDefense() {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
       d.turbo = dist2(dp, px(carrier)) > 4 * 4;
+      // A blocker in the way screens this pursuer (slows him — opens a lane).
+      const blk = nearestBlockerTo(dp);
+      d.engaged = !!blk && distXZ(px(blk), dp) < 1.6;
     } else if (d.job === 'rush') {
       // Pass rush: bear down on the QB; an OL right in front walls you off.
       const qp = px(game.qb);
@@ -2158,12 +2161,13 @@ function updateBall(dt) {
       _spinQ.setFromAxisAngle(_zAxis, ball.spin);
       ball.mesh.quaternion.copy(_ballQ).multiply(_spinQ);
     }
-    // Catchable once it has descended into reach; resolve at the target time
-    // or when it hits the turf.
+    // Catchable once it has descended into reach. Resolve only when it actually
+    // hits the turf (so an overthrow flies to the back/side wall and bounces),
+    // with a safety timeout if it caroms around forever.
     if (ball.vy < 0 && p.y < 2.6 && tryReception()) return;
-    if (ball.airTime >= ball.flightTime || p.y <= 0.16) {
+    if (p.y <= 0.16 || ball.airTime > ball.flightTime + 3) {
       if (tryReception()) return;
-      if (ball.hitFence) { ballLooseFromAir(); return; } // a fence carom is a live loose ball, never incomplete
+      if (ball.hitFence) { ballLooseFromAir(); return; } // a wall carom is a live loose ball, never incomplete
       ball.mode = 'rest'; endPlay('incomplete', game.los);
     }
   } else if (ball.mode === 'secured') {
