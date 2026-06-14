@@ -2562,7 +2562,7 @@ function celebrateTD() {
 // ===========================================================================
 // Ball + outcomes
 // ===========================================================================
-const TACKLE_R = 1.5, CATCH_R = 1.6, CATCH_R_INTENDED = 2.6, CONTEST_R = 2.7, INTERCEPT_R = 1.3;
+const TACKLE_R = 1.5, CATCH_R = 1.6, CATCH_R_INTENDED = 2.6, CONTEST_R = 2.7;
 const THROW_ANIM_DUR = 0.45; // procedural throwing-motion length (s)
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
@@ -3358,7 +3358,7 @@ function aimReceiver() {
   }
   game.selected = bestI;
 }
-const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0), _zAxisL = new THREE.Vector3(0, 0, 1);
+const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0);
 // Procedural THROW: snap the right arm up-and-over for a beat, then ease back.
 // The over-the-top amount tracks the launch angle (a lob lofts more than a
 // bullet), so it varies with the throw. Rig-agnostic (just the arm bones).
@@ -3518,9 +3518,11 @@ function updateAnimation(ch, dt) {
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
   // Idle variety now comes from real per-player idle clips (see makeCharacter),
   // so no procedural stance offset is layered on top.
-  // Keep any pose out of the turf (no-op for normal locomotion, since the feet
-  // already sit at the calibrated height; only lifts a sunken dive/lunge pose).
-  if (!inBattle) groundClamp(ch);
+  // Keep dynamic poses out of the turf: one-shots clamp in their own branch
+  // above, and the leaning gang-tackle grab clamps here. Plain locomotion just
+  // sits at the calibrated height — clear any leftover lift from a finished move.
+  if (grabbing) groundClamp(ch);
+  else if (!inBattle) ch.group.position.y = 0;
 }
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
 // contact during the juke window he whiffs right past (see beginTackle).
