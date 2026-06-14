@@ -457,6 +457,9 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
+// Variety + new-move clips from the merged Meshy pack (assets/animations2.glb).
+let idleClips = [], walkClips = [], celebClips = [];
+let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
@@ -490,8 +493,15 @@ async function loadAssets() {
   try { helmetOffTemplate = (await loadGLB('assets/helmet_off.glb')).scene; } catch (e) { console.warn('off helmet missing', e); }
   try { helmetDefTemplate = (await loadGLB('assets/helmet_def.glb')).scene; } catch (e) { console.warn('def helmet missing', e); }
   try { footballTemplate = (await loadGLB('assets/football.glb')).scene; } catch (e) { console.warn('football model missing', e); }
+  // The new merged Meshy pack (idle/walk variety, celebrations, parkour, scoop,
+  // diving catch). Stripped to animation-only; same rig, so it drives our model
+  // by bone name. Added on top of the original clips (kept for sprint/juke/
+  // tackle/backpedals/get-ups it doesn't include).
+  let anim2 = null;
+  try { anim2 = await loadGLB('assets/animations2.glb'); } catch (e) { console.warn('animations2 missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
+  if (anim2) for (const c of anim2.animations) if (!byName[c.name]) byName[c.name] = c; // additive: don't override existing
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
   // (Hips position) that translates the body during the clip and then snaps
   // back to the spawn spot ("teleport"). We drive position from the game, so
@@ -517,6 +527,23 @@ async function loadAssets() {
   catchClip = byName['Jump_to_Catch_and_Fall']
     ? inPlace(THREE.AnimationUtils.subclip(byName['Jump_to_Catch_and_Fall'], 'catch', 6, 34, 30))
     : null;
+  // --- Variety + new-move clips (all rotation-only, like the rest) ---
+  // Per-player idle / walk pools so a lineup reads as individuals (real mocap
+  // variety instead of procedural arm offsets) and the huddle walk-back isn't
+  // robotic. Fall back to the originals if the new pack didn't load.
+  idleClips = ['Idle_11', 'Idle_02', 'Idle_03', 'Idle_8'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
+  if (!idleClips.length) idleClips = [idleClip];
+  walkClips = ['Walking', 'Casual_Walk', 'Proud_Strut'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
+  if (!walkClips.length) walkClips = [walkClip];
+  // Touchdown celebrations (one per scorer, picked at character build).
+  celebClips = ['Cheer_with_Both_Hands', 'Jumping_Punch', 'Show_Both_Arm_Muscles', 'Proud_Strut']
+    .map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
+  // Diving catch (the lunge reach), loose-ball scoop, hurdle vault, cage wall-jump.
+  diveCatchClip = byName['Leap_Right_and_Catch'] ? inPlace(byName['Leap_Right_and_Catch']) : catchClip;
+  scoopClip = byName['Male_Run_Forward_Pick_Up_Left'] ? inPlace(byName['Male_Run_Forward_Pick_Up_Left']) : null;
+  vaultClip = byName['Jump_Over_Obstacle_1'] ? inPlace(byName['Jump_Over_Obstacle_1'])
+    : (byName['Parkour_Vault_2'] ? inPlace(byName['Parkour_Vault_2']) : jukeClip);
+  cageVaultClip = byName['Parkour_Vault_with_Roll'] ? inPlace(byName['Parkour_Vault_with_Roll']) : vaultClip;
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -526,21 +553,6 @@ async function loadAssets() {
     DEF_GROUND_Y = -(dr.lo * DEF_SCALE - 0.05);
   } else { DEF_SCALE = SCALE; DEF_GROUND_Y = GROUND_Y; }
 }
-
-// Distinct idle stances (X-axis arm rotations + head tilt) so a lineup of
-// players reads as individuals instead of clones. Each: ua/fa = right upper/fore
-// arm, la/lfa = left upper/fore arm, head = side tilt. Picked at random per
-// player, then jittered slightly so even two with the same preset differ.
-const STANCES = [
-  { ua: 0.10, fa: 0.20, la: 0.10, lfa: 0.20, head: 0.05 },   // relaxed neutral
-  { ua: 0.18, fa: 1.30, la: 0.18, lfa: 1.30, head: 0.00 },   // arms folded high
-  { ua: 0.05, fa: 0.10, la: 0.40, lfa: 0.55, head: -0.12 },  // one hand on hip (left)
-  { ua: 0.40, fa: 0.55, la: 0.05, lfa: 0.10, head: 0.12 },   // one hand on hip (right)
-  { ua: 0.30, fa: 0.80, la: 0.30, lfa: 0.80, head: 0.00 },   // hands-on-knees ready
-  { ua: -0.22, fa: 0.15, la: -0.22, lfa: 0.15, head: 0.08 }, // loose arms back
-  { ua: 0.12, fa: 0.35, la: 0.55, lfa: 0.95, head: -0.06 },  // left arm tucked
-  { ua: 0.08, fa: 0.25, la: 0.08, lfa: 0.25, head: 0.18 },   // big head-cock
-];
 
 function makeCharacter(team) {
   // Offense = original character; defense = its own blue rigged character (or a
@@ -597,7 +609,10 @@ function makeCharacter(team) {
     a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true;
     a.setEffectiveWeight(0); a.play(); return a;
   };
-  const actions = { idle: mk(idleClip), walk: mk(walkClip), run: mk(runClip), sprint: mk(sprintClip) };
+  // Per-player idle + walk variety (real clips, not a procedural offset).
+  const myIdle = (idleClips.length ? idleClips : [idleClip])[(Math.random() * (idleClips.length || 1)) | 0] || idleClip;
+  const myWalk = (walkClips.length ? walkClips : [walkClip])[(Math.random() * (walkClips.length || 1)) | 0] || walkClip;
+  const actions = { idle: mk(myIdle), walk: mk(myWalk), run: mk(runClip), sprint: mk(sprintClip) };
   const oneShot = (clip) => {
     const a = mixer.clipAction(clip);
     a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true;
@@ -606,17 +621,14 @@ function makeCharacter(team) {
   if (jukeClip) actions.juke = oneShot(jukeClip);
   if (catchClip) actions.catch = oneShot(catchClip);
   if (tackleClip) actions.tackle = oneShot(tackleClip);
+  if (diveCatchClip) actions.divecatch = oneShot(diveCatchClip);
+  if (scoopClip) actions.scoop = oneShot(scoopClip);
+  if (vaultClip) actions.vault = oneShot(vaultClip);
+  if (cageVaultClip) actions.cagevault = oneShot(cageVaultClip);
+  if (celebClips.length) actions.celebrate = oneShot(celebClips[(Math.random() * celebClips.length) | 0]); // this player's TD dance
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
-  // Per-player idle stance: a random preset + small jitter so the team reads as
-  // individuals (some arms-folded, hands-on-hip, head-cocked, etc.).
-  const base = STANCES[(Math.random() * STANCES.length) | 0];
-  const jit = () => (Math.random() - 0.5) * 0.18;
-  const stance = {
-    ua: base.ua + jit(), fa: base.fa + jit(), la: base.la + jit(), lfa: base.lfa + jit(),
-    head: base.head + (Math.random() - 0.5) * 0.12,
-  };
 
   // Helmet: a scaled clone of the team helmet PARENTED to the Head bone, so it
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
@@ -652,11 +664,11 @@ function makeCharacter(team) {
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet, stance, bones: restPose.map((e) => e[0]), // stance variety + bone list for replay
+    headBone, headEnd, helmet, bones: restPose.map((e) => e[0]), // bone list for replay capture
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
-    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0, recoverT: 0, engaged: false,
+    route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, diveT: 0, recoverT: 0, cageJumpCd: 0, engaged: false,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -695,6 +707,7 @@ const game = {
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
   replay: { frames: [], i: 0, hold: 0, angle: 0, bigHit: false }, // instant-replay buffer + cam
+  pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
@@ -2114,6 +2127,7 @@ function endPlay(result, endZ) {
     flashScreen(); confetti(endZ); // celebratory flash + shower in the end zone
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
+      celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
       if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); }
       else { showBanner('TOUCHDOWN!', '#ffd23a'); setStatus('TOUCHDOWN! 🏈'); }
     } else {
@@ -2141,9 +2155,23 @@ function endPlay(result, endZ) {
     }
   }
   updateHUD();
-  // Broadcast replay on scores and on big gang-tackle highlights.
-  if (result === 'TD' || (result === 'tackle' && game.replay.bigHit)) startReplay();
-  game.replay.bigHit = false;
+  // Broadcast replay: a big gang-tackle cuts to it immediately; a TD DEFERS it
+  // to the end of the dead-ball beat so the celebration plays live first.
+  const bigHit = game.replay.bigHit; game.replay.bigHit = false;
+  if (result === 'TD') game.pendingReplay = true;
+  else if (result === 'tackle' && bigHit) startReplay();
+}
+// TD celebration: the scorer + the two nearest teammates break into their dance
+// (each player's celebrate clip was picked at build for variety).
+function celebrateTD() {
+  game.celebrating = true;
+  const scorer = game.carrier || game.controlled;
+  const team = (scorer && (game.offense.includes(scorer) ? game.offense : game.defense)) || game.offense;
+  const crew = [scorer, ...team
+    .filter((o) => o && o !== scorer && !o.ragdolling)
+    .sort((a, b) => (scorer ? dist2(px(a), px(scorer)) - dist2(px(b), px(scorer)) : 0))
+    .slice(0, 3)];
+  for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3);
 }
 
 // ===========================================================================
@@ -2290,6 +2318,10 @@ function startSecure(player, isInt) {
   } else {
     audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
+    // Lunge reception: if he had to reach for it (or it's low), play the diving
+    // catch instead of the standard secure pose.
+    const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
+    if (player.actions.divecatch && (reach > 1.5 || p.y < 1.2)) playOneShot(player, 'divecatch', 0.55);
   }
 }
 function passBrokenUp(msg, color, swatter, swatType) {
@@ -2684,7 +2716,9 @@ function updateLoose(dt, turboOn, actionEdge) {
     if (actionEdge) { // dive on the ball — extends your reach for a beat
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
       o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
-      o.recoverT = 0.45; triggerArmAction(o, 'pick', 0.45, p); // procedural dive-reach
+      o.recoverT = 0.45;
+      if (o.actions.scoop) playOneShot(o, 'scoop', 0.5); // diving scoop animation
+      else triggerArmAction(o, 'pick', 0.45, p);          // procedural dive-reach fallback
     }
   }
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
@@ -2911,19 +2945,9 @@ function updateAnimation(ch, dt) {
   else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
-  else if (want === 'idle') applyIdleStance(ch); // per-player stance variety
+  // Idle variety now comes from real per-player idle clips (see makeCharacter),
+  // so no procedural stance offset is layered on top.
 }
-// A small, static per-player tweak to the idle pose (arm hang + head tilt) so
-// the team doesn't stand in identical stances.
-function applyIdleStance(ch) {
-  const s = ch.stance; if (!s || !ch.upperArm) return;
-  _tq.setFromAxisAngle(_xAxisL, s.ua); ch.upperArm.quaternion.multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-  if (ch.foreArm) { _tq.setFromAxisAngle(_xAxisL, -s.fa); ch.foreArm.quaternion.multiply(_tq); }
-  if (ch.leftArm) { _tq.setFromAxisAngle(_xAxisL, s.la); ch.leftArm.quaternion.multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
-  if (ch.leftForeArm) { _tq.setFromAxisAngle(_xAxisL, -s.lfa); ch.leftForeArm.quaternion.multiply(_tq); }
-  if (ch.headBone && s.head) { _tq.setFromAxisAngle(_zAxisL, s.head); ch.headBone.quaternion.multiply(_tq); }
-}
-
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
 // contact during the juke window he whiffs right past (see beginTackle).
 function doJuke(ch) {
@@ -2974,9 +2998,13 @@ function stiffArm(ch, def) {
   showBanner('STIFF ARM!', '#ffd23a');
 }
 // DIVE — a committed forward lunge (hurdles a lone tackler), then you're DOWN.
-// Great to reach the sticks or the pylon; risky if you go too early.
+// Great to reach the sticks or the pylon; risky if you go too early. But if a
+// defender is right in front and you're moving, DIVE becomes a HURDLE: you
+// vault clean over him and KEEP RUNNING (no down) — like SPIN -> stiff-arm.
 function doDive(ch) {
   if (ch.diveT > 0 || ch.jukeCd > 0.6) return;
+  const ahead = defenderAhead(ch, 2.6, 0.5);
+  if (ahead && (ch.turbo || ch.speed > 8)) { doHurdle(ch, ahead); return; }
   const fx = Math.sin(ch.heading), fz = Math.cos(ch.heading);
   const burstSpd = ch.baseSpeed * 1.35;
   ch.vel.x = fx * burstSpd; ch.vel.z = fz * burstSpd;
@@ -2984,6 +3012,40 @@ function doDive(ch) {
   playOneShot(ch, 'juke', 0.45);
   audio.juke();
   showBanner('DIVE!', '#bfffd0');
+}
+// HURDLE — leap over a low/diving defender and land still running. The jukeTimer
+// immunity makes the man he's vaulting whiff (see beginTackle).
+function doHurdle(ch, def) {
+  ch.jukeCd = 0.95; ch.jukeTimer = 0.55; // immunity across the vault
+  const fx = Math.sin(ch.heading), fz = Math.cos(ch.heading);
+  const b = ch.baseSpeed * 1.25;
+  ch.vel.x = fx * b; ch.vel.z = fz * b; // leap forward over him
+  playOneShot(ch, ch.actions.vault ? 'vault' : 'juke', 0.5);
+  burst(def.group.position.x, 1.3, def.group.position.z, 0xe8d9a0, 9, 6);
+  audio.juke(); shake.kick(fx, fz, 0.22);
+  showBanner('HURDLE!', '#bfffd0');
+}
+// JUMP OFF THE CAGE — a ball carrier driven into the fence at speed kicks off it,
+// redirecting back inbound (and downfield) with a burst + a beat of immunity,
+// instead of getting pinned to the wall. Parkour vault-with-roll animation.
+function tryCageJump(c) {
+  if (c.cageJumpCd > 0 || c.diveT > 0) return false;
+  if (Math.hypot(c.vel.x, c.vel.z) < 6) return false; // need real pace into the wall
+  const p = c.group.position, mx = CAGE_X - 1.8, mz = CAGE_Z - 1.8;
+  const intoX = (p.x > mx && c.vel.x > 0) || (p.x < -mx && c.vel.x < 0);
+  const intoZ = (p.z > mz && c.vel.z > 0) || (p.z < -mz && c.vel.z < 0);
+  if (!intoX && !intoZ) return false;
+  c.cageJumpCd = 1.7; c.jukeTimer = 0.5; // immunity off the wall
+  const inwardX = p.x > 0 ? -1 : 1, downZ = game.dir; // back toward midfield, still downfield
+  const b = c.baseSpeed * 1.35;
+  c.vel.x = inwardX * b * (intoX ? 0.8 : 0.4);
+  c.vel.z = downZ * b * (intoZ ? 0.5 : 0.95);
+  c.heading = Math.atan2(c.vel.x, c.vel.z);
+  playOneShot(c, c.actions.cagevault ? 'cagevault' : 'juke', 0.6);
+  burst(p.x, 1.6, p.z, 0x7fe0ff, 12, 7);
+  audio.juke(); shake.kick(inwardX, downZ, 0.3);
+  showBanner('OFF THE WALL!', '#7fe0ff');
+  return true;
 }
 // LATERAL/PITCH — flick the ball to a trailing teammate (behind the carrier).
 // A bad pitch near coverage can be fumbled (a live ball the defense may grab).
@@ -3109,6 +3171,8 @@ function updatePlay(dt) {
       if (c.jukeTimer > 0) c.jukeTimer -= dt;
       if (c.jukeCd > 0) c.jukeCd -= dt;
       if (c.spinT > 0) c.spinT -= dt;
+      if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
+      tryCageJump(c); // driven into the fence at speed -> kick off it, stay in play
       if (c.diveT > 0) {
         // Locked into the dive: coast forward, then go down at the end of it.
         c.diveT -= dt;
@@ -3176,7 +3240,14 @@ function updatePlay(dt) {
       ch.group.position.x += ch.vel.x * dt; ch.group.position.z += ch.vel.z * dt;
       ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
     }
-    game.deadTimer -= dt; if (game.deadTimer <= 0) beginReset();
+    game.deadTimer -= dt;
+    if (game.deadTimer <= 0) {
+      game.celebrating = false;
+      // Cut to the broadcast replay now (after the live celebration); if there
+      // wasn't enough footage, just line up for the next play.
+      if (game.pendingReplay) { game.pendingReplay = false; if (!startReplay()) beginReset(); }
+      else beginReset();
+    }
   } else if (game.state === STATE.RESET) {
     updateReset(dt);
   }

@@ -19,6 +19,11 @@ full passing play from snap to score.
   (whoever falls on it gets the ball).
 - **Turbo meter**: hold TURBO for a 1.4x burst; the meter drains while you
   burn it and refills when you don't (including between plays).
+- **Off the wall**: get driven into the cage at speed and the carrier **kicks
+  off the fence** (parkour vault) — redirecting back inbound and downfield with
+  a burst and a beat of immunity instead of getting pinned.
+- **Touchdown celebrations**: score and the man with the ball plus his nearest
+  teammates break into a dance (varied per player) before the instant replay.
 - **JUKE** (run phase): a hard lateral burst — time it as a tackler arrives
   and he *whiffs right past* (and hits the turf, courtesy of the ragdolls).
   A lone arm-tackle can also be **broken** outright (strength + momentum vs
@@ -67,7 +72,7 @@ play, with **down & distance** and the **score** tracked on the HUD.
 | **SNAP** then **THROW** (tap=lob, hold=bullet) / **JUKE** | Contextual action button |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
 | **SPIN** (run) | Spin past a defender — or **stiff-arm** (truck) one right in front |
-| **DIVE** (run) | Committed forward lunge for the sticks/pylon — then you're down |
+| **DIVE** (run) | Committed forward lunge for the sticks/pylon — then you're down. With a defender right in front (and speed/turbo) it becomes a **HURDLE**: vault clean over him and keep running |
 | **PITCH** (run) | Lateral to a trailing teammate (risky near coverage) |
 | **WASD / arrows** (desktop) | Move + aim |
 | **Space** | Snap / throw / juke |
@@ -151,6 +156,13 @@ python3 -m http.server 8000   # then open http://localhost:8000
 - `assets/animations.glb` — locomotion + action clips on the character's own
   rig: breathing idle, walk, run, RunFast (sprint), dodge-roll juke, catch,
   get-ups, backpedals, sharp turn
+- `assets/animations2.glb` — a merged Meshy pack (stripped to animation-only by
+  `tools/strip-anim.mjs`): extra idles + walks for per-player variety, touchdown
+  celebrations, a diving catch, a loose-ball scoop, and parkour vaults (the
+  HURDLE move + the cage wall-jump)
+- `tools/strip-anim.mjs` — strips a Meshy/`withSkin` GLB down to animation-only
+  (drops the redundant mesh/texture, rebuilds the BIN) so new clips add KBs, not
+  MBs; run `node tools/strip-anim.mjs <in.glb> <out.glb>`
 - `assets/sfx/` — recorded sound effects (referee whistle, ball catch, tackle
   pad-pop with grunts, chain-link fence carom, crowd goal reaction) layered
   over the procedural WebAudio cues, with a synth fallback if one fails to load
