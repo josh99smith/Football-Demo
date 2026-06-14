@@ -58,6 +58,20 @@ function gradientCanvas(stops, w, h) {
   const wall = new THREE.Mesh(new THREE.CylinderGeometry(79, 79, 4, 56, 1, true),
     new THREE.MeshStandardMaterial({ color: 0x12202e, side: THREE.BackSide, roughness: 0.9 }));
   wall.position.y = 2; scene.add(wall);
+  // Four light towers in the corners (glowing lamp banks aimed at the field).
+  const towerMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.6, metalness: 0.4 });
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c8, emissiveIntensity: 2.4 });
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.55, 28, 8), towerMat); pole.position.y = 14; g.add(pole);
+    const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 0.8), lampMat); bank.position.y = 28; g.add(bank);
+    g.position.set(sx * 44, 0, sz * 62);
+    bank.rotation.y = Math.atan2(-g.position.x, -g.position.z); // face the field center
+    scene.add(g);
+  }
+  // Sun glow high in the sky (additive sprite) for a hero-light pop.
+  const glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeGlowTexture(), color: 0xffe9b0, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+  glowSprite.scale.set(60, 60, 1); glowSprite.position.set(120, 150, 90); scene.add(glowSprite);
 }
 
 scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x3a6b3a, 1.0));
@@ -83,23 +97,27 @@ const FIELD_L = 120, HALF_L = FIELD_L / 2;
 const GOAL_Z = HALF_L - 10;          // +50: offense's target goal line
 const OWN_GOAL_Z = -(HALF_L - 10);   // -50
 
+const turfMats = []; // {mat, rx, ry} — get the grass map once it loads
 function buildField() {
   const field = new THREE.Group();
-  const surround = new THREE.Mesh(new THREE.PlaneGeometry(420, 420),
-    new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  const surroundMat = new THREE.MeshStandardMaterial({ color: 0x3c6e34, roughness: 1 });
+  turfMats.push({ mat: surroundMat, rx: 60, ry: 60 });
+  const surround = new THREE.Mesh(new THREE.PlaneGeometry(420, 420), surroundMat);
   surround.rotation.x = -Math.PI / 2; surround.position.y = -0.02;
   surround.receiveShadow = true; field.add(surround);
 
   const stripes = 12, sl = FIELD_L / stripes;
   for (let i = 0; i < stripes; i++) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, sl),
-      new THREE.MeshStandardMaterial({ color: i % 2 ? 0x2f6f33 : 0x357a38 }));
+    const sm = new THREE.MeshStandardMaterial({ color: i % 2 ? 0x6f8f55 : 0x7a9a5e, roughness: 1 });
+    turfMats.push({ mat: sm, rx: 14, ry: 3 }); // grass detail, mow tint kept as color
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, sl), sm);
     m.rotation.x = -Math.PI / 2; m.position.set(0, 0, -HALF_L + sl * (i + 0.5));
     m.receiveShadow = true; m.userData.proc = true; field.add(m);
   }
   for (const dir of [-1, 1]) {
-    const ez = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 10),
-      new THREE.MeshStandardMaterial({ color: dir < 0 ? 0x1f5fa8 : 0xa83232 }));
+    const em = new THREE.MeshStandardMaterial({ color: dir < 0 ? 0x3f6fb0 : 0xb04a45, roughness: 1 });
+    turfMats.push({ mat: em, rx: 14, ry: 2.5 });
+    const ez = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 10), em);
     ez.rotation.x = -Math.PI / 2; ez.position.set(0, 0.01, dir * (HALF_L - 5));
     ez.receiveShadow = true; ez.userData.proc = true; field.add(ez);
   }
@@ -131,6 +149,16 @@ function goalPost(z) {
 }
 const fieldGroup = buildField();
 scene.add(fieldGroup);
+// Real turf: one grass image, tiled per surface (mow stripes + end-zone colors
+// stay as the material tint, multiplied over the grass detail).
+new THREE.TextureLoader().load('assets/grass.jpg', (tex) => {
+  tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  for (const { mat, rx, ry } of turfMats) {
+    const tt = tex.clone(); tt.needsUpdate = true; tt.wrapS = tt.wrapT = THREE.RepeatWrapping; tt.repeat.set(rx, ry);
+    mat.map = tt; mat.needsUpdate = true;
+  }
+});
 // Optional custom field texture: drop a JPEG/PNG at assets/field.png (or .jpg).
 // It maps onto one plane the size of the whole field (53.3 x 120 yd, end zones
 // included) and replaces the procedural turf + lines. Image is portrait: its
