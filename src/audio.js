@@ -19,12 +19,32 @@ export class AudioManager {
         const d = this.noiseBuf.getChannelData(0);
         for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
         this.ready = true;
+        this.startAmbience();
       } catch (e) { /* no audio — game still runs */ }
     }
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   }
 
   get t() { return this.ctx.currentTime; }
+
+  // A continuous filtered-noise crowd murmur under everything; swell() lifts it
+  // on big moments so the stadium feels alive.
+  startAmbience() {
+    if (this.amb || !this.ready) return;
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 520; bp.Q.value = 0.5;
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1100;
+    const g = this.ctx.createGain(); g.gain.value = 0.035;
+    src.connect(bp); bp.connect(lp); lp.connect(g); g.connect(this.master);
+    src.start(); this.amb = g;
+  }
+  swell(amount = 0.5) {
+    if (!this.amb) return; const t = this.t;
+    this.amb.gain.cancelScheduledValues(t);
+    this.amb.gain.setValueAtTime(Math.max(0.035, this.amb.gain.value), t);
+    this.amb.gain.linearRampToValueAtTime(0.035 + 0.13 * amount, t + 0.15);
+    this.amb.gain.linearRampToValueAtTime(0.035, t + 0.7 + amount * 1.3);
+  }
 
   _tone(freq, dur, { type = 'sine', gain = 0.3, slideTo = null, delay = 0 } = {}) {
     if (!this.ready) return;
@@ -69,6 +89,7 @@ export class AudioManager {
   /** Crowd swell from filtered noise (TD / big plays). */
   cheer(amount = 0.5) {
     if (!this.ready) return;
+    this.swell(amount); // lift the ambient crowd bed too
     const t = this.t, dur = 0.6 + amount * 1.4;
     const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
     const f = this.ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.6;

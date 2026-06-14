@@ -1453,6 +1453,11 @@ function showBanner(text, color = '#ffd23a') {
   bannerEl.classList.remove('pop'); void bannerEl.offsetWidth;
   bannerEl.classList.add('pop');
 }
+const flashEl = document.getElementById('flash');
+function flashScreen() {
+  if (!flashEl) return;
+  flashEl.classList.remove('on'); void flashEl.offsetWidth; flashEl.classList.add('on');
+}
 
 // ===========================================================================
 // Play flow
@@ -1649,6 +1654,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
+  cam.fovKick = 5; // quick zoom punch on the snap
   game.replay.frames.length = 0; game.replay.bigHit = false; // fresh footage for this play
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
@@ -1988,7 +1994,7 @@ function endPlay(result, endZ) {
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
-    confetti(endZ); // celebratory shower in the end zone
+    flashScreen(); confetti(endZ); // celebratory flash + shower in the end zone
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
       if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); }
@@ -3044,7 +3050,7 @@ const cam = {
   pos: new THREE.Vector3(0, 7, -12),
   lookCur: new THREE.Vector3(0, 1.3, 0),
   cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
-  back: 11, hgt: 6.8, aheadL: 11, lookH: 1.5, // eased framing (smooths transitions)
+  back: 11, hgt: 6.8, aheadL: 11, lookH: 1.5, fovKick: 0, // eased framing + snap zoom punch
 };
 const _tp = new THREE.Vector3(), _tl = new THREE.Vector3(), _fp = new THREE.Vector3();
 const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
@@ -3134,7 +3140,8 @@ function updateCamera(dt) {
   // FOV: a touch wider on pass plays so more of the field fits; the hit close-up
   // zooms in from there (down to ~34°).
   const baseFov = passPlay ? 60 : 55;
-  const wantFov = baseFov - (baseFov - 34) * e;
+  cam.fovKick = Math.max(0, cam.fovKick - dt * 22); // snap zoom-punch, eases out
+  const wantFov = baseFov - (baseFov - 34) * e - cam.fovKick;
   if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
 
   // Eased follow — gentle while tracking the ball so the broadcast shot glides
