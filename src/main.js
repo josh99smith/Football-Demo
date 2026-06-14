@@ -172,6 +172,7 @@ function updateParticles(dt) {
 // Assets + character factory
 // ===========================================================================
 const loader = new GLTFLoader();
+const HEAD_SCALE = 1.6; // Blitz-style oversized heads (applied to both teams)
 const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
@@ -319,6 +320,7 @@ function makeCharacter(team) {
   // Both teams wear the red helmet head model (helmetOffTemplate); the blue
   // helmet is kept only as a fallback if the red one fails to load.
   const helmetScene = helmetOffTemplate || helmetDefTemplate;
+  if (headBone) headBone.scale.setScalar(HEAD_SCALE); // Blitz-style big head (both teams)
   if (helmetScene && headBone && headEnd) {
     model.updateWorldMatrix(true, true);
     const hp = new THREE.Vector3(), ep = new THREE.Vector3(), hs = new THREE.Vector3(), hq = new THREE.Quaternion();
@@ -328,8 +330,8 @@ function makeCharacter(team) {
     const headWorldScale = (hs.x + hs.y + hs.z) / 3 || 0.0124;
     helmet = helmetScene.clone(true);
     helmet.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
-    // helmet bbox is ~2 units tall; size it to ~2.2x the head in WORLD units.
-    helmet.scale.setScalar((headH * 2.2) / (2.0 * headWorldScale));
+    // helmet bbox is ~2 units tall; size it to ~1.7x the (already enlarged) head.
+    helmet.scale.setScalar((headH * 1.7) / (2.0 * headWorldScale));
     // This character has a tall armored collar that swallows the head, so seat
     // the helmet up at/above the crown (head_end) rather than the head centre.
     const up = new THREE.Vector3().subVectors(ep, hp).normalize();
