@@ -628,7 +628,7 @@ function makeCharacter(team) {
     upperArm, foreArm, upperArmRest, foreArmRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet,
+    headBone, headEnd, helmet, bones: restPose.map((e) => e[0]), // stable bone list for replay capture
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -670,8 +670,8 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], i: 0, hold: 0, angle: 0 }, // instant-replay buffer + cam
-  playIndex: 0, defCall: 0, choosing: false, cpuLastPlay: -1, // offense play / def call / select open / CPU's last call
+  replay: { frames: [], i: 0, hold: 0, angle: 0, bigHit: false }, // instant-replay buffer + cam
+  playIndex: 0, defCall: 0, choosing: false, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -1348,7 +1348,7 @@ function updateHUD() {
   elQuarter.textContent = game.gameOver ? 'FINAL' : (QLABEL[game.quarter - 1] || game.quarter + 'TH');
   const pc = Math.max(0, Math.ceil(game.snapClock));
   elPlayClock.textContent = `:${pc < 10 ? '0' : ''}${pc}`;
-  const showPC = game.state === STATE.PRESNAP && !game.gameOver && !game.choosing;
+  const showPC = game.state === STATE.PRESNAP && !game.gameOver && !game.choosing && game.userOnOffense;
   elPlayClock.style.visibility = showPC ? 'visible' : 'hidden';
   elPlayClock.classList.toggle('warn', showPC && pc <= 5);
   // Mirror the score to the jumbotron.
@@ -1367,7 +1367,7 @@ function updateButtons() {
   const showMoves = s === STATE.RUN && onO;
   for (const b of [spinBtn, diveBtn, pitchBtn]) if (b) b.classList.toggle('hidden', !showMoves);
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
-  else if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : 'SNAP'); hide(turboBtn); }
+  else if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
   else if (s === STATE.LIVE) { onO ? show(actionBtn, 'THROW') : show(actionBtn, 'SWITCH'); show(turboBtn); }
   else if (s === STATE.AIR) { onO ? hide(actionBtn) : show(actionBtn, 'SWITCH'); show(turboBtn); }
   else if (s === STATE.RUN) { show(actionBtn, onO ? 'JUKE' : 'TACKLE'); show(turboBtn); }
@@ -1571,9 +1571,10 @@ function updateReset(dt) {
 function finalizeReset() {
   for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
   game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
-  selRing.visible = game.userOnOffense;
+  if (game.userOnOffense) { game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false; }
+  else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
-  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — tap SNAP`);
+  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
 }
 
 // --- Instant replay -------------------------------------------------------
@@ -1582,24 +1583,26 @@ function finalizeReset() {
 // it back in slow motion from a cinematic broadcast angle.
 const REPLAY_MAX = 320; // ~5s at 60fps
 const replayEl = document.getElementById('replay');
+// Capture the FINAL pose each frame as raw bone transforms (group + every bone),
+// so locomotion, procedural arm poses AND ragdolls all replay exactly. A frame
+// is one flat Float32Array: [ball pos3+quat4][per player: group pos3+quat4 + each
+// bone pos3+quat4].
 function recordFrame() {
-  const p = new Array(game.all.length);
-  for (let i = 0; i < game.all.length; i++) {
-    const ch = game.all[i];
-    p[i] = { x: ch.group.position.x, z: ch.group.position.z, h: ch.heading, c: ch.current, t: ch.mixer.time };
+  const all = game.all, nb = all[0].bones.length;
+  const buf = new Float32Array(7 + all.length * (7 + nb * 7));
+  let o = 0;
+  const b = ball.mesh; const bp = b.position, bq = b.quaternion;
+  buf[o++] = bp.x; buf[o++] = bp.y; buf[o++] = bp.z; buf[o++] = bq.x; buf[o++] = bq.y; buf[o++] = bq.z; buf[o++] = bq.w;
+  for (const ch of all) {
+    const g = ch.group, gp = g.position, gq = g.quaternion;
+    buf[o++] = gp.x; buf[o++] = gp.y; buf[o++] = gp.z; buf[o++] = gq.x; buf[o++] = gq.y; buf[o++] = gq.z; buf[o++] = gq.w;
+    for (const bo of ch.bones) { const p = bo.position, q = bo.quaternion; buf[o++] = p.x; buf[o++] = p.y; buf[o++] = p.z; buf[o++] = q.x; buf[o++] = q.y; buf[o++] = q.z; buf[o++] = q.w; }
   }
-  const b = ball.mesh;
-  const f = game.replay.frames;
-  f.push({ bx: b.position.x, by: b.position.y, bz: b.position.z, brx: b.rotation.x, bry: b.rotation.y, brz: b.rotation.z, p });
-  if (f.length > REPLAY_MAX) f.shift();
-}
-function poseAt(ch, clip, t) {
-  for (const k in ch.actions) ch.actions[k].setEffectiveWeight(k === clip ? 1 : 0);
-  ch.mixer.setTime(Math.max(0, t || 0));
+  const f = game.replay.frames; f.push(buf); if (f.length > REPLAY_MAX) f.shift();
 }
 function startReplay() {
   if (game.replay.frames.length < 40) return false; // not enough footage — skip
-  clearRagdolls();
+  clearRagdolls(); // physics off; the recorded bone transforms ARE the pose
   game.state = STATE.REPLAY; game.replay.i = 0; game.replay.hold = 0;
   game.replay.angle = (Math.random() < 0.5 ? 1 : -1) * (Math.PI * 0.42); // low ~3/4 sideline angle
   if (replayEl) replayEl.classList.remove('hidden');
@@ -1607,14 +1610,12 @@ function startReplay() {
   return true;
 }
 function applyReplayFrame(fi) {
-  const f = game.replay.frames, n = f.length;
-  const a = f[Math.min(n - 1, Math.floor(fi))], b = f[Math.min(n - 1, Math.ceil(fi))], u = fi - Math.floor(fi);
-  ball.mesh.position.set(a.bx + (b.bx - a.bx) * u, a.by + (b.by - a.by) * u, a.bz + (b.bz - a.bz) * u);
-  ball.mesh.rotation.set(a.brx, a.bry, a.brz);
-  for (let i = 0; i < game.all.length; i++) {
-    const ch = game.all[i], pa = a.p[i], pb = b.p[i];
-    ch.group.position.x = pa.x + (pb.x - pa.x) * u; ch.group.position.z = pa.z + (pb.z - pa.z) * u;
-    ch.group.rotation.y = pa.h; poseAt(ch, pa.c, pa.t);
+  const f = game.replay.frames, buf = f[Math.min(f.length - 1, Math.round(fi))];
+  let o = 0;
+  ball.mesh.position.set(buf[o++], buf[o++], buf[o++]); ball.mesh.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]);
+  for (const ch of game.all) {
+    ch.group.position.set(buf[o++], buf[o++], buf[o++]); ch.group.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]);
+    for (const bo of ch.bones) { bo.position.set(buf[o++], buf[o++], buf[o++]); bo.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]); }
   }
 }
 function updateReplay(dt) {
@@ -1648,7 +1649,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
-  game.replay.frames.length = 0; // fresh footage for this play
+  game.replay.frames.length = 0; game.replay.bigHit = false; // fresh footage for this play
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
@@ -1668,7 +1669,8 @@ function snap() {
   // Defensive scheme: your call on D; the CPU mixes coverages on your drives.
   if (!game.userOnOffense) {
     applyDefCall(game.defCall);
-    game.controlled = nearestToBallDefender(); ctrlRing.visible = true; selRing.visible = false;
+    if (!game.controlled || !game.defense.includes(game.controlled)) game.controlled = nearestToBallDefender();
+    ctrlRing.visible = true; selRing.visible = false;
   } else { applyDefCall((Math.random() * 4) | 0); }
   audio.hike();
   setStatus(game.userOnOffense ? 'Find an open receiver, then THROW' : 'Defense! Stop the throw');
@@ -1681,6 +1683,21 @@ function nearestToBallDefender() {
   let best = null, bestD = Infinity;
   for (const d of game.defense) { if (d.ragdolling) continue; const dd = dist2(px(d), bp); if (dd < bestD) { bestD = dd; best = d; } }
   return best || game.defense[0];
+}
+// Pre-snap: keep the controlled player on its own side of the LOS (offense can
+// roam behind the line but not cross it; the defender stays on the D side).
+function clampPreSnap(c) {
+  const rel = game.dir * (c.group.position.z - game.los);
+  if (game.userOnOffense) { if (rel > -1) c.group.position.z = game.los - game.dir; }
+  else { if (rel < 0.5) c.group.position.z = game.los + game.dir * 0.5; }
+}
+// Pre-snap: cycle which of your players you control (your team).
+function switchControlled() {
+  const team = game.userOnOffense ? game.offense : game.defense;
+  const list = team.filter((p) => !p.ragdolling);
+  if (!list.length) return;
+  game.controlled = list[(list.indexOf(game.controlled) + 1) % list.length];
+  ctrlRing.visible = true;
 }
 const PASS_G = 10.7;      // gravity, yd/s^2 (~9.8 m/s^2)
 const PASS_VMAX = 37;     // arm strength: max launch speed, yd/s (snappier throws)
@@ -1790,9 +1807,9 @@ function cpuQB(dt) {
   const target = mostOpenReceiver();
   const cov = target ? nearestDefenderTo(px(target)) : null;
   const sep = (target && cov) ? distXZ(px(target), px(cov)) : 9;
-  const ready = game.cpuQBTimer <= 0;
-  const desperate = game.cpuQBTimer < -1.0 || (pressured && pressure < 1.3);
-  if (target && (sep > 2.4 || desperate || (ready && pressured))) {
+  const ready = game.cpuQBTimer <= 0;   // dropback finished — only then look to throw
+  const desperate = game.cpuQBTimer < -1.4 || (pressured && pressure < 1.2);
+  if (target && ((ready && (sep > 2.0 || pressured)) || desperate)) {
     // Throw to the open man; longer throws get more zip. Accuracy = QB skill.
     ball.targetRecv = target; game.selected = game.receivers.indexOf(target);
     throwBall(THREE.MathUtils.clamp(0.2 + distXZ(px(qb), px(target)) / 50, 0.2, 0.85));
@@ -2001,7 +2018,9 @@ function endPlay(result, endZ) {
     }
   }
   updateHUD();
-  if (result === 'TD') startReplay(); // broadcast-style instant replay of the score
+  // Broadcast replay on scores and on big gang-tackle highlights.
+  if (result === 'TD' || (result === 'tackle' && game.replay.bigHit)) startReplay();
+  game.replay.bigHit = false;
 }
 
 // ===========================================================================
@@ -2367,6 +2386,7 @@ function beginTackle(lead, force = false) {
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
   const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
   const gang = gangSize >= 3;
+  if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
 
   // A committed tackle (a lost battle) skips every escape — straight down.
   // Blitz: a well-timed JUKE makes the first man whiff right past — and down.
@@ -2859,8 +2879,17 @@ function updatePlay(dt) {
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
-    if (!game.choosing && game.userOnOffense) aimReceiver();
-    if (actionEdge && !game.choosing) { if (game.gameOver) resetGame(); else snap(); }
+    if (game.gameOver) { if (actionEdge) resetGame(); }
+    else if (!game.choosing) {
+      if (game.userOnOffense) { if (actionEdge) snap(); }                 // you snap on offense
+      else {
+        if (actionEdge) switchControlled();                              // pick your defender
+        game.autoSnapT -= dt; if (game.autoSnapT <= 0) snap();           // CPU snaps on its own
+      }
+      // Roam pre-snap (jog) on your own side of the line of scrimmage.
+      const c = game.controlled;
+      if (c) { controlledMove(c, dt, c.baseSpeed * 0.85); clampPreSnap(c); }
+    }
   } else if (game.state === STATE.LIVE && game.userOnOffense) {
     aimReceiver();
     // A throw only arms on a FRESH press in LIVE — so the held snap press never
