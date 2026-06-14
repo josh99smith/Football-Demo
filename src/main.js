@@ -54,7 +54,7 @@ function makeAdTexture() {
   while (x < 1024) { const [t, col] = ads[i++ % ads.length]; g.fillStyle = col; g.fillText(t, x, 34); x += g.measureText(t).width + 70; }
   // Negative repeat.x flips U so the text reads correctly on the BackSide ring
   // (seen from inside the cylinder it would otherwise be mirrored).
-  const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(-7, 1); tex.offset.x = 1; tex.colorSpace = THREE.SRGBColorSpace; return tex;
+  const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(-9, 1); tex.offset.x = 1; tex.colorSpace = THREE.SRGBColorSpace; return tex;
 }
 {
   // Night sky: deep blue overhead fading to a city-glow horizon.
@@ -87,10 +87,12 @@ function makeAdTexture() {
   new THREE.TextureLoader().load('assets/brick_bump.jpg', (tx) => { tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.repeat.set(46, 2); wallMat.bumpMap = tx; wallMat.bumpScale = 0.4; wallMat.needsUpdate = true; });
   const wall = new THREE.Mesh(new THREE.CylinderGeometry(79, 79, 6, 64, 1, true), wallMat);
   wall.position.y = 3; scene.add(wall);
-  // Animated LED advertising ring just inside the field-level wall.
-  const adRing = new THREE.Mesh(new THREE.CylinderGeometry(71, 71, 2.6, 64, 1, true),
+  // Animated LED advertising ribbon around the TOP of the stands (the field-level
+  // spot is now hidden behind the perimeter walls). The stands run r80..96 / y-4..30,
+  // so this rides the upper rim where it's clear of the walls and readable.
+  const adRing = new THREE.Mesh(new THREE.CylinderGeometry(95, 95, 6, 64, 1, true),
     new THREE.MeshBasicMaterial({ map: makeAdTexture(), side: THREE.BackSide }));
-  adRing.position.y = 1.5; scene.add(adRing); adBoardTex = adRing.material.map;
+  adRing.position.y = 30; scene.add(adRing); adBoardTex = adRing.material.map;
   // Crowd camera flashes: a pool of additive sprites that pop randomly in the stands.
   const flashTex = makeGlowTexture();
   for (let i = 0; i < 44; i++) {
