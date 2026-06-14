@@ -3015,6 +3015,7 @@ function updateDrag(dt) {
     t.group.position.x += (tx - t.group.position.x) * k;
     t.group.position.z += (tz - t.group.position.z) * k;
     t.heading = Math.atan2(cp.x - t.group.position.x, cp.z - t.group.position.z);
+    clampToField(t); // a grab near the wall must not shove the grabber out of the cage
     t.speed = 8; // churn the legs (driving him back) — see updateAnimation grab pose
   }
   for (const ch of game.all) if (!ch.ragdolling && ch !== carrier && !d.grabbers.includes(ch)) { ch.speed = 0; ch.vel.set(0, 0, 0); }
@@ -3685,6 +3686,9 @@ function updatePlay(dt) {
     if (game.tackleTimer <= 0 || settled) resolveTackleEnd();
   }
 
+  // Safety net: no upright player may ever be outside the cage, whatever state
+  // moved them (ragdolls are hard-clamped in the physics step instead).
+  for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air

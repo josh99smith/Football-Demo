@@ -31,6 +31,7 @@ export class PhysicsWorld {
   // Static boundary walls so ragdolls bounce off the cage and never pass through
   // it. (hx, hz) = inner-face distance from center; height = wall height (yd).
   addCageWalls(hx, hz, height) {
+    this.cageHX = hx; this.cageHZ = hz; // inner-face extents (for the hard clamp below)
     const R = this.rapier, body = this.world.createRigidBody(R.RigidBodyDesc.fixed());
     const t = 0.4, hH = height / 2; // half thickness / half height
     const mk = (ex, ey, ez, x, y, z) => this.world.createCollider(
@@ -303,15 +304,34 @@ export class TackleRagdoll {
    */
   applyLimits(dt) {
     if (!this.active) return;
-    // Safety floor: never let a body sink under the turf.
+    const hx = this.physics.cageHX, hz = this.physics.cageHZ;
+    const VMAX = 60; // cap runaway velocities so a glitch can't fling a body out / go haywire
+    // Safety floor + hard cage walls: a body can never sink under the turf OR end
+    // up outside the cage (belt-and-braces over the collider walls, in case a fast
+    // body tunnels through). Velocity is also capped to keep the sim stable.
     for (const seg of this.segs) {
       const t = seg.body.translation();
-      const minY = seg.r * 0.85;
-      if (t.y < minY) {
-        seg.body.setTranslation({ x: t.x, y: minY, z: t.z }, true);
-        const v = seg.body.linvel();
-        if (v.y < 0) seg.body.setLinvel({ x: v.x, y: 0, z: v.z }, true);
+      const v = seg.body.linvel();
+      // Sanitize: a non-finite body (a physics blow-up) would spread NaN through
+      // the whole skeleton — snap it back to a sane resting state instead.
+      if (!Number.isFinite(t.x) || !Number.isFinite(t.y) || !Number.isFinite(t.z) ||
+          !Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z)) {
+        seg.body.setTranslation({ x: 0, y: seg.r, z: 0 }, true);
+        seg.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        seg.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        continue;
       }
+      const minY = seg.r * 0.85;
+      let cx = t.x, cy = t.y, cz = t.z, hit = false;
+      if (cy < minY) { cy = minY; if (v.y < 0) v.y = 0; hit = true; }
+      if (hx != null) {
+        const mx = hx - seg.r, mz = hz - seg.r;
+        if (cx > mx) { cx = mx; if (v.x > 0) v.x = -v.x * 0.3; hit = true; } else if (cx < -mx) { cx = -mx; if (v.x < 0) v.x = -v.x * 0.3; hit = true; }
+        if (cz > mz) { cz = mz; if (v.z > 0) v.z = -v.z * 0.3; hit = true; } else if (cz < -mz) { cz = -mz; if (v.z < 0) v.z = -v.z * 0.3; hit = true; }
+      }
+      if (hit) { seg.body.setTranslation({ x: cx, y: cy, z: cz }, true); seg.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true); }
+      const vm = v.x * v.x + v.y * v.y + v.z * v.z;
+      if (vm > VMAX * VMAX) { const s = VMAX / Math.sqrt(vm); seg.body.setLinvel({ x: v.x * s, y: v.y * s, z: v.z * s }, true); }
     }
     this.age += dt;
     // Hold the joints firmly, easing the swing spring only slightly once it has
