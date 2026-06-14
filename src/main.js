@@ -624,9 +624,10 @@ function computeFlame() {
 }
 function emitFlames(dt, player, pCol, ballCol) {
   if (!ballFlame) return;
-  if (player) { const p = player.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pCol === 2 ? FLAME_BLUE : FLAME_ORANGE, 85); }
+  // Turbo (blue) is dampened — a lighter wisp than the ON FIRE (orange) blaze.
+  if (player) { const p = player.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pCol === 2 ? FLAME_BLUE : FLAME_ORANGE, pCol === 2 ? 42 : 85); }
   else playerFlame.update(dt, 0, 0, 0, null);
-  if (ballCol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, ballCol === 2 ? FLAME_BLUE : FLAME_ORANGE, 60); }
+  if (ballCol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, ballCol === 2 ? FLAME_BLUE : FLAME_ORANGE, ballCol === 2 ? 32 : 60); }
   else ballFlame.update(dt, 0, 0, 0, null);
 }
 // Live (non-replay): ON FIRE ball/carrier orange, turbo player blue; tapers off.
@@ -3912,15 +3913,28 @@ const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
 function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
-// Hide whichever cage panel / perimeter wall the camera is standing BEHIND (per
-// side, 1yd margin) so it never stares at the back of a wall seeing nothing.
+// ONLY during a REPLAY, hide a cage panel / perimeter wall that's actually
+// blocking the camera's view of the players — i.e. the camera is behind it on
+// that side AND it's in front of the camera (along the look direction). During
+// live gameplay the walls always stay solid.
+const _occF = new THREE.Vector3(), _occP = new THREE.Vector3();
+let _occHidden = false; // are any occluders currently hidden? (so we restore once)
 function cullOccluders() {
+  if (game.state !== STATE.REPLAY) {
+    if (_occHidden) { for (const o of camOccluders) o.visible = true; _occHidden = false; }
+    return;
+  }
   const cp = camera.position;
+  camera.getWorldDirection(_occF); // camera forward
+  _occHidden = false;
   for (const o of camOccluders) {
     const s = o.userData.cullSide, at = o.userData.cullAt;
-    o.visible = !(
-      (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
-      (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1));
+    const behind = (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
+                   (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1);
+    let hide = false;
+    if (behind) { o.getWorldPosition(_occP); hide = _occP.sub(cp).dot(_occF) > 0; } // in front of the camera = blocking the view
+    o.visible = !hide;
+    if (hide) _occHidden = true;
   }
 }
 
