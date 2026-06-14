@@ -1277,10 +1277,10 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
 })();
 
 const actionBtn = document.getElementById('action-btn');
+const actionLabel = document.getElementById('action-label');
 const turboBtn = document.getElementById('turbo-btn');
-const spinBtn = document.getElementById('spin-btn');
-const diveBtn = document.getElementById('dive-btn');
-const pitchBtn = document.getElementById('pitch-btn');
+// Two-button scheme: TURBO + one contextual ACTION button. (Desktop keeps the
+// optional Q/E/F shortcuts for explicit spin/dive/pitch.)
 (function buttons() {
   const press = (el, on, off) => {
     const d = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); on(); };
@@ -1293,9 +1293,6 @@ const pitchBtn = document.getElementById('pitch-btn');
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
-  if (spinBtn) press(spinBtn, () => { input.spinEdge = true; });
-  if (diveBtn) press(diveBtn, () => { input.diveEdge = true; });
-  if (pitchBtn) press(pitchBtn, () => { input.pitchEdge = true; });
 })();
 
 // --- Play-select screen: called before EVERY snap — an offensive playbook on
@@ -1468,23 +1465,51 @@ function setStatus(text) {
   elStatus.textContent = text;
   elStatus.classList.remove('flash'); void elStatus.offsetWidth; elStatus.classList.add('flash');
 }
-function show(el, label) { el.classList.remove('hidden'); if (label) el.textContent = label; }
+function show(el, label) { el.classList.remove('hidden'); if (label != null) el.textContent = label; }
 function hide(el) { el.classList.add('hidden'); }
+// The single contextual ACTION button: set its label (+ optional "hot" glow when
+// a special move like HURDLE/TRUCK is available so it's obvious you can do it).
+function setAction(label, hot = false) {
+  actionBtn.classList.remove('hidden');
+  if (actionLabel) actionLabel.textContent = label; else actionBtn.textContent = label;
+  actionBtn.classList.toggle('hot', hot);
+}
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
-  // Ball-carrier move buttons (spin/dive/pitch) only show on YOUR run.
-  const showMoves = s === STATE.RUN && onO;
-  for (const b of [spinBtn, diveBtn, pitchBtn]) if (b) b.classList.toggle('hidden', !showMoves);
+  actionBtn.classList.remove('hot');
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
-  else if (s === STATE.PRESNAP) { show(actionBtn, game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
-  else if (s === STATE.LIVE) { onO ? show(actionBtn, 'THROW') : show(actionBtn, 'SWITCH'); show(turboBtn); }
-  else if (s === STATE.AIR) { onO ? hide(actionBtn) : show(actionBtn, 'SWITCH'); show(turboBtn); }
-  else if (s === STATE.RUN) { show(actionBtn, onO ? 'JUKE' : 'TACKLE'); show(turboBtn); }
-  else if (s === STATE.RETURN) { show(actionBtn, 'TACKLE'); show(turboBtn); }
-  else if (s === STATE.LOOSE) { show(actionBtn, 'DIVE'); show(turboBtn); }
-  else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(turboBtn); }
+  else if (s === STATE.PRESNAP) { setAction(game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
+  else if (s === STATE.LIVE) { setAction(onO ? 'THROW' : 'SWITCH'); show(turboBtn); }
+  else if (s === STATE.AIR) { onO ? hide(actionBtn) : setAction('SWITCH'); show(turboBtn); }
+  else if (s === STATE.RUN) { onO ? refreshRunAction(game.carrier) : setAction('TACKLE'); show(turboBtn); }
+  else if (s === STATE.RETURN) { setAction('TACKLE'); show(turboBtn); }
+  else if (s === STATE.LOOSE) { setAction('DIVE'); show(turboBtn); }
+  else if (s === STATE.BATTLE) { setAction('MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
   updateRateCard(); // reflect whoever you're now controlling
+}
+// Decide what the contextual ACTION does for the ball carrier right now, and the
+// label to show. Captures the exact defender in the path and gates on cooldown,
+// so HURDLE / TRUCK only light up when they're actually available.
+function carrierContext(c) {
+  if (!c) return { label: 'JUKE', hot: false, run: () => {} };
+  const ahead = defenderAhead(c, 2.8, 0.48); // a man square in the path
+  const fast = c.speed > 7.5;
+  if (ahead && fast && c.jukeCd <= 0.6 && c.diveT <= 0)
+    return { label: 'HURDLE', hot: true, run: (x) => doHurdle(x, ahead) };
+  if (ahead && c.jukeCd <= 0)
+    return { label: 'TRUCK', hot: true, run: (x) => stiffArm(x, ahead) };
+  const p = c.group.position;
+  const nearGoal = Math.abs(atkGoalZ() - p.z) < 6 ||
+    (game.dir > 0 ? p.z >= game.firstDown - 2 : p.z <= game.firstDown + 2); // at the sticks/pylon
+  if (nearGoal) return { label: 'DIVE', hot: false, run: doDive };
+  return { label: 'JUKE', hot: false, run: doJuke };
+}
+// Refresh the action button to the carrier's current context (called per-frame
+// during your run so HURDLE/TRUCK light up the instant they're available).
+function refreshRunAction(c) {
+  const ctx = carrierContext(c);
+  setAction(ctx.label, ctx.hot);
 }
 
 // ===========================================================================
@@ -3176,11 +3201,14 @@ function updatePlay(dt) {
   } else if (game.state === STATE.RUN && !game.userOnOffense) {
     updateCpuRun(dt, turboOn, actionEdge); // CPU carrier; you tackle on defense
   } else if (game.state === STATE.RUN) {
-    // Move inputs act on the current carrier; a pitch may hand off to a teammate.
-    if (actionEdge) doJuke(game.carrier);
+    // The single ACTION button picks the right move for the moment (HURDLE /
+    // TRUCK / DIVE / JUKE — see carrierContext). Desktop Q/E/F stay as explicit
+    // spin / dive / pitch shortcuts for power users.
+    if (actionEdge) carrierContext(game.carrier).run(game.carrier);
     if (spinEdge) doSpin(game.carrier);
     if (diveEdge) doDive(game.carrier);
     if (pitchEdge) doPitch(game.carrier);
+    if (game.state === STATE.RUN) refreshRunAction(game.carrier); // keep the label live
     if (game.state === STATE.RUN) { // a botched pitch can have ended the play
       const c = game.carrier;       // (re-fetch: a clean pitch changed the carrier)
       if (c.jukeTimer > 0) c.jukeTimer -= dt;

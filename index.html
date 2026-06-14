@@ -90,13 +90,11 @@
     <div id="joystick-knob" class="joystick-knob"></div>
   </div>
 
-  <!-- Right-side buttons -->
-  <div id="action-btn" class="action-btn">SNAP</div>
+  <!-- Two-button control system: TURBO + a single contextual ACTION button
+       (its label changes to show what it'll do: SNAP / THROW / HURDLE / TRUCK /
+       DIVE / JUKE / TACKLE / SWITCH). -->
+  <div id="action-btn" class="action-btn"><b id="action-label">SNAP</b></div>
   <div id="turbo-btn" class="mini-btn turbo"><div id="turbo-fill"></div><span>TURBO</span></div>
-  <!-- Ball-carrier move buttons (shown only while running) -->
-  <div id="spin-btn" class="move-btn hidden">SPIN</div>
-  <div id="dive-btn" class="move-btn hidden">DIVE</div>
-  <div id="pitch-btn" class="move-btn hidden">PITCH</div>
 
   <script type="module" src="src/main.js"></script>
 </body>

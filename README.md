@@ -66,17 +66,17 @@ play, with **down & distance** and the **score** tracked on the HUD.
 
 ### Controls
 
+Just **two buttons**: **TURBO** and one **contextual ACTION** button whose label
+always shows what it'll do right now.
+
 | Input | Action |
 | --- | --- |
 | **Left joystick** | Move + aim the targeted receiver (camera-relative) |
-| **SNAP** then **THROW** (tap=lob, hold=bullet) / **JUKE** | Contextual action button |
+| **ACTION** (one button) | Context-sensitive: **SNAP** → **THROW** (tap=lob, hold=bullet) → while running it reads the field — **HURDLE** a man in your path, **TRUCK** (stiff-arm) one in close, **DIVE** at the sticks/pylon, or **JUKE** in open space; **TACKLE** on defense, **DIVE** on a loose ball, **SWITCH** defenders. It **glows red** the instant a HURDLE/TRUCK is available |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
-| **SPIN** (run) | Spin past a defender — or **stiff-arm** (truck) one right in front |
-| **DIVE** (run) | Committed forward lunge for the sticks/pylon — then you're down. With a defender right in front (and speed/turbo) it becomes a **HURDLE**: vault clean over him and keep running |
-| **PITCH** (run) | Lateral to a trailing teammate (risky near coverage) |
 | **WASD / arrows** (desktop) | Move + aim |
-| **Space** | Snap / throw / juke |
-| **Q / E / F** (desktop) | Spin / dive / pitch |
+| **Space** | The contextual ACTION |
+| **Q / E / F** (desktop) | Explicit spin / dive / pitch (power-user shortcuts) |
 | **Shift** | Turbo |
 
 Cross the line of scrimmage as the QB to commit to a **scramble** (the play
