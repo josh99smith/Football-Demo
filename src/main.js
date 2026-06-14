@@ -3449,6 +3449,8 @@ function applyThrowPose(ch, dt) {
 // ball -> arms down) so it varies with the ball/player positions.
 function applyCatchPose(ch, ballPos) {
   if (!ch.upperArm || !ch.upperArmRest) return;
+  if (ch.throwAnimT > 0) return; // a throw motion owns the arms (rare pick-6 + lateral) — don't fight it
+
   const chestY = ch.group.position.y + 1.15;
   const raise = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
   _tq.setFromAxisAngle(_xAxisL, -raise);
