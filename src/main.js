@@ -2714,12 +2714,15 @@ function updateBattle(dt) {
   // Locked in contact: the carrier DRIVES off the anchor toward the tackler as
   // he wins the meter (and gets shoved back as he loses); the tackler stays a
   // shoulder-width in front. A small wobble keeps the wrestle alive.
-  const wob = Math.sin(game.playClock * 22) * 0.08;
+  const wob = Math.sin(game.playClock * 22) * 0.03;
   const ang = game.carrier.heading, sa = Math.sin(ang), ca = Math.cos(ang);
   const drive = (b.val - 0.5) * 2.2;             // yards the carrier pushes the pile
   const c = game.carrier.group.position;
   c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
-  const half = 0.88 + wob;
+  // Pressed chest-to-chest. Body depth ~0.45yd, so center-to-center a touch under
+  // that overlaps the torsos slightly and the wrapped arms land on each other (a
+  // real lock, not two figures with a gap). The inward lean closes any remainder.
+  const half = 0.48 + wob;
   const tk = b.tackler.group.position;
   tk.x = c.x + sa * half; tk.z = c.z + ca * half;
 
