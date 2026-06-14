@@ -561,8 +561,11 @@ async function loadAssets() {
   // robotic. Fall back to the originals if the new pack didn't load.
   idleClips = ['Idle_11', 'Idle_02', 'Idle_03', 'Idle_8'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
   if (!idleClips.length) idleClips = [idleClip];
-  walkClips = ['Walking', 'Casual_Walk', 'Proud_Strut'].map((n) => byName[n] && loco(n)).filter(Boolean);
-  if (!walkClips.length) walkClips = [walkClip];
+  // Walk pool is just the gameplay-paced Walking clip: the Casual_Walk /
+  // Proud_Strut variety are leisurely cutscene gaits (~half pace) that skate
+  // when sped up to match real movement, so they're not used for locomotion.
+  walkClips = [walkClip].filter(Boolean);
+  if (!walkClips.length) walkClips = [inPlace(byName['Walking'])];
   // Touchdown celebrations (one per scorer, picked at character build). These
   // are dynamic (jumps) so keep their vertical motion -> inPlaceY.
   celebClips = ['Cheer_with_Both_Hands', 'Jumping_Punch', 'Show_Both_Arm_Muscles', 'Proud_Strut']
@@ -2373,6 +2376,20 @@ function cageBounce(p, restitution) {
 function updateBall(dt) {
   if (ball.mode !== 'flying') landRing.visible = false; // landing reticle only mid-flight
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
+  if (ball.mode === 'dead') { // deflected/incomplete in the air — fall to the turf
+    const p = ball.mesh.position;
+    ball.vy -= ball.g * dt;
+    p.x += ball.vx * dt; p.y += ball.vy * dt; p.z += ball.vz * dt;
+    if (p.y <= 0.22) {
+      p.y = 0.22;
+      if (ball.vy < 0) { ball.vy = -ball.vy * 0.42; if (ball.vy < 1.3) { ball.vy = 0; ball.mode = 'rest'; } }
+      ball.vx *= 0.6; ball.vz *= 0.6;
+    }
+    cageBounce(p, 0.5);
+    ball.spin += (ball.spinRate * 0.4 + 9) * dt;
+    ball.mesh.rotation.set(ball.spin * 0.5, ball.spin, ball.spin * 0.3); // tumble as it drops
+    return;
+  }
   if (ball.mode === 'loose') return; // a live fumble — physics handled in updateLoose
   if (ball.mode === 'carried') {
     const h = game.carrier || ball.holder || game.qb;
@@ -2495,7 +2512,13 @@ function startSecure(player, isInt) {
   }
 }
 function passBrokenUp(msg, color, swatter, swatType) {
-  ball.mode = 'rest';
+  // Knock the ball DOWN so it falls to the turf instead of freezing mid-air.
+  ball.mode = 'dead'; ball.g = 24;
+  ball.vy = -3 - Math.random() * 3;
+  const sc = swatType === 'swat' ? 7 : 3; // a DB bats it away; a drop just falls
+  ball.vx = ball.vx * 0.2 + (Math.random() - 0.5) * sc;
+  ball.vz = ball.vz * 0.2 + (Math.random() - 0.5) * sc;
+  ball.spinRate = 18;
   showBanner(msg, color);
   const p = ball.mesh.position;
   // Procedural reaction on the player who made the play on the ball: a defender
@@ -3526,7 +3549,7 @@ function updateCamera(dt) {
   // Focus the BALL / the PLAY — never a single player. Follow the ball in flight
   // or loose; the carrier's body while it's tucked; the landing spot when dead.
   // (On defense this means the camera tracks the action, not your defender.)
-  if (air || loose || ball.mode === 'rest' || ball.mode === 'secured') _fp.copy(ball.mesh.position);
+  if (air || loose || ball.mode === 'rest' || ball.mode === 'dead' || ball.mode === 'secured') _fp.copy(ball.mesh.position);
   else if (ball.mode === 'carried') _fp.copy((game.carrier || ball.holder || game.qb).group.position);
   else _fp.copy((game.controlled || game.qb).group.position);
 
