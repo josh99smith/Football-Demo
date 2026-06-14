@@ -45,6 +45,9 @@ let adBoardTex = null;            // scrolling LED advert ring (animated each fr
 const crowdFlashes = [];          // pool of camera-flash sprites in the stands
 const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by the GLB towers once loaded)
 let towerTemplate = null, wallTemplate = null; // imported stadium props
+// Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
+// one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
+const camOccluders = []; // each: mesh with userData {cullSide:'px'|'nx'|'pz'|'nz', cullAt:number}
 function makeAdTexture() {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#070b12'; g.fillRect(0, 0, 1024, 64);
@@ -139,7 +142,12 @@ function placeStadiumProps() {
   }
   if (wallTemplate) {
     const f = boxOf(wallTemplate), S = 9 / f.size.y, wW = f.size.x * S; // ~9yd tall segments
-    const place = (x, z, ry) => { const w = wallTemplate.clone(true); w.scale.setScalar(S); w.position.set(x, -f.min.y * S, z); w.rotation.y = ry; scene.add(w); };
+    const place = (x, z, ry) => {
+      const w = wallTemplate.clone(true); w.scale.setScalar(S); w.position.set(x, -f.min.y * S, z); w.rotation.y = ry; scene.add(w);
+      w.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
+      w.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
+      camOccluders.push(w);
+    };
     const nz = Math.ceil((HALF_L * 2) / wW); // sidelines (front faces inward toward the field)
     for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + 2, z, -Math.PI / 2); place(-HALF_W - 2, z, Math.PI / 2); }
     const nx = Math.ceil((HALF_W * 2) / wW); // end lines
@@ -317,7 +325,7 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(24, 11), new THREE.MeshBasicMaterial({ map: jumboTex }));
   screen.position.z = 0.65; jt.add(screen);
   for (const sx of [-1, 1]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 22, 8), frameMat); pole.position.set(sx * 9, -17, 0); jt.add(pole); }
-  jt.position.set(0, 26, HALF_L + 6); jt.rotation.y = Math.PI; scene.add(jt); // behind the +Z end, screen faces the field
+  jt.position.set(0, 20, HALF_L + 6); jt.rotation.y = Math.PI; scene.add(jt); // behind the +Z end, screen faces the field (lowered so it's in shot more)
 }
 
 // --- Cage: tall, grungy chain-link boundary the ball bounces off (no OOB) ---
@@ -348,6 +356,10 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
     const m = new THREE.Mesh(new THREE.PlaneGeometry(len, H),
       new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.82 }));
     m.position.set(x, H / 2, z); m.rotation.y = ry; scene.add(m);
+    // Register the chain-link panel so the camera can hide it when it's behind it.
+    m.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
+    m.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
+    camOccluders.push(m);
     // Top edge trim (bright rail) + bottom rail + a kick plate.
     const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, H, z); top.rotation.y = ry; scene.add(top);
     const bot = new THREE.Mesh(new THREE.BoxGeometry(len, 0.22, 0.22), railMat); bot.position.set(x, 0.15, z); bot.rotation.y = ry; scene.add(bot);
@@ -3890,7 +3902,21 @@ const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
 function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
+// Hide whichever cage panel / perimeter wall the camera is standing BEHIND, so it
+// never ends up staring at the back of a wall seeing nothing (common on sideline
+// plays and replay orbits). A 1yd margin hides it just before the camera crosses.
+function cullOccluders() {
+  const cx = camera.position.x, cz = camera.position.z;
+  for (const o of camOccluders) {
+    const s = o.userData.cullSide, at = o.userData.cullAt;
+    o.visible = !(
+      (s === 'px' && cx > at - 1) || (s === 'nx' && cx < -at + 1) ||
+      (s === 'pz' && cz > at - 1) || (s === 'nz' && cz < -at + 1));
+  }
+}
+
 function updateCamera(dt) {
+  cullOccluders(); // hide any wall the camera is behind (uses last frame's position)
   if (game.state === STATE.REPLAY) {
     // Cinematic broadcast shot: the current preset angle, slowly orbiting the
     // ball. On an angle cut (r.snap, set while the screen is black) we jump the
