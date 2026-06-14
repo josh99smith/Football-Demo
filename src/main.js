@@ -670,7 +670,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  playIndex: 0, choosing: false,        // selected play / play-select screen open
+  playIndex: 0, defCall: 0, choosing: false, // selected offensive play / defensive call / select open
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -1026,6 +1026,11 @@ function updateDefense() {
       const blk = nearestBlockerTo(dp);
       d.engaged = !!blk && distXZ(px(blk), dp) < 1.6 && !(carrier && carrier === game.qb);
       d.turbo = !d.engaged && dist2(dp, qp) > 9;
+    } else if (d.job === 'spy') {
+      // Shadow the QB a few yards goal-side to wall off the scramble lane.
+      const qp = px(game.qb);
+      steer = seek(dp, qp.x, qp.z + game.dir * 4);
+      d.turbo = dist2(dp, qp) > 6 * 6;
     } else if (d.job === 'zone' || d.deep) {
       if (inAir) { steer = seek(dp, ball.to.x, ball.to.z); d.turbo = true; }
       else {
@@ -1236,29 +1241,38 @@ const pitchBtn = document.getElementById('pitch-btn');
   if (pitchBtn) press(pitchBtn, () => { input.pitchEdge = true; });
 })();
 
-// --- Play-select screen: pick one of four plays before each snap -----------
+// --- Play-select screen: called before EVERY snap — an offensive playbook on
+// your possessions and a defensive call when the CPU has the ball. ----------
+const DEF_PLAYS = [
+  { name: 'MAN', sub: 'Tight man-up', tag: 'M', col: '#5a8bff' },
+  { name: 'ZONE', sub: 'Zones + deep help', tag: 'Z', col: '#3fe08a' },
+  { name: 'BLITZ', sub: 'Send the house', tag: '⚡', col: '#ff5a3a' },
+  { name: 'SPY', sub: 'Contain the QB', tag: 'S', col: '#ffd23a' },
+];
 const playSelectEl = document.getElementById('playselect');
+const psTitle = playSelectEl ? playSelectEl.querySelector('.ps-title') : null;
 const playCards = playSelectEl ? [...playSelectEl.querySelectorAll('.ps-card')] : [];
+// Precompute card bodies once: offense = route art, defense = a scheme tag.
+const offCardHTML = PLAYS.map((pl, i) => `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>`);
+const defCardHTML = DEF_PLAYS.map((d, i) => `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>`);
 function openPlaySelect() {
   game.choosing = true;
-  playCards.forEach((c, i) => c.classList.toggle('chosen', i === game.playIndex));
+  const off = game.userOnOffense, sel = off ? game.playIndex : game.defCall;
+  if (psTitle) psTitle.textContent = off ? 'CHOOSE YOUR PLAY' : 'CALL YOUR DEFENSE';
+  playCards.forEach((c, i) => { c.innerHTML = off ? offCardHTML[i] : defCardHTML[i]; c.classList.toggle('chosen', i === sel); });
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
 }
 function choosePlay(i) {
-  if (i < 0 || i >= PLAYS.length) return;
-  game.playIndex = i; game.choosing = false;
+  if (i < 0 || i > 3) return;
+  if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
+  else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
+  game.choosing = false;
   if (playSelectEl) playSelectEl.classList.add('hidden');
-  setStatus(`${PLAYS[i].name} — tap SNAP`);
   updateButtons();
 }
 for (const card of playCards) {
-  const idx = +card.dataset.play, play = PLAYS[idx];
-  if (play) {
-    card.insertAdjacentHTML('afterbegin', makePlayArtSVG(play)); // route diagram
-    const b = card.querySelector('b'), s = card.querySelector('span');
-    if (b) b.textContent = play.name; if (s) s.textContent = play.sub; // keep labels in sync
-  }
+  const idx = +card.dataset.play;
   const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(idx); };
   card.addEventListener('touchstart', pick, { passive: false });
   card.addEventListener('mousedown', pick);
@@ -1516,8 +1530,7 @@ function enterReset(teleport) {
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
-  if (game.userOnOffense) openPlaySelect();         // call your play while they reset
-  else { game.choosing = false; setStatus('CPU ball — get set on DEFENSE'); }
+  openPlaySelect(); // call a play EVERY down — offense playbook, or a defensive call
   updateButtons();
 }
 const newPlay = () => enterReset(true);   // kickoff / game reset (snap into place)
@@ -1552,15 +1565,27 @@ function updateReset(dt) {
     }
   }
   game.resetTimer -= dt;
-  const called = !game.userOnOffense || !game.choosing; // CPU has no call screen
-  if ((settled || game.resetTimer <= 0) && called) finalizeReset();
+  if ((settled || game.resetTimer <= 0) && !game.choosing) finalizeReset(); // wait for the play call
 }
 function finalizeReset() {
   for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
   game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
   selRing.visible = game.userOnOffense;
   updateButtons();
-  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : 'Defense — tap to set');
+  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — tap SNAP`);
+}
+// Apply a defensive call to game.defense (on top of the base assignments).
+function applyDefCall(call) {
+  const d = game.dir, L = game.los;
+  const zone = (p, x, dz) => { p.job = 'zone'; p.zonePoint = new THREE.Vector3(x, 0, L + d * dz); };
+  if (call === 1) {            // ZONE: corners drop to deep thirds, LB short middle
+    let ci = 0; const thirds = [-15, 15, 0];
+    for (const p of game.defense) { if (p.role === 'CB') zone(p, thirds[ci++] ?? 0, 16); else if (p.role === 'LB') zone(p, 0, 8); }
+  } else if (call === 2) {     // BLITZ: the linebacker rushes the passer
+    for (const p of game.defense) if (p.role === 'LB') p.job = 'rush';
+  } else if (call === 3) {     // SPY: the linebacker shadows the QB (contain scrambles)
+    for (const p of game.defense) if (p.role === 'LB') p.job = 'spy';
+  } // call 0 MAN: keep the base assignments
 }
 function snap() {
   game.state = STATE.LIVE;
@@ -1575,8 +1600,11 @@ function snap() {
     d.job = d.role === 'DL' ? 'rush' : d.deep ? 'zone' : 'cover'; // DL rush, S deep, rest cover
     if (d.deep) d.zonePoint = new THREE.Vector3(0, 0, game.los + game.dir * 18);
   });
-  // On a CPU possession you play defense: take over the nearest defender.
-  if (!game.userOnOffense) { game.controlled = nearestToBallDefender(); ctrlRing.visible = true; selRing.visible = false; }
+  // Defensive scheme: your call on D; the CPU mixes coverages on your drives.
+  if (!game.userOnOffense) {
+    applyDefCall(game.defCall);
+    game.controlled = nearestToBallDefender(); ctrlRing.visible = true; selRing.visible = false;
+  } else { applyDefCall((Math.random() * 4) | 0); }
   audio.hike();
   setStatus(game.userOnOffense ? 'Find an open receiver, then THROW' : 'Defense! Stop the throw');
   updateButtons();

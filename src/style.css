@@ -424,6 +424,7 @@ html, body {
   cursor: pointer;
   touch-action: manipulation;
 }
+.ps-art.ps-defart { display: flex; align-items: center; justify-content: center; font-size: 44px; font-weight: 900; font-style: italic; }
 .ps-card:active { transform: scale(0.96); }
 .ps-card.chosen { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 6px 18px rgba(0, 0, 0, 0.45); }
 .ps-art {
