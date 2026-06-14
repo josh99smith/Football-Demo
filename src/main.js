@@ -136,7 +136,7 @@ const FIELD_W = 53.3, HALF_W = FIELD_W / 2;
 const FIELD_L = 120, HALF_L = FIELD_L / 2;
 const GOAL_Z = HALF_L - 10;          // +50: offense's target goal line
 const OWN_GOAL_Z = -(HALF_L - 10);   // -50
-const CAGE_X = HALF_W + 1.5, CAGE_Z = HALF_L + 1.5; // arcade boundary walls (no out of bounds)
+const CAGE_X = HALF_W, CAGE_Z = HALF_L; // boundary walls right on the out-of-bounds lines
 
 const turfMats = []; // {mat, rx, ry} — get the grass map once it loads
 function buildField() {
@@ -174,18 +174,26 @@ function buildField() {
   line(FIELD_W, 0.5, 0, 0);
   for (let y = -GOAL_Z + 1; y < GOAL_Z; y += 1)
     for (const hx of [-6, 6]) line(0.9, 0.18, hx, y);
-  field.add(goalPost(GOAL_Z + 0.2), goalPost(-GOAL_Z - 0.2));
+  // Goalposts stand on the END LINE (back of each end zone), just inside the cage.
+  field.add(goalPost(HALF_L - 0.6), goalPost(-(HALF_L - 0.6)));
   return field;
 }
 function goalPost(z) {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffd54a, metalness: 0.4, roughness: 0.4 });
-  const tube = (len, x, y) => {
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, len, 12), mat);
-    m.castShadow = true; m.position.set(x, y, 0); return m;
+  const mat = new THREE.MeshStandardMaterial({ color: 0xf6c324, metalness: 0.5, roughness: 0.4 });
+  const tube = (len, x, y, rz) => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, len, 12), mat);
+    m.castShadow = true; m.position.set(x, y, 0); if (rz) m.rotation.z = rz; return m;
   };
-  const cross = tube(6.1, 0, 3); cross.rotation.z = Math.PI / 2;
-  g.add(tube(3, 0, 1.5), cross, tube(6, -3, 6), tube(6, 3, 6));
+  const CROSS_Y = 3.33;   // crossbar at ~10 ft
+  const UP_H = 9;         // tall uprights
+  const HALF = 3.08;      // ~18.5 ft apart
+  g.add(
+    tube(CROSS_Y, 0, CROSS_Y / 2),                         // base pole
+    tube(HALF * 2 + 0.2, 0, CROSS_Y, Math.PI / 2),         // crossbar
+    tube(UP_H, -HALF, CROSS_Y + UP_H / 2),                 // left upright
+    tube(UP_H, HALF, CROSS_Y + UP_H / 2),                  // right upright
+  );
   g.position.z = z; return g;
 }
 const fieldGroup = buildField();
@@ -474,7 +482,7 @@ async function loadAssets() {
   loadingText.textContent = 'Loading animations…';
   const animGltf = await loadGLB('assets/animations.glb');
   loadingText.textContent = 'Starting physics…';
-  try { physics = await PhysicsWorld.create(); }
+  try { physics = await PhysicsWorld.create(); physics.addCageWalls(CAGE_X, CAGE_Z, 7.5); } // ragdolls bounce off the fence
   catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
   defTemplate = defGltf ? defGltf.scene : null;
@@ -1141,9 +1149,13 @@ function applySteer(ch, dt) {
   clampToField(ch);
 }
 function clampToField(ch) {
-  const p = ch.group.position; // the cage keeps everyone in bounds
-  p.x = THREE.MathUtils.clamp(p.x, -CAGE_X + 0.4, CAGE_X - 0.4);
-  p.z = THREE.MathUtils.clamp(p.z, -CAGE_Z + 0.4, CAGE_Z - 0.4);
+  // The cage is a hard wall: clamp inside it AND bounce the player off it (they
+  // can never pass through). Restitution gives a real carom off the fence.
+  const p = ch.group.position, bx = CAGE_X - 0.4, bz = CAGE_Z - 0.4, R = 0.45;
+  if (p.x > bx) { p.x = bx; if (ch.vel.x > 0) ch.vel.x = -ch.vel.x * R; }
+  else if (p.x < -bx) { p.x = -bx; if (ch.vel.x < 0) ch.vel.x = -ch.vel.x * R; }
+  if (p.z > bz) { p.z = bz; if (ch.vel.z > 0) ch.vel.z = -ch.vel.z * R; }
+  else if (p.z < -bz) { p.z = -bz; if (ch.vel.z < 0) ch.vel.z = -ch.vel.z * R; }
 }
 
 // ===========================================================================

@@ -28,6 +28,19 @@ export class PhysicsWorld {
     return pw;
   }
 
+  // Static boundary walls so ragdolls bounce off the cage and never pass through
+  // it. (hx, hz) = inner-face distance from center; height = wall height (yd).
+  addCageWalls(hx, hz, height) {
+    const R = this.rapier, body = this.world.createRigidBody(R.RigidBodyDesc.fixed());
+    const t = 0.4, hH = height / 2; // half thickness / half height
+    const mk = (ex, ey, ez, x, y, z) => this.world.createCollider(
+      R.ColliderDesc.cuboid(ex, ey, ez).setTranslation(x, y, z).setRestitution(0.45).setFriction(0.9), body);
+    mk(t, hH, hz + t, hx + t, hH, 0);   // +x sideline
+    mk(t, hH, hz + t, -hx - t, hH, 0);  // -x sideline
+    mk(hx + t, hH, t, 0, hH, hz + t);   // +z end line
+    mk(hx + t, hH, t, 0, hH, -hz - t);  // -z end line
+  }
+
   // Ragdolls need tighter joints (8 substeps). Refcounted so overlapping
   // tackle piles don't clobber the shared baseline.
   acquireHighSubsteps() { this.#highRefs++; this.substeps = 8; }
