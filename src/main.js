@@ -25,10 +25,10 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 // Richer, punchier color/contrast (cinematic tone mapping).
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.18;
+renderer.toneMappingExposure = 1.3;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xbfe0ff, 110, 300); // blends distant field into the sky
+scene.fog = new THREE.Fog(0x12203f, 130, 330); // night haze blends distance into the sky
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(0, 7, -12);
@@ -42,10 +42,19 @@ function gradientCanvas(stops, w, h) {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 {
-  const skyTex = gradientCanvas([[0, '#16407a'], [0.5, '#4f9be0'], [0.84, '#bfe0ff'], [1, '#eaf5ff']], 8, 256);
+  // Night sky: deep blue overhead fading to a city-glow horizon.
+  const skyTex = gradientCanvas([[0, '#04060f'], [0.45, '#0a1430'], [0.8, '#172a52'], [1, '#2c3f66']], 8, 256);
   const sky = new THREE.Mesh(new THREE.SphereGeometry(440, 32, 16),
     new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
   scene.add(sky);
+  // Stars scattered across the upper dome.
+  const N = 700, sp = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(Math.random()), r = 420;
+    sp[i * 3] = r * Math.sin(ph) * Math.cos(th); sp[i * 3 + 1] = r * Math.cos(ph) + 30; sp[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  const starGeo = new THREE.BufferGeometry(); starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+  scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.7, sizeAttenuation: true, fog: false, transparent: true, opacity: 0.9 })));
   // Crowd: a noisy speckle texture wrapped on a slightly flared bowl wall.
   const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
   const cg = cc.getContext('2d'); cg.fillStyle = '#0b1420'; cg.fillRect(0, 0, 256, 128);
@@ -63,19 +72,24 @@ function gradientCanvas(stops, w, h) {
   const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c8, emissiveIntensity: 2.4 });
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const g = new THREE.Group();
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.55, 28, 8), towerMat); pole.position.y = 14; g.add(pole);
-    const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 0.8), lampMat); bank.position.y = 28; g.add(bank);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.55, 30, 8), towerMat); pole.position.y = 15; g.add(pole);
+    const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 0.8), lampMat); bank.position.y = 30; g.add(bank);
     g.position.set(sx * 44, 0, sz * 62);
     bank.rotation.y = Math.atan2(-g.position.x, -g.position.z); // face the field center
     scene.add(g);
+    // Each tower actually lights the field (constant cone, no falloff).
+    const spot = new THREE.SpotLight(0xfff4d6, 1.6, 0, 0.66, 0.55, 0);
+    spot.position.set(g.position.x, 31, g.position.z);
+    spot.target.position.set(g.position.x * 0.12, 0, g.position.z * 0.12);
+    scene.add(spot, spot.target);
   }
-  // Sun glow high in the sky (additive sprite) for a hero-light pop.
-  const glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeGlowTexture(), color: 0xffe9b0, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
-  glowSprite.scale.set(60, 60, 1); glowSprite.position.set(120, 150, 90); scene.add(glowSprite);
+  // The moon: a soft additive glow high in the sky.
+  const moon = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeGlowTexture(), color: 0xcfe0ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+  moon.scale.set(34, 34, 1); moon.position.set(-130, 170, 120); scene.add(moon);
 }
 
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x3a6b3a, 1.0));
-const sun = new THREE.DirectionalLight(0xfff2d8, 2.3); // warm key light
+scene.add(new THREE.HemisphereLight(0x44588f, 0x0c1208, 0.6)); // cool night ambient
+const sun = new THREE.DirectionalLight(0xb9c8ee, 0.85); // moonlight key (soft shadows)
 sun.position.set(40, 70, 20);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -85,7 +99,7 @@ sun.shadow.camera.left = -sh; sun.shadow.camera.right = sh;
 sun.shadow.camera.top = sh; sun.shadow.camera.bottom = -sh;
 sun.shadow.bias = -0.0004;
 scene.add(sun, sun.target);
-const rim = new THREE.DirectionalLight(0x9fc6ff, 0.7); // cool back/rim fill for shape
+const rim = new THREE.DirectionalLight(0x6f86c0, 0.35); // faint cool rim for shape
 rim.position.set(-50, 40, -30);
 scene.add(rim);
 
@@ -178,6 +192,69 @@ new THREE.TextureLoader().load('assets/grass.jpg', (tex) => {
   tl.load('assets/field.png', apply, undefined,
     () => tl.load('assets/field.jpg', apply, undefined, () => { /* none found — keep procedural field */ }));
 })();
+
+// --- Midfield logo + end-zone wordmarks (canvas decals on the turf) ---
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+{
+  // Midfield logo: a ringed crest with a bold "R".
+  const logoTex = canvasTex(256, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.lineWidth = 12; g.strokeStyle = 'rgba(255,255,255,0.9)';
+    g.beginPath(); g.arc(128, 128, 110, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = 'rgba(210,40,40,0.92)'; g.beginPath(); g.arc(128, 128, 96, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.font = 'bold 150px Arial Black, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('R', 128, 138);
+  });
+  const logo = new THREE.Mesh(new THREE.PlaneGeometry(15, 15),
+    new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, depthWrite: false }));
+  logo.rotation.x = -Math.PI / 2; logo.position.set(0, 0.04, 0); logo.userData.proc = true; fieldGroup.add(logo);
+  // End-zone wordmarks.
+  const word = (text, color) => canvasTex(1024, 256, (g, w, h) => {
+    g.clearRect(0, 0, w, h); g.fillStyle = color; g.font = 'bold 170px Arial Black, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineWidth = 10; g.strokeStyle = 'rgba(0,0,0,0.35)';
+    g.strokeText(text, w / 2, h / 2 + 6); g.fillText(text, w / 2, h / 2 + 6);
+  });
+  for (const dir of [-1, 1]) {
+    const ezTex = word('REAPERS', dir > 0 ? '#ffe2e2' : '#e2ecff');
+    const ez = new THREE.Mesh(new THREE.PlaneGeometry(40, 10),
+      new THREE.MeshBasicMaterial({ map: ezTex, transparent: true, depthWrite: false }));
+    ez.rotation.x = -Math.PI / 2; ez.rotation.z = dir > 0 ? 0 : Math.PI; // read toward each goal
+    ez.position.set(0, 0.04, dir * (HALF_L - 5)); ez.userData.proc = true; fieldGroup.add(ez);
+  }
+}
+
+// --- Jumbotron: a hanging screen behind the blue end showing live score ---
+let jumboCtx = null, jumboTex = null, jumboLast = '';
+{
+  const c = document.createElement('canvas'); c.width = 512; c.height = 256; jumboCtx = c.getContext('2d');
+  jumboTex = new THREE.CanvasTexture(c); jumboTex.colorSpace = THREE.SRGBColorSpace;
+  jumboTex.wrapS = THREE.RepeatWrapping; jumboTex.repeat.x = -1; jumboTex.offset.x = 1; // un-mirror after the 180° flip
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.7, metalness: 0.3 });
+  const jt = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(26, 13, 1.2), frameMat); jt.add(frame);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(24, 11), new THREE.MeshBasicMaterial({ map: jumboTex }));
+  screen.position.z = 0.65; jt.add(screen);
+  for (const sx of [-1, 1]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 22, 8), frameMat); pole.position.set(sx * 9, -17, 0); jt.add(pole); }
+  jt.position.set(0, 26, HALF_L + 6); jt.rotation.y = Math.PI; scene.add(jt); // behind the +Z end, screen faces the field
+}
+function drawJumbo(quarter, clock, scoreLine, downLine) {
+  const key = quarter + clock + scoreLine + downLine;
+  if (key === jumboLast || !jumboCtx) return; jumboLast = key;
+  const g = jumboCtx, w = 512, h = 256;
+  g.fillStyle = '#06090f'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#16223a'; g.fillRect(0, 0, w, 44);
+  g.fillStyle = '#ffd23a'; g.font = 'bold 26px Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('REAPERS  STADIUM', w / 2, 23);
+  g.font = 'bold 84px Arial Black, sans-serif'; g.fillStyle = '#fff'; g.fillText(scoreLine, w / 2, 118);
+  g.font = 'bold 40px Arial, sans-serif'; g.fillStyle = '#7fe0ff'; g.fillText(`${quarter}   ${clock}`, w / 2, 186);
+  g.font = 'bold 26px Arial, sans-serif'; g.fillStyle = '#cfe0ff'; g.fillText(downLine, w / 2, 226);
+  jumboTex.needsUpdate = true;
+}
 
 function makeRing(color) {
   const m = new THREE.Mesh(new THREE.RingGeometry(0.7, 0.95, 28),
@@ -1109,6 +1186,9 @@ function updateHUD() {
   const showPC = game.state === STATE.PRESNAP && !game.gameOver && !game.choosing;
   elPlayClock.style.visibility = showPC ? 'visible' : 'hidden';
   elPlayClock.classList.toggle('warn', showPC && pc <= 5);
+  // Mirror the score to the jumbotron.
+  const qlabel = game.gameOver ? 'FINAL' : (QLABEL[game.quarter - 1] || game.quarter + 'TH');
+  drawJumbo(qlabel, fmtClock(game.gameClock), `${game.scoreOff} - ${game.scoreDef}`, `${poss} · ${ordinal(game.down)} & ${toGo}`);
 }
 function setStatus(text) {
   elStatus.textContent = text;
