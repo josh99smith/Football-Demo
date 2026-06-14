@@ -2521,6 +2521,21 @@ function cageBounce(p, restitution) {
   }
   return hit;
 }
+// Belt-and-braces so the ball can NEVER disappear: always visible, always at a
+// finite, on-field position (recovered to the ball-handler if anything NaNs).
+function ensureBallVisible() {
+  if (!ball.mesh) return;
+  ball.mesh.visible = true;
+  const p = ball.mesh.position;
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+    const h = game.carrier || ball.holder || game.qb;
+    const hp = h && h.group ? h.group.position : { x: 0, z: 0 };
+    p.set(hp.x, 1.2, hp.z); ball.vx = ball.vy = ball.vz = 0;
+  }
+  p.x = THREE.MathUtils.clamp(p.x, -CAGE_X - 2, CAGE_X + 2);
+  p.z = THREE.MathUtils.clamp(p.z, -CAGE_Z - 2, CAGE_Z + 2);
+  p.y = THREE.MathUtils.clamp(p.y, 0.12, 60);
+}
 function updateBall(dt) {
   if (ball.mode !== 'flying') landRing.visible = false; // landing reticle only mid-flight
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
@@ -2542,9 +2557,12 @@ function updateBall(dt) {
   if (ball.mode === 'carried') {
     const h = game.carrier || ball.holder || game.qb;
     if (h.ragdolling && h.ragdoll && h.ragdoll.active) {
-      // Tucked with the falling body: track the carrier's physics-driven hips.
+      // Tucked with the falling body: track the carrier's physics-driven hips
+      // (fall back to his ground position so the ball never snaps to the origin).
       const hips = h.ragdoll.tryBone('Hips');
-      if (hips) { hips.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z); return; }
+      if (hips) { hips.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z); }
+      else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
+      return;
     }
     if (h.handBone) {
       // Tuck the ball into the carrier's hand: follow the hand bone (so it
@@ -3732,6 +3750,7 @@ function updatePlay(dt) {
   for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
+  ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
   // Record footage while the ball is live (for the touchdown replay).
   // Record the whole play AND the dead-ball beat after it (so a TD celebration
