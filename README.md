@@ -74,6 +74,7 @@ always shows what it'll do right now.
 | **Left joystick** | Move + aim the targeted receiver (camera-relative) |
 | **ACTION** (one button) | Context-sensitive: **SNAP** → **THROW** (tap=lob, hold=bullet) → while running it reads the field — **HURDLE** a man in your path, **TRUCK** (stiff-arm) one in close, **DIVE** at the sticks/pylon, or **JUKE** in open space; **TACKLE** on defense, **DIVE** on a loose ball, **SWITCH** defenders. It **glows red** the instant a HURDLE/TRUCK is available |
 | **TURBO** (hold) | Sprint burst — QB scramble or ball carrier |
+| **⛶ (top-right)** | Toggle fullscreen — hides the mobile browser bar so the play isn't cut off |
 | **WASD / arrows** (desktop) | Move + aim |
 | **Space** | The contextual ACTION |
 | **Q / E / F** (desktop) | Explicit spin / dive / pitch (power-user shortcuts) |
@@ -163,6 +164,11 @@ python3 -m http.server 8000   # then open http://localhost:8000
 - `tools/strip-anim.mjs` — strips a Meshy/`withSkin` GLB down to animation-only
   (drops the redundant mesh/texture, rebuilds the BIN) so new clips add KBs, not
   MBs; run `node tools/strip-anim.mjs <in.glb> <out.glb>`
+- `tools/ui-preview.html` + `tools/shoot.mjs` — a DOM-only proof of the HUD /
+  controls / play-select / portrait gate (the field is a CSS stand-in) so the
+  landscape layout can be screenshotted without launching the WebGL game.
+  Setup: `npm i -D playwright && npx playwright install chromium`, then
+  `node tools/shoot.mjs playselect /tmp/ps.png 844x390`
 - `assets/sfx/` — recorded sound effects (referee whistle, ball catch, tackle
   pad-pop with grunts, chain-link fence carom, crowd goal reaction) layered
   over the procedural WebAudio cues, with a synth fallback if one fails to load

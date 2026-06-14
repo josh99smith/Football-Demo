@@ -512,6 +512,24 @@ async function loadAssets() {
     c.tracks = c.tracks.filter((t) => t.name.endsWith('.quaternion'));
     return c;
   };
+  // Like inPlace, but KEEPS the root (Hips) VERTICAL motion so jumps / vaults /
+  // rolls actually leave the ground. Horizontal Hips drift is frozen (we drive
+  // x/z from the game), and groundClamp() lift-normalizes ground contact at
+  // runtime, so each clip's differing standing height doesn't matter.
+  const inPlaceY = (clip) => {
+    if (!clip) return clip;
+    const c = clip.clone();
+    c.tracks = c.tracks.filter((t) => {
+      if (t.name.endsWith('.quaternion')) return true;
+      if (t.name.endsWith('Hips.position')) {
+        const v = t.values, x0 = v[0], z0 = v[2];
+        for (let i = 0; i < v.length; i += 3) { v[i] = x0; v[i + 2] = z0; } // freeze X/Z, keep Y
+        return true;
+      }
+      return false; // other bones' positions are constant bind offsets — drop
+    });
+    return c;
+  };
   // All clips are authored on THIS rig, so they pose cleanly (no retargeting).
   idleClip = inPlace(byName['Idle_11'] || charGltf.animations[0]); // breathing idle
   walkClip = inPlace(byName['Walking']); runClip = inPlace(byName['Running']);
@@ -535,15 +553,19 @@ async function loadAssets() {
   if (!idleClips.length) idleClips = [idleClip];
   walkClips = ['Walking', 'Casual_Walk', 'Proud_Strut'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
   if (!walkClips.length) walkClips = [walkClip];
-  // Touchdown celebrations (one per scorer, picked at character build).
+  // Touchdown celebrations (one per scorer, picked at character build). These
+  // are dynamic (jumps) so keep their vertical motion -> inPlaceY.
   celebClips = ['Cheer_with_Both_Hands', 'Jumping_Punch', 'Show_Both_Arm_Muscles', 'Proud_Strut']
-    .map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
-  // Diving catch (the lunge reach), loose-ball scoop, hurdle vault, cage wall-jump.
-  diveCatchClip = byName['Leap_Right_and_Catch'] ? inPlace(byName['Leap_Right_and_Catch']) : catchClip;
-  scoopClip = byName['Male_Run_Forward_Pick_Up_Left'] ? inPlace(byName['Male_Run_Forward_Pick_Up_Left']) : null;
-  vaultClip = byName['Jump_Over_Obstacle_1'] ? inPlace(byName['Jump_Over_Obstacle_1'])
-    : (byName['Parkour_Vault_2'] ? inPlace(byName['Parkour_Vault_2']) : jukeClip);
-  cageVaultClip = byName['Parkour_Vault_with_Roll'] ? inPlace(byName['Parkour_Vault_with_Roll']) : vaultClip;
+    .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  // Diving catch, loose-ball scoop, hurdle vault, cage wall-jump — all leave the
+  // ground, so keep root vertical motion (inPlaceY) + groundClamp at runtime.
+  diveCatchClip = byName['Leap_Right_and_Catch']
+    ? inPlaceY(THREE.AnimationUtils.subclip(byName['Leap_Right_and_Catch'], 'divecatch', 0, 30, 30)) // leap+secure (drop the long fall)
+    : catchClip;
+  scoopClip = byName['Male_Run_Forward_Pick_Up_Left'] ? inPlaceY(byName['Male_Run_Forward_Pick_Up_Left']) : null;
+  vaultClip = byName['Jump_Over_Obstacle_1'] ? inPlaceY(byName['Jump_Over_Obstacle_1'])
+    : (byName['Parkour_Vault_2'] ? inPlaceY(byName['Parkour_Vault_2']) : jukeClip);
+  cageVaultClip = byName['Parkour_Vault_with_Roll'] ? inPlaceY(byName['Parkour_Vault_with_Roll']) : vaultClip;
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -1294,6 +1316,24 @@ const turboBtn = document.getElementById('turbo-btn');
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
+})();
+
+// Fullscreen toggle — on mobile this hides the browser address bar so the play
+// isn't cut off at the top. (No-op on iOS Safari, which lacks the API; use Add
+// to Home Screen there.)
+(function fullscreen() {
+  const fsBtn = document.getElementById('fs-btn');
+  if (!fsBtn) return;
+  const root = document.documentElement;
+  const active = () => document.fullscreenElement || document.webkitFullscreenElement;
+  const sync = () => fsBtn.classList.toggle('on', !!active());
+  fsBtn.addEventListener('click', (e) => {
+    e.preventDefault(); audio.unlock();
+    if (active()) (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+    else (root.requestFullscreen || root.webkitRequestFullscreen || (() => {})).call(root);
+  });
+  document.addEventListener('fullscreenchange', sync);
+  document.addEventListener('webkitfullscreenchange', sync);
 })();
 
 // --- Play-select screen: called before EVERY snap — an offensive playbook on
@@ -2199,7 +2239,7 @@ function celebrateTD() {
     .filter((o) => o && o !== scorer && !o.ragdolling)
     .sort((a, b) => (scorer ? dist2(px(a), px(scorer)) - dist2(px(b), px(scorer)) : 0))
     .slice(0, 3)];
-  for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3);
+  for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3, true);
 }
 
 // ===========================================================================
@@ -2349,7 +2389,7 @@ function startSecure(player, isInt) {
     // Lunge reception: if he had to reach for it (or it's low), play the diving
     // catch instead of the standard secure pose.
     const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
-    if (player.actions.divecatch && (reach > 1.5 || p.y < 1.2)) playOneShot(player, 'divecatch', 0.55);
+    if (player.actions.divecatch && (reach > 1.5 || p.y < 1.2)) playOneShot(player, 'divecatch', 0.7, true);
   }
 }
 function passBrokenUp(msg, color, swatter, swatType) {
@@ -2745,7 +2785,7 @@ function updateLoose(dt, turboOn, actionEdge) {
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
       o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
       o.recoverT = 0.45;
-      if (o.actions.scoop) playOneShot(o, 'scoop', 0.5); // diving scoop animation
+      if (o.actions.scoop) playOneShot(o, 'scoop', 0.6, true); // diving scoop animation
       else triggerArmAction(o, 'pick', 0.45, p);          // procedural dive-reach fallback
     }
   }
@@ -2833,9 +2873,13 @@ function controlledMove(ch, dt, topSpeed) {
   if (ch.speed > 0.5) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
   clampToField(ch);
 }
-function playOneShot(ch, name, hold) {
-  if (!ch.actions[name]) return;
+function playOneShot(ch, name, hold, fit = false) {
+  const a = ch.actions[name];
+  if (!a) return;
   ch.oneShotT = hold; setClip(ch, name);
+  // fit: speed the clip so it finishes (lands) within the hold instead of being
+  // cut off mid-air — only ever speeds up, never slows a short clip down.
+  if (fit) a.setEffectiveTimeScale(Math.max(1, a.getClip().duration / hold));
 }
 
 // Target the receiver the LEFT STICK is pointing at (camera-relative), like
@@ -3064,7 +3108,7 @@ function doHurdle(ch, def) {
   const fx = Math.sin(ch.heading), fz = Math.cos(ch.heading);
   const b = ch.baseSpeed * 1.25;
   ch.vel.x = fx * b; ch.vel.z = fz * b; // leap forward over him
-  playOneShot(ch, ch.actions.vault ? 'vault' : 'juke', 0.5);
+  playOneShot(ch, ch.actions.vault ? 'vault' : 'juke', 0.6, true);
   burst(def.group.position.x, 1.3, def.group.position.z, 0xe8d9a0, 9, 6);
   audio.juke(); shake.kick(fx, fz, 0.22);
   showBanner('HURDLE!', '#bfffd0');
@@ -3085,7 +3129,7 @@ function tryCageJump(c, downDir = game.dir) {
   c.vel.x = inwardX * b * (intoX ? 0.8 : 0.4);
   c.vel.z = downDir * b * (intoZ ? 0.5 : 0.95);
   c.heading = Math.atan2(c.vel.x, c.vel.z);
-  playOneShot(c, c.actions.cagevault ? 'cagevault' : 'juke', 0.6);
+  playOneShot(c, c.actions.cagevault ? 'cagevault' : 'juke', 0.85, true);
   burst(p.x, 1.6, p.z, 0x7fe0ff, 12, 7);
   audio.juke(); shake.kick(inwardX, downDir, 0.3);
   showBanner('OFF THE WALL!', '#7fe0ff');
