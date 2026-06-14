@@ -2062,11 +2062,50 @@ const shake = new ScreenShake();
 const timeScale = new TimeScale();
 
 const bannerEl = document.getElementById('banner');
-function showBanner(text, color = '#ffd23a') {
-  bannerEl.textContent = text;
+// Blitz-style badge callouts: a circular icon (+ optional hit-power number)
+// beside the bold italic label. Monochrome SVG glyphs tinted by the callout color.
+const ICON_SVG = {
+  burst: '<svg viewBox="0 0 24 24"><path d="M12 1 14 8 21 4 16 11 23 12 16 13 21 20 14 16 12 23 10 16 3 20 8 13 1 12 8 11 3 4 10 8Z"/></svg>',
+  pinwheel: '<svg viewBox="0 0 24 24"><path d="M12 12 7 3 17 5ZM12 12 21 7 19 17ZM12 12 17 21 7 19ZM12 12 3 17 5 7Z"/></svg>',
+  ball: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10.5" ry="6.2" transform="rotate(-32 12 12)"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="M12 2 15 9 22 9 16.5 14 18.5 22 12 17.3 5.5 22 7.5 14 2 9 9 9Z"/></svg>',
+  bolt: '<svg viewBox="0 0 24 24"><path d="M13 2 4 14 11 14 9 22 20 9 13 9Z"/></svg>',
+  fire: '<svg viewBox="0 0 24 24"><path d="M12 2C14 6 18 8 17 13 16 17.5 13 19 12 22 11 19 8 17.5 7 13 6 9 9 8 9 5 10.5 7 11 6 12 2Z"/></svg>',
+};
+const CALLOUT_ICONS = {
+  'BIG HIT!': 'burst', 'GANG TACKLE!': 'burst', 'SACK!': 'burst', 'STOPPED!': 'burst',
+  'DIRTY HIT!': 'pinwheel', 'BROKE IT!': 'burst', 'BROKE FREE!': 'burst',
+  'TOUCHDOWN!': 'ball', 'FUMBLE!!!': 'ball', 'PITCH!': 'ball',
+  'PICK SIX!': 'star', 'INTERCEPTED!': 'star', 'PICKED OFF!': 'star', 'TURNOVER!': 'star', 'TURNOVER': 'star',
+  'ON FIRE!': 'fire', 'OFF THE WALL!': 'bolt', 'HURDLE!': 'bolt',
+};
+function showBanner(text, color = '#ffd23a', opts = {}) {
+  const icon = opts.icon || CALLOUT_ICONS[text];
   bannerEl.style.color = color;
+  if (icon) {
+    bannerEl.style.setProperty('--bn', color);
+    bannerEl.innerHTML = `<span class="bn-badge"><span class="bn-icon">${ICON_SVG[icon] || ''}</span>${opts.power ? `<span class="bn-num">${opts.power}</span>` : ''}</span><span class="bn-label">${text}</span>`;
+    bannerEl.classList.add('has-badge');
+  } else {
+    bannerEl.textContent = text;
+    bannerEl.classList.remove('has-badge');
+  }
   bannerEl.classList.remove('pop'); void bannerEl.offsetWidth;
   bannerEl.classList.add('pop');
+}
+// Blitz hit-power rating (~55-99) from closing speed, the tackler's TKL rating,
+// the gang size and turbo — flashed under the badge on a notable hit.
+function hitPower(lead, closing, gangSize = 1, big = false) {
+  const tkl = lead && lead.rt ? lead.rt.tackle : 0.7;
+  const p = 48 + closing * 2.8 + tkl * 18 + (gangSize - 1) * 5 + (big ? 8 : 0) + (lead && lead.turbo ? 4 : 0);
+  return THREE.MathUtils.clamp(Math.round(p), 55, 99);
+}
+const impactEl = document.getElementById('impact');
+// Cinematic impact punch: a quick radial vignette flash on a big/dirty hit.
+function impactFlash(strong = false) {
+  if (!impactEl) return;
+  impactEl.classList.toggle('strong', strong);
+  impactEl.classList.remove('on'); void impactEl.offsetWidth; impactEl.classList.add('on');
 }
 const flashEl = document.getElementById('flash');
 function flashScreen() {
@@ -2665,7 +2704,7 @@ function tackleReturner(tackler) {
   ctrlRing.visible = false; updateButtons();
   shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
   burst(rp.x, 1.0, rp.z, 0xe8d9a0, big ? 16 : 10, big ? 8 : 6);
-  if (big) { timeScale.bulletTime(0.16, 0.5, 0.9); hitZoom(1.2); shake.add(0.5); audio.bigHit(); showBanner('STOPPED!', '#bfffd0'); }
+  if (big) { timeScale.bulletTime(0.16, 0.5, 0.9); hitZoom(1.2); shake.add(0.5); audio.bigHit(); impactFlash(true); showBanner('STOPPED!', '#bfffd0', { power: hitPower(tackler, closing, 1, true) }); }
   else { timeScale.bulletTime(0.22, 0.4, 0.7); hitZoom(0.9); shake.add(0.18); audio.hit(0.6); }
   setStatus('Return stopped!');
 }
@@ -3312,18 +3351,23 @@ function beginTackle(lead, force = false) {
   shake.kick(hitX, hitZ, big ? 0.9 : gang ? 0.7 : 0.35);
   burst(cp.x, 1.0, cp.z, 0xe8d9a0, big || gang ? 18 : 11, big || gang ? 9 : 6); // dust/impact
   if (big || gang) {
-    if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); }
-    else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); }
-    shake.add(gang ? 0.72 : 0.5);
+    const power = hitPower(lead, closing, gangSize, big);
+    // The most violent square hits (turbo + huge closing) read as a DIRTY HIT.
+    const dirty = big && lead.turbo && closing > 10.5;
+    if (dirty) { timeScale.bulletTime(0.08, 0.8, 1.25); hitZoom(1.7); shake.add(0.85); impactFlash(true); }
+    else if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); shake.add(0.72); impactFlash(true); }
+    else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); shake.add(0.5); impactFlash(false); }
     audio.bigHit();
-    showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a');
+    if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
+    else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
+    setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
   } else {
     timeScale.bulletTime(0.22, 0.4, 0.7);
     hitZoom(0.9);
     shake.add(0.18);
     audio.hit(0.6);
+    setStatus('Tackled!');
   }
-  setStatus(gang ? 'GANG TACKLE!' : big ? 'BIG HIT!' : 'Tackled!');
 }
 
 // WRAP & DRAG-DOWN: the tacklers latch onto the still-upright runner and drive
