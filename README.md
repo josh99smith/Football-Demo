@@ -37,8 +37,10 @@ shared idle / walk / run glTF clips.
 You start every play as the **quarterback**.
 
 1. **Pick a play** from the four-play call screen (BOMBS / SLANTS / MESH /
-   FLOOD — tap a card or press 1–4), then **tap SNAP**. Your six receivers run
-   that concept's routes; the defense covers them man-to-man.
+   FLOOD — each card shows its route art; tap or press 1–4), then **tap SNAP**.
+   Blitz personnel: **QB, two linemen, three receivers and a running back** vs.
+   **two linemen, a linebacker, three corners and a safety**. The line blocks
+   the rush, your eligible men (3 WR + RB) run the routes, the secondary covers.
 2. **Aim with the left stick** — the receiver you point toward (yellow arrow +
    ring) becomes your target. Push the stick to scramble too.
 3. **Tap THROW for a lob, hold for a bullet** to the targeted receiver.

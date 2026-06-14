@@ -471,60 +471,67 @@ function douseFire() {
   if (game.onFire) { game.onFire = false; setFireVisual(false); setStatus('Fire extinguished'); }
 }
 
-const WR_X = [-24, -16, -8, 8, 16, 24];
 const clampX = (x) => THREE.MathUtils.clamp(x, -HALF_W + 1.5, HALF_W - 1.5);
 
-function buildRoute(sx, los) {
-  const toMid = Math.sign(-sx) || 1, toSide = Math.sign(sx) || 1;
-  const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
-  switch (WR_X.indexOf(sx)) {
-    case 0: return [P(sx, 12), P(sx + toSide * 8, 26)];   // corner
-    case 1: return [P(sx, 12), P(sx + toMid * 10, 30)];   // post
-    case 2: return [P(sx + toMid * 7, 9)];                // slant
-    case 3: return [P(sx, 14), P(sx, 11)];                // curl
-    case 4: return [P(sx, 9), P(sx + toSide * 9, 10)];    // out
-    default: return [P(sx, 40)];                          // go
-  }
-}
+// NFL-Blitz-style 7-on-7 personnel. Roster slot i gets this position.
+// Offense: QB, 2 OL, 3 WR, RB. The eligible pass-catchers (game.receivers, in
+// `elig` order) are the 3 WR + RB. Defense: 2 DL, 1 LB, 3 CB, 1 S.
+const OFF_FORM = [
+  { role: 'QB', x: 0,    dz: -6,   job: 'qb',    elig: -1 },
+  { role: 'OL', x: -2.4, dz: -1,   job: 'block', elig: -1 },
+  { role: 'OL', x: 2.4,  dz: -1,   job: 'block', elig: -1 },
+  { role: 'WR', x: -22,  dz: -0.5, job: 'route', elig: 0 },
+  { role: 'WR', x: -11,  dz: -0.5, job: 'route', elig: 1 },  // slot
+  { role: 'WR', x: 22,   dz: -0.5, job: 'route', elig: 2 },
+  { role: 'RB', x: -3.5, dz: -4,   job: 'route', elig: 3 },
+];
+const DEF_FORM = [
+  { role: 'DL', x: -2.4, dz: 1.5,  job: 'rush',  covers: -1, deep: false },
+  { role: 'DL', x: 2.4,  dz: 1.5,  job: 'rush',  covers: -1, deep: false },
+  { role: 'LB', x: 0,    dz: 5,    job: 'cover', covers: 3,  deep: false },  // spies the RB
+  { role: 'CB', x: -21,  dz: 4,    job: 'cover', covers: 0,  deep: false },
+  { role: 'CB', x: -11,  dz: 5,    job: 'cover', covers: 1,  deep: false },
+  { role: 'CB', x: 21,   dz: 4,    job: 'cover', covers: 2,  deep: false },
+  { role: 'S',  x: 0,    dz: 16,   job: 'zone',  covers: -1, deep: true },
+];
 
-// Playbook: four selectable concepts. Each maps a receiver (by index/start X)
-// to a route — an array of world waypoints relative to the line of scrimmage.
+// Playbook: four concepts. route(e, sx, los) maps an eligible (e: 0/1/2 = WR
+// L/slot/R, 3 = RB) and its start X to world waypoints off the scrimmage line.
 const PLAYS = [
   {
-    name: 'BOMBS', sub: 'Four verticals',
-    route(i, sx, los) {
-      const toMid = Math.sign(-sx) || 1;
-      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
-      if (i === 0 || i === 5) return [P(sx, 16), P(sx, 42)];                 // outside go
-      if (i === 1 || i === 4) return [P(sx, 14), P(sx + toMid * 10, 34)];    // post
-      return [P(sx + toMid * 6, 9)];                                        // slot slant outlet
+    name: 'BOMBS', sub: 'Shots + RB check',
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 8, 1), P(sx - 13, 3)];          // RB swing/check
+      if (e === 1) return [P(sx, 14), P(sx + toMid * 12, 34)];    // slot post
+      return [P(sx, 16), P(sx, 42)];                              // outside go
     },
   },
   {
-    name: 'SLANTS', sub: 'Quick slants',
-    route(i, sx, los) {
-      const toMid = Math.sign(-sx) || 1;
-      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
-      return [P(sx + toMid * 6, 8), P(sx + toMid * 14, 16)];                // all slants
+    name: 'SLANTS', sub: 'Quick slants + flat',
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 6, 0.5), P(sx - 14, 3)];        // RB flat
+      return [P(sx + toMid * 6, 8), P(sx + toMid * 13, 15)];      // slants
     },
   },
   {
-    name: 'MESH', sub: 'Crossers',
-    route(i, sx, los) {
-      const toMid = Math.sign(-sx) || 1;
-      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
-      const depth = 5 + i * 1.5;                                            // staggered crossers
-      return [P(sx, depth), P(sx + toMid * 24, depth + 6)];
+    name: 'MESH', sub: 'Crossers + swing',
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 8, 1), P(sx - 14, 4)];          // RB swing
+      if (e === 1) return [P(sx, 12), P(sx, 9)];                  // slot sit/drag
+      return [P(sx, 6), P(sx + toMid * 22, 11)];                  // crossers
     },
   },
   {
-    name: 'FLOOD', sub: 'Sideline outs',
-    route(i, sx, los) {
-      const toSide = Math.sign(sx) || 1, toMid = Math.sign(-sx) || 1;
-      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
-      if (i === 0 || i === 5) return [P(sx, 14), P(sx + toSide * 8, 28)];    // corner
-      if (i === 1 || i === 4) return [P(sx, 9), P(sx + toSide * 9, 11)];     // out
-      return [P(sx + toMid * 5, 12), P(sx, 9)];                             // curl/sit
+    name: 'FLOOD', sub: 'Sidelines + flat',
+    route(e, sx, los) {
+      const toSide = Math.sign(sx) || 1, toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 6, 0.5), P(sx - 13, 3)];        // RB flat
+      if (e === 0) return [P(sx, 14), P(sx + toSide * 8, 28)];    // corner
+      if (e === 2) return [P(sx, 11), P(sx, 8)];                  // comeback
+      return [P(sx + toMid * 4, 10), P(sx, 8)];                   // slot out/sit
     },
   },
 ];
@@ -532,18 +539,21 @@ const PLAYS = [
 // Render a play's actual routes as a little SVG diagram for the call screen.
 // Uses the same route functions (at los=0, dir=1) so the art always matches.
 function makePlayArtSVG(play) {
-  const W = 100, H = 70, padX = 8, losY = H - 12, topY = 6, maxDepth = 40;
+  const W = 100, H = 70, padX = 8, losY = H - 16, topY = 6, maxDepth = 40;
   const mapX = (x) => padX + ((x + HALF_W) / (2 * HALF_W)) * (W - 2 * padX);
-  const mapY = (z) => losY - (Math.min(z, maxDepth) / maxDepth) * (losY - topY);
+  const mapY = (z) => losY - (THREE.MathUtils.clamp(z, -7, maxDepth) / maxDepth) * (losY - topY);
   const savedDir = game.dir; game.dir = 1; // diagram is drawn downfield (+Z)
   let art = '';
-  for (let i = 0; i < WR_X.length; i++) {
-    const sx = WR_X[i];
-    const wpts = play.route(i, sx, 0);
-    let d = `M ${mapX(sx).toFixed(1)} ${mapY(0).toFixed(1)}`;
+  for (const f of OFF_FORM) {
+    const x0 = mapX(f.x), y0 = mapY(f.dz);
+    if (f.role === 'OL') { art += `<rect x="${(x0 - 2.5).toFixed(1)}" y="${(mapY(0) - 2.5).toFixed(1)}" width="5" height="5" rx="1" fill="#9fb0c0"/>`; continue; }
+    if (f.role === 'QB') { art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.6" fill="#bfe3ff"/>`; continue; }
+    const wpts = play.route(f.elig, f.x, 0);
+    let d = `M ${x0.toFixed(1)} ${y0.toFixed(1)}`;
     for (const w of wpts) d += ` L ${mapX(w.x).toFixed(1)} ${mapY(w.z).toFixed(1)}`;
-    art += `<path d="${d}" fill="none" stroke="#ffd54a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
-    art += `<circle cx="${mapX(sx).toFixed(1)}" cy="${mapY(0).toFixed(1)}" r="2.3" fill="#fff"/>`;
+    const col = f.role === 'RB' ? '#7cfca0' : '#ffd54a';
+    art += `<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+    art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.3" fill="#fff"/>`;
   }
   game.dir = savedDir;
   const los = `<line x1="${padX}" y1="${losY}" x2="${W - padX}" y2="${losY}" stroke="rgba(255,255,255,0.45)" stroke-width="1.4" stroke-dasharray="3 3"/>`;
@@ -555,27 +565,35 @@ function makePlayArtSVG(play) {
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
+  // Per-slot base speed/strength so positions feel distinct (OL/DL slower &
+  // stronger; skill players faster). Slots line up with OFF_FORM/DEF_FORM.
+  const SPD = [9.6, 7.8, 7.8, 9.5, 9.5, 9.4, 9.3];   // QB, OL, OL, WR, WR, WR, RB
+  const STR = [0.9, 1.15, 1.15, 0.85, 0.85, 0.85, 0.95];
   for (let i = 0; i < 7; i++) {
-    const a = makeCharacter('off'); a.baseSpeed = i === 0 ? 9.6 : 9.3; a.strength = 0.93;
-    const b = makeCharacter('def'); b.baseSpeed = i === 0 ? 9.6 : 9.2; b.strength = 0.96;
+    const a = makeCharacter('off'); a.baseSpeed = SPD[i]; a.strength = STR[i];
+    const b = makeCharacter('def'); b.baseSpeed = SPD[i]; b.strength = STR[i] + 0.03;
     game.teamA.push(a); game.teamB.push(b);
   }
   game.all = [...game.teamA, ...game.teamB];
   setupPossession();
 }
-// Assign offense (ball) / defense (cover) roles based on who has the ball.
+// Assign offense (ball) / defense (cover) roles based on who has the ball,
+// using the Blitz personnel formations. game.receivers = eligibles in `elig`
+// order (WR L / slot / R, then RB).
 function setupPossession() {
   game.dir = game.userOnOffense ? 1 : -1;
   const ball = game.userOnOffense ? game.teamA : game.teamB;
   const cover = game.userOnOffense ? game.teamB : game.teamA;
   game.offense = ball; game.defense = cover;
-  game.qb = ball[0]; game.receivers = ball.slice(1);
-  game.qb.role = 'QB'; game.qb.job = 'qb';
-  game.receivers.forEach((wr) => { wr.role = 'WR'; wr.job = 'idle'; wr.deep = false; wr.covers = -1; });
-  cover.forEach((d, i) => {
-    const isSafety = i === cover.length - 1;
-    d.role = isSafety ? 'S' : 'DB'; d.deep = isSafety; d.covers = isSafety ? -1 : i;
-    d.job = 'cover';
+  game.qb = ball[0]; game.receivers = [];
+  ball.forEach((p, i) => {
+    const f = OFF_FORM[i];
+    p.role = f.role; p.job = f.job; p.align = f; p.deep = false; p.covers = -1;
+    if (f.elig >= 0) game.receivers[f.elig] = p;
+  });
+  cover.forEach((p, i) => {
+    const f = DEF_FORM[i];
+    p.role = f.role; p.job = f.job; p.align = f; p.deep = f.deep; p.covers = f.covers;
   });
   game.all = [...game.offense, ...game.defense];
 }
@@ -588,15 +606,13 @@ const reachedGoal = (z) => (game.dir > 0 ? z >= GOAL_Z : z <= OWN_GOAL_Z);
 function placeFormation() {
   const L = game.los, d = game.dir;
   const fwd = d > 0 ? 0 : Math.PI;   // offense faces its attacking end
-  setPos(game.qb, 0, L - d * 6); game.qb.heading = fwd; game.qb.home.set(0, 0, L - d * 6);
-  game.receivers.forEach((wr, i) => {
-    setPos(wr, WR_X[i], L - d * 0.5); wr.heading = fwd; wr.route = null; wr.wp = 0; wr.cutTimer = 0;
-    wr.job = 'idle'; wr.home.set(WR_X[i], 0, L - d * 0.5);
+  game.offense.forEach((p) => {
+    const a = p.align; setPos(p, a.x, L + d * a.dz); p.heading = fwd;
+    p.home.set(a.x, 0, L + d * a.dz); p.route = null; p.wp = 0; p.cutTimer = 0;
   });
-  game.defense.forEach((db, i) => {
-    if (db.deep) { setPos(db, 0, L + d * 16); db.home.set(0, 0, L + d * 16); }
-    else { setPos(db, WR_X[i] * 0.85, L + d * 4); db.home.set(WR_X[i] * 0.85, 0, L + d * 4); }
-    db.heading = fwd + Math.PI; db.assignment = null; db.zonePoint = null; db.blockTarget = null;
+  game.defense.forEach((p) => {
+    const a = p.align; setPos(p, a.x, L + d * a.dz); p.heading = fwd + Math.PI;
+    p.home.set(a.x, 0, L + d * a.dz); p.assignment = null; p.zonePoint = null; p.blockTarget = null;
   });
 }
 function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0); ch.speed = 0; }
@@ -657,18 +673,34 @@ function nearestOffenseTo(point, maxDist) {
   }
   return best;
 }
+function nearestBlockerTo(point) {
+  let best = null, bestD = Infinity;
+  for (const o of game.offense) {
+    if (o.role !== 'OL' || o.ragdolling) continue;
+    const d = dist2(px(o), point); if (d < bestD) { bestD = d; best = o; }
+  }
+  return best;
+}
 function updateDefense() {
   const carrier = game.carrier;
   const carrierIsRunning = !!carrier && (carrier.role !== 'QB' || pastLine(carrier));
   const inAir = ball.mode === 'flying';
   for (const d of game.defense) {
     if (d.ragdolling || d === game.controlled) continue; // knocked down, or the player drives him
+    d.engaged = false;
     const dp = px(d);
     let steer = { x: 0, z: 0 };
     if (carrierIsRunning && carrier) {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
       d.turbo = dist2(dp, px(carrier)) > 4 * 4;
+    } else if (d.job === 'rush') {
+      // Pass rush: bear down on the QB; an OL right in front walls you off.
+      const qp = px(game.qb);
+      steer = seek(dp, qp.x, qp.z);
+      const blk = nearestBlockerTo(dp);
+      d.engaged = !!blk && distXZ(px(blk), dp) < 1.6 && !(carrier && carrier === game.qb);
+      d.turbo = !d.engaged && dist2(dp, qp) > 9;
     } else if (d.job === 'zone' || d.deep) {
       if (inAir) { steer = seek(dp, ball.to.x, ball.to.z); d.turbo = true; }
       else {
@@ -800,6 +832,7 @@ function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
   let speed = ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed;
   if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
+  if (ch.engaged) speed *= 0.4; // a pass rusher walled off by a blocker is slowed
   let tvx = 0, tvz = 0;
   if (len > 1e-3) { tvx = dx / len * speed; tvz = dz / len * speed; }
   const k = 1 - Math.pow(0.0009, dt); // acceleration smoothing
@@ -891,8 +924,12 @@ function choosePlay(i) {
   updateButtons();
 }
 for (const card of playCards) {
-  const idx = +card.dataset.play;
-  if (PLAYS[idx]) card.insertAdjacentHTML('afterbegin', makePlayArtSVG(PLAYS[idx])); // route diagram
+  const idx = +card.dataset.play, play = PLAYS[idx];
+  if (play) {
+    card.insertAdjacentHTML('afterbegin', makePlayArtSVG(play)); // route diagram
+    const b = card.querySelector('b'), s = card.querySelector('span');
+    if (b) b.textContent = play.name; if (s) s.textContent = play.sub; // keep labels in sync
+  }
   const pick = (e) => { e.preventDefault(); audio.unlock(); choosePlay(idx); };
   card.addEventListener('touchstart', pick, { passive: false });
   card.addEventListener('mousedown', pick);
@@ -1103,7 +1140,7 @@ function newPlay() {
   setupPossession();   // assign offense/defense roles for whoever has the ball
   placeFormation();
   game.state = STATE.PRESNAP;
-  game.controlled = game.qb; game.carrier = null; game.selected = game.receivers.length - 1;
+  game.controlled = game.qb; game.carrier = null; game.selected = 0;
   game.returnActive = false; game.returner = null; game.fumbleLost = false;
   game.snapClock = PLAY_CLOCK;
   ball.mode = 'carried'; ball.targetRecv = null;
@@ -1124,8 +1161,12 @@ function snap() {
   // The CPU drops back then throws; pick its target now (most open at snap).
   game.cpuQBTimer = game.userOnOffense ? 0 : 1.1 + Math.random() * 0.7;
   const play = game.userOnOffense ? (PLAYS[game.playIndex] || PLAYS[0]) : PLAYS[Math.floor(Math.random() * PLAYS.length)];
-  game.receivers.forEach((wr, i) => { wr.route = play.route(i, WR_X[i], game.los); wr.wp = 0; wr.cutTimer = 0; wr.job = 'route'; });
-  game.defense.forEach((db) => { db.job = db.deep ? 'zone' : 'cover'; if (db.deep) db.zonePoint = new THREE.Vector3(0, 0, game.los + game.dir * 18); });
+  game.receivers.forEach((r, e) => { r.route = play.route(e, r.align.x, game.los); r.wp = 0; r.cutTimer = 0; r.job = 'route'; });
+  game.offense.forEach((o) => { if (o.role === 'OL') o.job = 'block'; }); // linemen pass-protect
+  game.defense.forEach((d) => {
+    d.job = d.role === 'DL' ? 'rush' : d.deep ? 'zone' : 'cover'; // DL rush, S deep, rest cover
+    if (d.deep) d.zonePoint = new THREE.Vector3(0, 0, game.los + game.dir * 18);
+  });
   // On a CPU possession you play defense: take over the nearest defender.
   if (!game.userOnOffense) { game.controlled = nearestToBallDefender(); ctrlRing.visible = true; selRing.visible = false; }
   audio.hike();
