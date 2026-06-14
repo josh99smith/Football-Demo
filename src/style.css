@@ -52,90 +52,147 @@ html, body {
 @keyframes spin { to { transform: rotate(360deg); } }
 #loading-text { font-size: 15px; letter-spacing: 0.5px; opacity: 0.85; }
 
-/* ---------- HUD ---------- */
+/* ---------- HUD (broadcast top bar, landscape-first) ---------- */
 #hud {
   position: fixed;
-  top: max(12px, env(safe-area-inset-top));
+  top: max(10px, env(safe-area-inset-top));
   left: 0; right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   z-index: 20;
   pointer-events: none;
 }
-#scoreboard {
+/* One sleek scorebug: OFF | clock + down&distance | DEF */
+#topbar {
+  display: flex;
+  align-items: stretch;
+  border-radius: 13px;
+  overflow: hidden;
+  color: #fff;
+  background: rgba(6, 12, 9, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+}
+.tb-team {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 16px;
-  border-radius: 22px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 15px;
-  letter-spacing: 0.5px;
-  backdrop-filter: blur(6px);
+  gap: 9px;
+  padding: 6px 16px;
 }
-#scoreboard .team b { font-size: 18px; }
-#scoreboard .team.off b { color: var(--off); }
-#scoreboard .team.def b { color: var(--def); }
-#scoreboard .gameclock {
+.tb-team.off { box-shadow: inset 4px 0 0 var(--off); }
+.tb-team.def { box-shadow: inset -4px 0 0 var(--def); flex-direction: row; }
+.tb-team .tb-tag { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.8; }
+.tb-team b { font-size: clamp(20px, 4.6vh, 26px); line-height: 1; font-variant-numeric: tabular-nums; }
+.tb-team.off b { color: var(--off); }
+.tb-team.def b { color: var(--def); }
+.tb-mid {
   display: flex;
   flex-direction: column;
   align-items: center;
-  line-height: 1;
-  padding: 0 10px;
-  margin: 0 2px;
-  border-left: 1px solid rgba(255,255,255,0.2);
-  border-right: 1px solid rgba(255,255,255,0.2);
+  gap: 2px;
+  padding: 5px 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  border-right: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
 }
-#scoreboard .gameclock b {
+.tb-clock { display: flex; align-items: baseline; gap: 7px; line-height: 1; }
+.tb-clock b {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 19px;
-  color: #fff;
+  font-size: clamp(17px, 3.8vh, 21px);
   letter-spacing: 0.5px;
 }
-#scoreboard .gameclock i {
+.tb-clock i {
   font-style: normal;
   font-size: 10px;
-  letter-spacing: 1px;
+  letter-spacing: 1.5px;
   color: var(--accent);
-  margin-top: 2px;
 }
-
-/* Down & distance + play clock (chain gang row) */
-#chains {
+.tb-chains {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 14px;
-  border-radius: 16px;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  font-size: 13px;
-  letter-spacing: 0.5px;
-  backdrop-filter: blur(6px);
+  gap: 9px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
 }
-#chains .downinfo { opacity: 0.9; }
-#chains .playclock {
+.tb-chains #downinfo { opacity: 0.92; }
+#playclock {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  padding-left: 10px;
-  border-left: 1px solid rgba(255,255,255,0.2);
+  padding-left: 9px;
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
   color: #bfe3ff;
 }
-#chains .playclock.warn { color: #ff5a5a; animation: pcPulse 0.5s ease-in-out infinite; }
+#playclock.warn { color: #ff5a5a; animation: pcPulse 0.5s ease-in-out infinite; }
 @keyframes pcPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 #status {
-  padding: 6px 14px;
-  border-radius: 16px;
-  background: rgba(0, 0, 0, 0.4);
+  padding: 5px 14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.42);
   color: var(--accent);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: 0.3px;
+  backdrop-filter: blur(6px);
   transition: opacity 0.3s ease;
 }
 #status.flash { animation: flash 0.5s ease; }
 @keyframes flash { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
+
+/* ---------- Portrait gate (rotate to landscape) ---------- */
+#rotate {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none; /* shown only in portrait on phones/tablets (see media query) */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  background: radial-gradient(circle at 50% 40%, #14422a, #07150d);
+  color: #e8f5e9;
+  text-align: center;
+}
+#rotate .rot-phone {
+  width: 58px; height: 96px;
+  border: 4px solid rgba(255, 255, 255, 0.85);
+  border-radius: 12px;
+  position: relative;
+  animation: rotTilt 1.8s ease-in-out infinite;
+}
+#rotate .rot-arrow {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 34px; color: var(--accent);
+}
+#rotate .rot-text { font-size: 17px; line-height: 1.5; letter-spacing: 0.5px; opacity: 0.92; }
+#rotate .rot-text b { color: var(--accent); font-weight: 800; }
+@keyframes rotTilt {
+  0%, 40% { transform: rotate(0deg); }
+  60%, 100% { transform: rotate(-90deg); }
+}
+@media (orientation: portrait) and (max-width: 1024px) and (pointer: coarse) {
+  #rotate { display: flex; }
+  #hud, #joystick, .action-btn, .mini-btn, #ratecard, #build-badge, #playselect { visibility: hidden; }
+}
+/* Landscape: spread the play-call cards into one wide row (saves vertical
+   space and keeps more of the field visible behind the call). */
+@media (orientation: landscape) {
+  .ps-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); width: min(760px, 90vw); }
+  .ps-art { height: 44px; }
+}
+/* Tight landscape (short phones): pull the controls in and trim chrome. */
+@media (orientation: landscape) and (max-height: 430px) {
+  .joystick { width: 116px; height: 116px; bottom: max(18px, env(safe-area-inset-bottom)); }
+  .joystick-knob { width: 52px; height: 52px; margin: -26px 0 0 -26px; }
+  .action-btn { width: 84px; height: 84px; bottom: max(26px, env(safe-area-inset-bottom)); }
+  .mini-btn.turbo { bottom: max(22px, calc(env(safe-area-inset-bottom) + 4px)); }
+  #status { font-size: 11px; padding: 4px 11px; }
+  .ps-art { height: 34px; }
+  .ps-card { padding: 9px 11px 9px; }
+}
 
 /* ---------- Joystick ---------- */
 .joystick {

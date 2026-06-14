@@ -22,6 +22,12 @@
     <div id="loading-text">Loading…</div>
   </div>
 
+  <!-- Portrait gate: this is a landscape game, so ask phones to rotate. -->
+  <div id="rotate">
+    <div class="rot-phone"><span class="rot-arrow">⟳</span></div>
+    <div class="rot-text">Rotate your device<br><b>landscape mode</b></div>
+  </div>
+
   <canvas id="scene"></canvas>
 
   <div id="build-badge"></div>
@@ -30,14 +36,13 @@
 
   <!-- HUD -->
   <div id="hud">
-    <div id="scoreboard">
-      <span class="team off">OFF <b id="score-off">0</b></span>
-      <span class="gameclock"><b id="game-clock">1:30</b><i id="quarter">1ST</i></span>
-      <span class="team def">DEF <b id="score-def">0</b></span>
-    </div>
-    <div id="chains">
-      <span class="downinfo" id="downinfo">1st &amp; 30</span>
-      <span class="playclock" id="playclock">:15</span>
+    <div id="topbar">
+      <div class="tb-team off"><span class="tb-tag">OFF</span><b id="score-off">0</b></div>
+      <div class="tb-mid">
+        <div class="tb-clock"><b id="game-clock">1:30</b><i id="quarter">1ST</i></div>
+        <div class="tb-chains"><span id="downinfo">1st &amp; 30</span><span id="playclock" class="playclock">:15</span></div>
+      </div>
+      <div class="tb-team def"><b id="score-def">0</b><span class="tb-tag">DEF</span></div>
     </div>
     <div id="status">Tap SNAP to start the play</div>
   </div>
