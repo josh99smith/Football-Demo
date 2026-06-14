@@ -359,10 +359,11 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
-  background: rgba(4, 12, 8, 0.72);
-  backdrop-filter: blur(5px);
+  justify-content: flex-end;
+  gap: 12px;
+  padding-bottom: max(28px, env(safe-area-inset-bottom));
+  /* See-through: the field + players resetting stay visible behind the call. */
+  background: linear-gradient(to bottom, rgba(2,8,5,0) 28%, rgba(2,8,5,0.32) 55%, rgba(2,8,5,0.7) 100%);
   touch-action: none;
 }
 #playselect.hidden { display: none; }

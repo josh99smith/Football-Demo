@@ -603,7 +603,7 @@ function setClip(ch, name) {
 // ===========================================================================
 // Game state
 // ===========================================================================
-const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead' };
+const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead', RESET: 'reset' };
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -622,6 +622,7 @@ const game = {
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
+  resetTimer: 0,                        // between-plays walk-back countdown
   playIndex: 0, choosing: false,        // selected play / play-select screen open
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
@@ -855,16 +856,20 @@ const driveStartZ = () => game.dir * DRIVE_START;              // offense's own 
 const toGoYds = () => game.dir * (game.firstDown - game.los);  // yards to the sticks
 const reachedGoal = (z) => (game.dir > 0 ? z >= GOAL_Z : z <= OWN_GOAL_Z);
 
-function placeFormation() {
+// Set each player's formation spot (home) + facing. teleport=true snaps them
+// there now (kickoff); teleport=false leaves them put so they can WALK back.
+function placeFormation(teleport = true) {
   const L = game.los, d = game.dir;
   const fwd = d > 0 ? 0 : Math.PI;   // offense faces its attacking end
   game.offense.forEach((p) => {
-    const a = p.align; setPos(p, a.x, L + d * a.dz); p.heading = fwd;
-    p.home.set(a.x, 0, L + d * a.dz); p.route = null; p.wp = 0; p.cutTimer = 0;
+    const a = p.align; p.home.set(a.x, 0, L + d * a.dz); p.resetHeading = fwd;
+    if (teleport) { setPos(p, a.x, L + d * a.dz); p.heading = fwd; }
+    p.route = null; p.wp = 0; p.cutTimer = 0;
   });
   game.defense.forEach((p) => {
-    const a = p.align; setPos(p, a.x, L + d * a.dz); p.heading = fwd + Math.PI;
-    p.home.set(a.x, 0, L + d * a.dz); p.assignment = null; p.zonePoint = null; p.blockTarget = null;
+    const a = p.align; p.home.set(a.x, 0, L + d * a.dz); p.resetHeading = fwd + Math.PI;
+    if (teleport) { setPos(p, a.x, L + d * a.dz); p.heading = fwd + Math.PI; }
+    p.assignment = null; p.zonePoint = null; p.blockTarget = null;
   });
 }
 function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0); ch.speed = 0; }
@@ -1358,8 +1363,8 @@ function tickClock(dt) {
   if (game.state === STATE.PRESNAP) {
     game.snapClock -= dt;
     if (game.snapClock <= 0) { game.snapClock = 0; setStatus('Delay of game — snapped!'); snap(); }
-  } else if (game.state !== STATE.DEAD) {
-    game.gameClock = Math.max(0, game.gameClock - dt);
+  } else if (game.state !== STATE.DEAD && game.state !== STATE.RESET) {
+    game.gameClock = Math.max(0, game.gameClock - dt); // clock stops between plays
   }
   updateHUD();
 }
@@ -1387,29 +1392,71 @@ function resetGame() {
   newPlay();
 }
 
-function newPlay() {
+const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
+// Prepare the next play's roles, formation spots and ball/marker state.
+// teleport=true snaps players to formation (kickoff); false lets them walk back.
+function preparePlay(teleport) {
   clearRagdolls(); // animation clips repose every bone on the next mixer update
-  // Roll the quarter (or end the game) if the clock ran out on the last play.
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   for (const ch of game.all) { ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.diveT = 0; ch.recoverT = 0; }
-  setFumbleGlow(false); // make sure a recovered fumble's glow is cleared
+  setFumbleGlow(false);
   setupPossession();   // assign offense/defense roles for whoever has the ball
-  placeFormation();
-  game.state = STATE.PRESNAP;
+  placeFormation(teleport);
   game.controlled = game.qb; game.carrier = null; game.selected = 0;
   game.returnActive = false; game.returner = null; game.fumbleLost = false;
-  game.snapClock = PLAY_CLOCK;
-  ball.mode = 'carried'; ball.targetRecv = null;
-  ball.holder = null; ball.catcher = null; ball.secureT = 0; ball.intercept = false;
-  selRing.visible = game.userOnOffense; ctrlRing.visible = false;
+  ball.mode = 'carried'; ball.holder = game.qb; ball.targetRecv = null;
+  ball.catcher = null; ball.secureT = 0; ball.intercept = false;
+  selRing.visible = false; ctrlRing.visible = false;
   losLine.position.z = game.los;
   firstDownLine.position.z = THREE.MathUtils.clamp(game.firstDown, -HALF_L + 1, HALF_L - 1);
   firstDownLine.visible = !reachedGoal(game.firstDown);
-  updateButtons(); updateHUD();
-  if (game.gameOver) setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
-  else if (!game.userOnOffense) { game.choosing = false; setStatus('CPU ball — play DEFENSE'); } // no play-call on D
-  else { setStatus('Choose your play'); openPlaySelect(); } // pick a play, then SNAP
+  updateHUD();
+}
+// Enter the between-plays RESET: players (walk back to) line up while you call
+// the next play over a see-through overlay. teleport=true is the kickoff/reset.
+function enterReset(teleport) {
+  preparePlay(teleport);
+  if (game.gameOver) {
+    game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = PLAY_CLOCK;
+    updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
+    return;
+  }
+  game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
+  if (game.userOnOffense) openPlaySelect();         // call your play while they reset
+  else { game.choosing = false; setStatus('CPU ball — get set on DEFENSE'); }
+  updateButtons();
+}
+const newPlay = () => enterReset(true);   // kickoff / game reset (snap into place)
+const beginReset = () => enterReset(false); // after a play (jog back into place)
+// Walk everyone toward their formation spot; once set (and a play is called),
+// go to PRESNAP ready for the snap.
+function updateReset(dt) {
+  let settled = true;
+  for (const ch of game.all) {
+    const p = ch.group.position, dx = ch.home.x - p.x, dz = ch.home.z - p.z, dist = Math.hypot(dx, dz);
+    if (dist > 0.5) {
+      settled = false;
+      const sp = Math.min(WALK_SPEED, dist * 2.2);
+      const tvx = dx / dist * sp, tvz = dz / dist * sp, k = Math.min(1, dt * 6);
+      ch.vel.x += (tvx - ch.vel.x) * k; ch.vel.z += (tvz - ch.vel.z) * k;
+      p.x += ch.vel.x * dt; p.z += ch.vel.z * dt; ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+      if (ch.speed > 0.3) ch.heading = turnToward(ch.heading, Math.atan2(ch.vel.x, ch.vel.z), TURN_RATE * dt);
+    } else {
+      ch.vel.x *= 0.6; ch.vel.z *= 0.6; ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+      ch.heading = turnToward(ch.heading, ch.resetHeading || 0, TURN_RATE * dt);
+    }
+  }
+  game.resetTimer -= dt;
+  const called = !game.userOnOffense || !game.choosing; // CPU has no call screen
+  if ((settled || game.resetTimer <= 0) && called) finalizeReset();
+}
+function finalizeReset() {
+  for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
+  game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
+  selRing.visible = game.userOnOffense;
+  updateButtons();
+  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : 'Defense — tap to set');
 }
 function snap() {
   game.state = STATE.LIVE;
@@ -2695,7 +2742,18 @@ function updatePlay(dt) {
   }
   updateParticles(dt);
   if (game.battle.cd > 0) game.battle.cd -= dt;
-  if (game.state === STATE.DEAD) { game.deadTimer -= dt; if (game.deadTimer <= 0) newPlay(); }
+  if (game.state === STATE.DEAD) {
+    // Whistle beat: everyone still up brakes to a stop (run -> walk -> idle),
+    // then they jog back into formation (RESET) for the next play.
+    for (const ch of game.all) if (!ch.ragdolling) {
+      ch.vel.x *= Math.max(0, 1 - dt * 4); ch.vel.z *= Math.max(0, 1 - dt * 4);
+      ch.group.position.x += ch.vel.x * dt; ch.group.position.z += ch.vel.z * dt;
+      ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+    }
+    game.deadTimer -= dt; if (game.deadTimer <= 0) beginReset();
+  } else if (game.state === STATE.RESET) {
+    updateReset(dt);
+  }
 }
 
 // Keep each player's helmet glued to the head — it's parented to the Head bone
@@ -2725,7 +2783,7 @@ function updateCamera(dt) {
   const loose = game.state === STATE.LOOSE;
   const chase = game.state === STATE.RUN || ret;            // behind a ball carrier
   // A pass play is a wide, high broadcast shot so the whole field reads.
-  const passPlay = game.state === STATE.PRESNAP || game.state === STATE.LIVE || air;
+  const passPlay = game.state === STATE.PRESNAP || game.state === STATE.LIVE || game.state === STATE.RESET || air;
 
   // Focus the BALL / the PLAY — never a single player. Follow the ball in flight
   // or loose; the carrier's body while it's tucked; the landing spot when dead.
