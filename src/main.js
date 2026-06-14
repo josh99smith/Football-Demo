@@ -63,18 +63,18 @@ function buildField() {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, sl),
       new THREE.MeshStandardMaterial({ color: i % 2 ? 0x2f6f33 : 0x357a38 }));
     m.rotation.x = -Math.PI / 2; m.position.set(0, 0, -HALF_L + sl * (i + 0.5));
-    m.receiveShadow = true; field.add(m);
+    m.receiveShadow = true; m.userData.proc = true; field.add(m);
   }
   for (const dir of [-1, 1]) {
     const ez = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, 10),
       new THREE.MeshStandardMaterial({ color: dir < 0 ? 0x1f5fa8 : 0xa83232 }));
     ez.rotation.x = -Math.PI / 2; ez.position.set(0, 0.01, dir * (HALF_L - 5));
-    ez.receiveShadow = true; field.add(ez);
+    ez.receiveShadow = true; ez.userData.proc = true; field.add(ez);
   }
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const line = (w, l, x, z) => {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l), lineMat);
-    m.rotation.x = -Math.PI / 2; m.position.set(x, 0.02, z); field.add(m);
+    m.rotation.x = -Math.PI / 2; m.position.set(x, 0.02, z); m.userData.proc = true; field.add(m);
   };
   line(0.4, FIELD_L, -HALF_W, 0); line(0.4, FIELD_L, HALF_W, 0);
   line(FIELD_W, 0.4, 0, -HALF_L); line(FIELD_W, 0.4, 0, HALF_L);
@@ -97,7 +97,27 @@ function goalPost(z) {
   g.add(tube(3, 0, 1.5), cross, tube(6, -3, 6), tube(6, 3, 6));
   g.position.z = z; return g;
 }
-scene.add(buildField());
+const fieldGroup = buildField();
+scene.add(fieldGroup);
+// Optional custom field texture: drop a JPEG/PNG at assets/field.png (or .jpg).
+// It maps onto one plane the size of the whole field (53.3 x 120 yd, end zones
+// included) and replaces the procedural turf + lines. Image is portrait: its
+// long (vertical) axis is the field length; top of the image = the -Z (blue)
+// end, bottom = the +Z (red) end.
+(function loadFieldTexture() {
+  const tl = new THREE.TextureLoader();
+  const apply = (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const surf = new THREE.Mesh(new THREE.PlaneGeometry(FIELD_W, FIELD_L),
+      new THREE.MeshStandardMaterial({ map: tex }));
+    surf.rotation.x = -Math.PI / 2; surf.position.y = 0.03; surf.receiveShadow = true;
+    fieldGroup.add(surf);
+    fieldGroup.traverse((o) => { if (o.userData.proc) o.visible = false; }); // hide procedural markings
+  };
+  tl.load('assets/field.png', apply, undefined,
+    () => tl.load('assets/field.jpg', apply, undefined, () => { /* none found — keep procedural field */ }));
+})();
 
 function makeRing(color) {
   const m = new THREE.Mesh(new THREE.RingGeometry(0.7, 0.95, 28),
@@ -1744,6 +1764,7 @@ function startBattle(tackler, hard = false) {
   const ang = Math.atan2(tackler.group.position.x - c.group.position.x, tackler.group.position.z - c.group.position.z);
   c.vel.set(0, 0, 0); c.speed = 0; c.heading = ang;
   tackler.vel.set(0, 0, 0); tackler.speed = 0; tackler.heading = ang + Math.PI;
+  b.baseX = c.group.position.x; b.baseZ = c.group.position.z; // anchor: carrier drives off this
   ctrlRing.visible = false;
   hitZoom(BATTLE_TIME + 0.4);  // punch the camera in on the duel
   battlePrompt.textContent = 'BREAK THE TACKLE!';
@@ -1787,12 +1808,17 @@ function updateBattle(dt) {
   b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(cpuStr / humanStr, 0.6, 1.7);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
-  // Wrestle wobble: a bounded shove so the two never drift apart.
-  const wob = Math.sin(game.playClock * 26) * 0.12;
-  const c = game.carrier.group.position, ang = game.carrier.heading;
-  const half = 1.1 + wob;
+  // Locked in contact: the carrier DRIVES off the anchor toward the tackler as
+  // he wins the meter (and gets shoved back as he loses); the tackler stays a
+  // shoulder-width in front. A small wobble keeps the wrestle alive.
+  const wob = Math.sin(game.playClock * 22) * 0.08;
+  const ang = game.carrier.heading, sa = Math.sin(ang), ca = Math.cos(ang);
+  const drive = (b.val - 0.5) * 2.2;             // yards the carrier pushes the pile
+  const c = game.carrier.group.position;
+  c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
+  const half = 0.88 + wob;
   const tk = b.tackler.group.position;
-  tk.x = c.x + Math.sin(ang) * half; tk.z = c.z + Math.cos(ang) * half;
+  tk.x = c.x + sa * half; tk.z = c.z + ca * half;
 
   battleFill.style.width = `${Math.round(b.val * 100)}%`;
   battleDiv.style.left = `${Math.round(b.val * 100)}%`;
@@ -2143,25 +2169,56 @@ function applyArmAction(ch, dt) {
     if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.5 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
   }
 }
+// Break-tackle BATTLE pose: the two lean into each other and churn — the
+// tackler wraps up (both arms forward, head down), the carrier drives through
+// (stiff-arm out, ball cradled). Procedural so it reads as real contact.
+const _qLeanY = new THREE.Quaternion(), _qLeanX = new THREE.Quaternion();
+const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
+function applyBattleLean(ch, isTackler) {
+  const lean = (isTackler ? 0.42 : 0.34) + Math.sin(performance.now() * 0.012) * 0.05; // forward tilt + strain
+  _qLeanY.setFromAxisAngle(_UP, ch.heading);
+  _qLeanX.setFromAxisAngle(_XAX, lean);
+  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
+}
+function applyBattleArms(ch, isTackler) {
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const t = performance.now() * 0.001;
+  const set = (bone, rest, a) => { if (bone && rest) { _tq.setFromAxisAngle(_xAxisL, a); bone.quaternion.copy(rest).multiply(_tq); bone.updateMatrixWorld(true); } };
+  if (isTackler) { // both arms reach in to wrap, pumping with the struggle
+    const a = 1.55 + Math.sin(t * 9) * 0.12;
+    set(ch.upperArm, ch.upperArmRest, -a); set(ch.foreArm, ch.foreArmRest, -0.85);
+    set(ch.leftArm, ch.leftArmRest, -a); set(ch.leftForeArm, ch.leftForeArmRest, -0.85);
+  } else {        // carrier: right arm stiff-arms out, left cradles the ball
+    const a = 1.35 + Math.sin(t * 9 + 1) * 0.18;
+    set(ch.upperArm, ch.upperArmRest, -a); set(ch.foreArm, ch.foreArmRest, -0.15); // straight stiff-arm
+    set(ch.leftArm, ch.leftArmRest, -0.5); set(ch.leftForeArm, ch.leftForeArmRest, -1.5); // tuck/cradle
+  }
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
-  if (ch.oneShotT > 0) {     // hold a one-shot (juke roll)
+  const inBattle = game.state === STATE.BATTLE && (ch === game.carrier || ch === game.battle.tackler);
+  if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke roll)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
     ch.mixer.update(dt);
     return;
   }
   let want = 'idle';
-  if (ch.speed > 11) want = 'sprint';        // turbo / RunFast
+  if (inBattle) want = 'run';                // churning legs in the wrestle
+  else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
   else if (ch.speed > 6) want = 'run';
   else if (ch.speed > 0.5) want = 'walk';
   setClip(ch, want);
-  ch.group.rotation.y = ch.heading;
-  if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / 0.5) * Math.PI * 2; // 360 spin move
+  if (inBattle) applyBattleLean(ch, ch === game.battle.tackler);
+  else {
+    ch.group.rotation.set(0, ch.heading, 0);
+    if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / 0.5) * Math.PI * 2; // 360 spin move
+  }
   ch.mixer.update(dt);
-  // Procedural arm overrides (after the mixer), in priority order: securing a
-  // catch, throwing, then a one-off arm action (swat a pass / reach at a ball).
-  if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
+  // Procedural arm overrides (after the mixer), in priority order: the battle
+  // grapple, securing a catch, throwing, then a one-off arm action.
+  if (inBattle) applyBattleArms(ch, ch === game.battle.tackler);
+  else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
 }
