@@ -485,7 +485,7 @@ async function loadAssets() {
   loadingText.textContent = 'Loading animations…';
   const animGltf = await loadGLB('assets/animations.glb');
   loadingText.textContent = 'Starting physics…';
-  try { physics = await PhysicsWorld.create(); physics.addCageWalls(CAGE_X, CAGE_Z, 7.5); } // ragdolls bounce off the fence
+  try { physics = await PhysicsWorld.create(); physics.addCageWalls(CAGE_X - 0.35, CAGE_Z - 0.35, 7.5); } // ragdolls bounce off the fence (inset so bodies don't poke through)
   catch (e) { console.warn('Physics unavailable — tackles will be instant', e); }
   charTemplate = charGltf.scene;
   defTemplate = defGltf ? defGltf.scene : null;
@@ -1233,8 +1233,9 @@ function applySteer(ch, dt) {
 }
 function clampToField(ch) {
   // The cage is a hard wall: clamp inside it AND bounce the player off it (they
-  // can never pass through). Restitution gives a real carom off the fence.
-  const p = ch.group.position, bx = CAGE_X - 0.4, bz = CAGE_Z - 0.4, R = 0.45;
+  // can never pass through). The margin is the body's half-WIDTH (shoulders/arms),
+  // not just the pelvis — otherwise the torso pokes out through the fence.
+  const p = ch.group.position, bx = CAGE_X - 0.75, bz = CAGE_Z - 0.75, R = 0.45;
   if (p.x > bx) { p.x = bx; if (ch.vel.x > 0) ch.vel.x = -ch.vel.x * R; }
   else if (p.x < -bx) { p.x = -bx; if (ch.vel.x < 0) ch.vel.x = -ch.vel.x * R; }
   if (p.z > bz) { p.z = bz; if (ch.vel.z > 0) ch.vel.z = -ch.vel.z * R; }
@@ -2945,15 +2946,31 @@ function applyBattleArms(ch, isTackler) {
     set(ch.leftArm, ch.leftArmRest, -0.5); set(ch.leftForeArm, ch.leftForeArmRest, -1.5); // tuck/cradle
   }
 }
+// Our clips are rotation-only (positions stripped to avoid root-motion drift),
+// which freezes the pelvis at standing height. Fine for locomotion, but dynamic
+// one-shots (the parkour vault/roll, diving catch, loose-ball scoop, celebration
+// jumps) swing the body far from vertical and would clip half through the turf.
+// Fix: measure the lowest bone for the current pose and raise the whole root so
+// nothing dips below the field — the body sits on the ground / arcs up cleanly.
+function groundClamp(ch) {
+  ch.group.position.y = 0;             // measure from the baseline
+  ch.group.updateMatrixWorld(true);   // refresh bone world matrices for this pose
+  let lo = Infinity;
+  for (const b of ch.bones) { const y = b.matrixWorld.elements[13]; if (y < lo) lo = y; }
+  const TARGET = 0.04;                 // keep the lowest joint just above the turf
+  if (lo < TARGET) ch.group.position.y = TARGET - lo; // lift only (jumps stay airborne)
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   const inBattle = game.state === STATE.BATTLE && (ch === game.carrier || ch === game.battle.tackler);
-  if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke roll)
+  if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
     ch.mixer.update(dt);
-    return;
+    groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
+    return;          // motion; lift the root so no joint sinks through the turf
   }
+  ch.group.position.y = 0; // not in a one-shot: clear any lift from the last move
   let want = 'idle';
   if (inBattle) want = 'run';                // churning legs in the wrestle
   else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
@@ -3282,6 +3299,7 @@ function updatePlay(dt) {
       ch.vel.x *= Math.max(0, 1 - dt * 4); ch.vel.z *= Math.max(0, 1 - dt * 4);
       ch.group.position.x += ch.vel.x * dt; ch.group.position.z += ch.vel.z * dt;
       ch.speed = Math.hypot(ch.vel.x, ch.vel.z);
+      clampToField(ch); // keep the dead-ball coast inside the cage too
     }
     game.deadTimer -= dt;
     if (game.deadTimer <= 0) {
