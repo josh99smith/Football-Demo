@@ -634,8 +634,10 @@ async function loadAssets() {
   // Per-player idle / walk pools so a lineup reads as individuals (real mocap
   // variety instead of procedural arm offsets) and the huddle walk-back isn't
   // robotic. Fall back to the originals if the new pack didn't load.
-  idleClips = ['Idle_11', 'Idle_02', 'Idle_03', 'Idle_8'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
-  if (!idleClips.length) idleClips = [idleClip];
+  // Idle is the clean breathing stance only. The Idle_02/03/8 variety clips
+  // include arms-spread / taunt poses that look wrong standing on the field.
+  idleClips = [idleClip].filter(Boolean);
+  if (!idleClips.length) idleClips = [inPlace(byName['Idle_11'])];
   // Walk pool is just the gameplay-paced Walking clip: the Casual_Walk /
   // Proud_Strut variety are leisurely cutscene gaits (~half pace) that skate
   // when sped up to match real movement, so they're not used for locomotion.
@@ -1905,7 +1907,7 @@ function finalizeReset() {
 // While the ball is live we record a lightweight per-frame snapshot (positions,
 // headings, current clip + mixer time, ball transform). On a touchdown we play
 // it back in slow motion from a cinematic broadcast angle.
-const REPLAY_MAX = 320; // ~5s at 60fps
+const REPLAY_MAX = 1080; // ~18s at 60fps — a full play plus the TD celebration
 const replayEl = document.getElementById('replay');
 // Tap anywhere on the replay (or the CONTINUE button) to leave the loop.
 if (replayEl) {
@@ -1972,7 +1974,7 @@ function applyReplayFrame(fi) {
 function updateReplay(dt) {
   const r = game.replay, f = r.frames, last = f.length - 1;
   if (r.phase === 'play') {
-    r.i += 0.6; // ~0.6x slow-mo
+    r.i += 0.85; // playback speed (full-play replays would drag at deep slow-mo)
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
     applyReplayFrame(r.i);
   } else if (r.phase === 'hold') {
@@ -1987,7 +1989,7 @@ function updateReplay(dt) {
       r.i = 0; r.snap = true; r.phase = 'fadein'; setReplayLabel();
     }
   } else { // fadein: replay runs while we fade back up from black
-    r.i += 0.6; applyReplayFrame(Math.min(r.i, last));
+    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 2.6);
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
@@ -3660,7 +3662,9 @@ function updatePlay(dt) {
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
   // Record footage while the ball is live (for the touchdown replay).
-  if (game.state !== STATE.PRESNAP && game.state !== STATE.DEAD && game.state !== STATE.RESET && game.state !== STATE.REPLAY) recordFrame();
+  // Record the whole play AND the dead-ball beat after it (so a TD celebration
+  // is part of the replay). Only PRESNAP / RESET / REPLAY itself are skipped.
+  if (game.state !== STATE.PRESNAP && game.state !== STATE.RESET && game.state !== STATE.REPLAY) recordFrame();
 
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
