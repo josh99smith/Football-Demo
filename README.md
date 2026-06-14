@@ -75,6 +75,15 @@ play, with **down & distance** and the **score** tracked on the HUD.
 Cross the line of scrimmage as the QB to commit to a **scramble** (the play
 becomes a run and your receivers block for you).
 
+## Player ratings
+
+Every player has five ratings (0–99) — **speed, strength, stamina, skill,
+tackling** — from a position profile plus a small per-athlete variation. They
+drive the game: speed → top speed, strength → breaking tackles, tackling →
+wrap-up/break-tackle resistance, skill → catching + QB accuracy + the CPU's
+read, stamina → how long your turbo lasts and how fast it recovers. The card in
+the top-left shows whoever you're controlling.
+
 ## Player AI
 
 The steering AI is adapted from

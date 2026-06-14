@@ -351,6 +351,31 @@ html, body {
 #dive-btn  { right: max(120px, calc(env(safe-area-inset-right) + 120px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(120, 80, 30, 0.82); }
 #pitch-btn { right: max(200px, calc(env(safe-area-inset-right) + 200px)); bottom: max(170px, calc(env(safe-area-inset-bottom) + 170px)); background: rgba(110, 40, 110, 0.82); }
 
+/* ---------- Player ratings card ---------- */
+#ratecard {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  z-index: 22;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(5px);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  line-height: 1.5;
+  pointer-events: none;
+  min-width: 116px;
+}
+#ratecard.hidden { display: none; }
+#ratecard .rc-role { font-weight: 800; font-size: 13px; color: var(--accent); letter-spacing: 1px; margin-bottom: 3px; }
+#ratecard .rc-row { display: flex; align-items: center; gap: 6px; }
+#ratecard .rc-row span { width: 30px; opacity: 0.8; }
+#ratecard .rc-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.16); overflow: hidden; }
+#ratecard .rc-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #5aff8a, #ffd23a); }
+#ratecard .rc-row b { width: 18px; text-align: right; font-variant-numeric: tabular-nums; }
+
 /* ---------- Play-select screen ---------- */
 #playselect {
   position: fixed;

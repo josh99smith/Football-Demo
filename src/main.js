@@ -860,18 +860,37 @@ function makePlayArtSVG(play) {
   return `<svg class="ps-art" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${los}${art}</svg>`;
 }
 
+// --- Player ratings (0-99): speed, strength, stamina, skill, tackle ---------
+// Roles get a base profile; each athlete adds a small persistent jitter so
+// teammates differ. Ratings drive derived stats (baseSpeed/strength) and feed
+// the catch / break-tackle / coverage / accuracy / turbo math.
+const RAT_KEYS = ['speed', 'strength', 'stamina', 'skill', 'tackle'];
+const RATINGS = {
+  QB: [76, 68, 82, 90, 48], WR: [91, 60, 78, 87, 44], RB: [87, 80, 84, 80, 56], OL: [54, 93, 82, 42, 62],
+  DL: [64, 91, 82, 46, 86], LB: [82, 84, 84, 60, 90], CB: [91, 62, 80, 82, 78], S: [86, 74, 82, 76, 84],
+};
+function applyRatings(p) {
+  const base = RATINGS[p.role] || RATINGS.WR;
+  const r = {};
+  for (let i = 0; i < RAT_KEYS.length; i++) {
+    const v = THREE.MathUtils.clamp(base[i] + (p.jitter ? p.jitter[i] : 0), 1, 99);
+    r[RAT_KEYS[i]] = v / 99;     // normalized 0..1
+    r[RAT_KEYS[i] + 'R'] = Math.round(v); // displayable 1..99
+  }
+  p.rt = r;
+  p.baseSpeed = 7.3 + r.speed * 3.1;        // 7.3 .. 10.4 yd/s
+  p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
+}
+
 // Two fixed 7-man rosters: teamA = the player's red team, teamB = the CPU's
 // blue team. Each play, setupPossession() assigns offense/defense ROLES to
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
-  // Per-slot base speed/strength so positions feel distinct (OL/DL slower &
-  // stronger; skill players faster). Slots line up with OFF_FORM/DEF_FORM.
-  const SPD = [9.6, 7.8, 7.8, 9.5, 9.5, 9.4, 9.3];   // QB, OL, OL, WR, WR, WR, RB
-  const STR = [0.9, 1.15, 1.15, 0.85, 0.85, 0.85, 0.95];
   for (let i = 0; i < 7; i++) {
-    const a = makeCharacter('off'); a.baseSpeed = SPD[i]; a.strength = STR[i];
-    const b = makeCharacter('def'); b.baseSpeed = SPD[i]; b.strength = STR[i] + 0.03;
+    const jit = () => Array.from({ length: 5 }, () => Math.round((Math.random() - 0.5) * 10)); // ±5 per attr
+    const a = makeCharacter('off'); a.jitter = jit();
+    const b = makeCharacter('def'); b.jitter = jit();
     game.teamA.push(a); game.teamB.push(b);
   }
   game.all = [...game.teamA, ...game.teamB];
@@ -889,11 +908,13 @@ function setupPossession() {
   ball.forEach((p, i) => {
     const f = OFF_FORM[i];
     p.role = f.role; p.job = f.job; p.align = f; p.deep = false; p.covers = -1;
+    applyRatings(p);
     if (f.elig >= 0) game.receivers[f.elig] = p;
   });
   cover.forEach((p, i) => {
     const f = DEF_FORM[i];
     p.role = f.role; p.job = f.job; p.align = f; p.deep = f.deep; p.covers = f.covers;
+    applyRatings(p);
   });
   game.all = [...game.offense, ...game.defense];
 }
@@ -1281,6 +1302,20 @@ const elStatus = document.getElementById('status');
 const elGameClock = document.getElementById('game-clock');
 const elQuarter = document.getElementById('quarter');
 const elPlayClock = document.getElementById('playclock');
+const elRateCard = document.getElementById('ratecard');
+const RC_LABELS = ['SPD', 'STR', 'STA', 'SKL', 'TKL'];
+let rcLast = '';
+function updateRateCard() {
+  const c = game.controlled;
+  if (!c || !c.rt) { if (elRateCard) elRateCard.classList.add('hidden'); rcLast = ''; return; }
+  const vals = RAT_KEYS.map((k) => c.rt[k + 'R']);
+  const key = c.role + vals.join(',');
+  if (key === rcLast) return; rcLast = key;
+  let rows = '';
+  for (let i = 0; i < RAT_KEYS.length; i++) rows += `<div class="rc-row"><span>${RC_LABELS[i]}</span><div class="rc-bar"><i style="width:${vals[i]}%"></i></div><b>${vals[i]}</b></div>`;
+  elRateCard.innerHTML = `<div class="rc-role">${c.role}</div>${rows}`;
+  elRateCard.classList.remove('hidden');
+}
 const ordinal = (n) => ['1st', '2nd', '3rd', '4th'][n - 1] || n + 'th';
 const QLABEL = ['1ST', '2ND', '3RD', '4TH'];
 function fmtClock(s) {
@@ -1325,6 +1360,7 @@ function updateButtons() {
   else if (s === STATE.LOOSE) { show(actionBtn, 'DIVE'); show(turboBtn); }
   else if (s === STATE.BATTLE) { show(actionBtn, 'MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
+  updateRateCard(); // reflect whoever you're now controlling
 }
 
 // ===========================================================================
@@ -1588,7 +1624,9 @@ function throwBall(power) {
   }
   // Slight inaccuracy: the QB isn't perfect (bullets are tighter than lobs, and
   // long throws drift more) — but mostly on target so it's catchable.
-  const errMag = THREE.MathUtils.lerp(0.9, 0.35, p) * THREE.MathUtils.clamp(t / 1.2, 0.5, 1.4);
+  // QB SKILL tightens the throw (accurate passers miss by less).
+  const acc = 1.3 - (game.qb.rt ? game.qb.rt.skill : 0.8) * 0.75; // ~0.9 (elite) .. ~1.2 (poor)
+  const errMag = THREE.MathUtils.lerp(0.9, 0.35, p) * THREE.MathUtils.clamp(t / 1.2, 0.5, 1.4) * acc;
   const ea = Math.random() * Math.PI * 2;
   tx = clampX(tx + Math.cos(ea) * errMag);
   tz = THREE.MathUtils.clamp(tz + Math.sin(ea) * errMag, -HALF_L + 1, HALF_L - 1);
@@ -1639,7 +1677,7 @@ function mostOpenReceiver() {
     const cov = nearestDefenderTo(px(wr));
     const open = cov ? distXZ(px(wr), px(cov)) : 20;
     const downfield = Math.max(0, game.dir * (wr.group.position.z - game.los));
-    const score = open + downfield * 0.12;
+    const score = open + downfield * 0.12 + (wr.rt ? wr.rt.skill * 3 : 0); // favor open AND skilled hands
     if (score > bestScore) { bestScore = score; best = wr; }
   }
   return best;
@@ -1649,14 +1687,29 @@ function mostOpenReceiver() {
 function cpuQB(dt) {
   const qb = game.qb;
   game.cpuQBTimer -= dt;
-  if (game.cpuQBTimer > 0.35) { qb.desired = { x: 0, z: -game.dir }; qb.turbo = false; } // drop back
+  const rusher = nearestDefenderTo(px(qb));
+  const pressure = rusher ? distXZ(px(rusher), px(qb)) : 99;
+  const pressured = pressure < 2.4;
+  // Drop back, then hold the pocket; flee sideways if a rusher closes.
+  if (game.cpuQBTimer > 0.35 && !pressured) { qb.desired = { x: 0, z: -game.dir }; qb.turbo = false; }
   else qb.desired = { x: 0, z: 0 };
-  const pressured = !!nearestDefenderTo(px(qb)) && distXZ(px(nearestDefenderTo(px(qb))), px(qb)) < 2.2;
-  if (ball.mode === 'carried' && (game.cpuQBTimer <= 0 || pressured)) {
-    const target = mostOpenReceiver();
-    if (target) { ball.targetRecv = target; game.selected = game.receivers.indexOf(target); throwBall(0.25 + Math.random() * 0.5); }
-    else if (pastLine(qb)) { enterRun(qb, ''); } // nobody open and past the line — scramble
-    else game.cpuQBTimer = 0.3; // hold a touch longer
+  if (ball.mode !== 'carried') return;
+  const target = mostOpenReceiver();
+  const cov = target ? nearestDefenderTo(px(target)) : null;
+  const sep = (target && cov) ? distXZ(px(target), px(cov)) : 9;
+  const ready = game.cpuQBTimer <= 0;
+  const desperate = game.cpuQBTimer < -1.0 || (pressured && pressure < 1.3);
+  if (target && (sep > 2.4 || desperate || (ready && pressured))) {
+    // Throw to the open man; longer throws get more zip. Accuracy = QB skill.
+    ball.targetRecv = target; game.selected = game.receivers.indexOf(target);
+    throwBall(THREE.MathUtils.clamp(0.2 + distXZ(px(qb), px(target)) / 50, 0.2, 0.85));
+  } else if (pressured && pastLine(qb)) {
+    enterRun(qb, ''); // take off — he crossed the line
+  } else if (pressured) {
+    const away = Math.sign(qb.group.position.x - (rusher ? rusher.group.position.x : 0)) || 1;
+    qb.desired = { x: away, z: game.dir * 0.25 }; qb.turbo = true; // climb/escape the pocket
+  } else if (ready) {
+    game.cpuQBTimer = 0.25; // nobody open yet — keep scanning
   }
 }
 // A CPU ball carrier (after a CPU catch/scramble) seeks the end zone while you
@@ -2029,30 +2082,33 @@ function tryReception() {
   let bestDef = null, dD = Infinity;
   for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
 
+  const dbBall = bestDef && bestDef.rt ? bestDef.rt.skill : 0.55; // DB ball skills (hands/timing)
   // No receiver in catching range yet — but a defender right on the ball can
-  // still jump it. Otherwise keep flying (resolves incomplete at the end).
+  // still jump it (skilled DBs more often). Otherwise keep flying.
   if (!bestR) {
     if (bestDef && dD <= INTERCEPT_R && !ball.intRolled) {
       ball.intRolled = true; // one roll per throw, not per frame
-      if (Math.random() < 0.45) { startSecure(bestDef, true); return true; }
+      if (Math.random() < 0.18 + dbBall * 0.32) { startSecure(bestDef, true); return true; }
     }
     return false;
   }
 
-  // A receiver is in reach. Uncontested = a clean grab (rare drop).
+  // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
+  const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
-    if (Math.random() < 0.94) { startSecure(bestR, false); return true; }
+    if (Math.random() < 0.84 + rxSkill * 0.14) { startSecure(bestR, false); return true; }
     passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
   }
 
-  // Contested: catch odds fall as the coverage tightens; misses are mostly
-  // breakups, with a pick only when a defender is right there.
+  // Contested: catch odds fall as coverage tightens, lifted by the receiver's
+  // hands and lowered by the defender's coverage skill; picks scale with the DB.
   const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
-  let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight);
+  let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3;
   if (game.onFire) pCatch += 0.12;
+  pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
-  if (dD <= INTERCEPT_R && Math.random() < 0.4) { startSecure(bestDef, true); return true; } // pick
+  if (dD <= INTERCEPT_R && Math.random() < 0.16 + dbBall * 0.32) { startSecure(bestDef, true); return true; } // pick
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away
 }
 function checkRunOutcome() {
@@ -2102,8 +2158,8 @@ function tryBreak(carrier, pile) {
   let p = input.turbo ? 0.52 : 0.34;
   const power = carrier.strength * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1);
   let gangStr = 0;
-  for (const t of pile) gangStr += t.strength;
-  p *= THREE.MathUtils.clamp(power / (gangStr * 0.9), 0.3, 1.25);
+  for (const t of pile) gangStr += 0.5 + (t.rt ? t.rt.tackle : 0.6); // wrap-up scales with TACKLING
+  p *= THREE.MathUtils.clamp(power / (gangStr * 0.95), 0.3, 1.25);
   if (pile.length >= 2) p *= 0.45; // a gang is hard to slip
   if (pile.length >= 3) p *= 0.5;
   if (Math.random() >= p) return false;
@@ -2173,8 +2229,9 @@ function updateBattle(dt) {
   // Each ACTION press is a mash; the CPU steadily drags it toward the tackle,
   // harder when the tackler is the stronger man.
   if (input.battleMash > 0) { b.val += input.battleMash * BATTLE_TAP; b.flash = 1; input.battleMash = 0; }
-  const cpuStr = b.tackler.strength, humanStr = game.carrier.strength;
-  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(cpuStr / humanStr, 0.6, 1.7);
+  // A strong TACKLER drags the meter down faster; a strong carrier resists.
+  const tk = 0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6), hu = 0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7);
+  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(tk / hu, 0.6, 1.8);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
   // Locked in contact: the carrier DRIVES off the anchor toward the tackler as
@@ -2720,12 +2777,13 @@ function updatePlay(dt) {
   const liveBall = game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN || game.state === STATE.LOOSE;
   const turboOn = input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0);
   if (liveBall) game.playClock += dt;
+  // STAMINA of the player you're driving sets how long turbo lasts / recovers.
+  const stam = (game.controlled && game.controlled.rt) ? game.controlled.rt.stamina : 0.8;
   if (liveBall && turboOn && !game.onFire) {
-    game.turboMeter = Math.max(0, game.turboMeter - dt / 2.8);
+    game.turboMeter = Math.max(0, game.turboMeter - dt / (2.0 + stam * 2.2)); // 2.0s (gassed) .. 4.2s (iron)
     if (game.turboMeter <= 0) game.turboLock = true; // flat: wait for a recharge
   } else {
-    // Refills whenever it isn't burning — including between plays.
-    game.turboMeter = Math.min(1, game.turboMeter + dt / 4);
+    game.turboMeter = Math.min(1, game.turboMeter + dt / (5.5 - stam * 2.5)); // refills faster with stamina
     if (game.turboLock && game.turboMeter > 0.25) game.turboLock = false;
   }
   turboFillEl.style.height = `${Math.round(game.turboMeter * 100)}%`;
