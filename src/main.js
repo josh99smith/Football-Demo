@@ -2885,11 +2885,12 @@ function startBattle(tackler, hard = false) {
   // A big committed hit starts you further behind (harder to break out of).
   b.val = hard ? 0.4 : 0.52; b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
   game.state = STATE.BATTLE;
-  // Face the two off, stopped, chest to chest.
+  // The carrier drives DOWNFIELD; the tackler meets him head-on, so they're
+  // squared up face-to-face (the tackler is placed in front in updateBattle).
   const c = game.carrier;
-  const ang = Math.atan2(tackler.group.position.x - c.group.position.x, tackler.group.position.z - c.group.position.z);
+  const ang = game.dir > 0 ? 0 : Math.PI;              // carrier's attacking direction
   c.vel.set(0, 0, 0); c.speed = 0; c.heading = ang;
-  tackler.vel.set(0, 0, 0); tackler.speed = 0; tackler.heading = ang + Math.PI;
+  tackler.vel.set(0, 0, 0); tackler.speed = 0; tackler.heading = ang + Math.PI; // faces the carrier
   b.baseX = c.group.position.x; b.baseZ = c.group.position.z; // anchor: carrier drives off this
   ctrlRing.visible = false;
   hitZoom(BATTLE_TIME + 0.4);  // punch the camera in on the duel
