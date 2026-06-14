@@ -531,9 +531,19 @@ async function loadAssets() {
     return c;
   };
   // All clips are authored on THIS rig, so they pose cleanly (no retargeting).
+  // Tag each locomotion clip with its authored GROUND SPEED (world yd/s at
+  // timeScale 1) so updateAnimation can match playback to travel and the feet
+  // plant instead of skating. Measured via foot-vs-hip stance velocity (FK) and
+  // calibrated so the run reads planted near baseSpeed; the new variety walks
+  // are genuinely slow gaits, hence the much lower refs.
+  const REF_SPEED = { Walking: 2.8, Casual_Walk: 1.55, Proud_Strut: 1.25, Running: 8.5, RunFast: 11.4 };
+  const loco = (name, fallback) => {
+    const src = byName[name] || fallback; if (!src) return null;
+    const c = inPlace(src); c.userData = { refSpeed: REF_SPEED[name] || 0 }; return c;
+  };
   idleClip = inPlace(byName['Idle_11'] || charGltf.animations[0]); // breathing idle
-  walkClip = inPlace(byName['Walking']); runClip = inPlace(byName['Running']);
-  sprintClip = inPlace(byName['RunFast'] || byName['Running']);    // turbo sprint
+  walkClip = loco('Walking'); runClip = loco('Running');
+  sprintClip = loco('RunFast', byName['Running']) || runClip;      // turbo sprint
   jukeClip = inPlace(byName['Roll_Dodge_1']);                      // juke = dodge roll
   // Tackle = a head-down lunge (just the hit, no roll); defender pops back up
   // to idle when it ends. Sliced to the forward drive.
@@ -551,7 +561,7 @@ async function loadAssets() {
   // robotic. Fall back to the originals if the new pack didn't load.
   idleClips = ['Idle_11', 'Idle_02', 'Idle_03', 'Idle_8'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
   if (!idleClips.length) idleClips = [idleClip];
-  walkClips = ['Walking', 'Casual_Walk', 'Proud_Strut'].map((n) => byName[n] && inPlace(byName[n])).filter(Boolean);
+  walkClips = ['Walking', 'Casual_Walk', 'Proud_Strut'].map((n) => byName[n] && loco(n)).filter(Boolean);
   if (!walkClips.length) walkClips = [walkClip];
   // Touchdown celebrations (one per scorer, picked at character build). These
   // are dynamic (jumps) so keep their vertical motion -> inPlaceY.
@@ -1323,15 +1333,27 @@ const turboBtn = document.getElementById('turbo-btn');
 // to Home Screen there.)
 (function fullscreen() {
   const fsBtn = document.getElementById('fs-btn');
-  if (!fsBtn) return;
   const root = document.documentElement;
+  if (!fsBtn || !root) return;
+  // On iPhone Safari there is NO element-fullscreen API at all, so the button
+  // can't work — hide it and tell the player how to get there instead.
+  const canFs = !!(root.requestFullscreen || root.webkitRequestFullscreen);
+  if (!canFs) { fsBtn.style.display = 'none'; return; }
   const active = () => document.fullscreenElement || document.webkitFullscreenElement;
   const sync = () => fsBtn.classList.toggle('on', !!active());
-  fsBtn.addEventListener('click', (e) => {
-    e.preventDefault(); audio.unlock();
-    if (active()) (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
-    else (root.requestFullscreen || root.webkitRequestFullscreen || (() => {})).call(root);
-  });
+  let lastTouch = 0;
+  const toggle = (e) => {
+    e.preventDefault(); e.stopPropagation(); audio.unlock();
+    const p = active()
+      ? (document.exitFullscreen || document.webkitExitFullscreen).call(document)
+      : (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+    if (p && p.catch) p.catch(() => {}); // ignore rejections (e.g. no user gesture)
+    fsBtn.classList.add('active'); setTimeout(() => fsBtn.classList.remove('active'), 130);
+  };
+  // The rest of the game's controls fire on touchstart; match that so the tap
+  // reliably registers, and guard the synthetic click so it doesn't re-toggle.
+  fsBtn.addEventListener('touchend', (e) => { lastTouch = Date.now(); toggle(e); }, { passive: false });
+  fsBtn.addEventListener('click', (e) => { if (Date.now() - lastTouch < 700) return; toggle(e); });
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('webkitfullscreenchange', sync);
 })();
@@ -3021,6 +3043,13 @@ function updateAnimation(ch, dt) {
   else if (ch.speed > 6) want = 'run';
   else if (ch.speed > 0.5) want = 'walk';
   setClip(ch, want);
+  // Foot-skating fix: drive the gait at the speed it was authored for, so a
+  // planted foot stays put while the body travels (instead of sliding). The
+  // run band churns a touch faster in the BATTLE so it reads as a struggle.
+  if (!inBattle && (want === 'walk' || want === 'run' || want === 'sprint')) {
+    const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
+    if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
+  }
   if (inBattle) applyBattleLean(ch, ch === game.battle.tackler);
   else {
     ch.group.rotation.set(0, ch.heading, 0);
