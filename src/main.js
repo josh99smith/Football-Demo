@@ -3116,7 +3116,6 @@ function updateAnimation(ch, dt) {
     groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
     return;          // motion; lift the root so no joint sinks through the turf
   }
-  ch.group.position.y = 0; // not in a one-shot: clear any lift from the last move
   let want = 'idle';
   if (inBattle) want = 'run';                // churning legs in the wrestle
   else if (ch.speed > 11) want = 'sprint';   // turbo / RunFast
@@ -3144,6 +3143,9 @@ function updateAnimation(ch, dt) {
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
   // Idle variety now comes from real per-player idle clips (see makeCharacter),
   // so no procedural stance offset is layered on top.
+  // Keep any pose out of the turf (no-op for normal locomotion, since the feet
+  // already sit at the calibrated height; only lifts a sunken dive/lunge pose).
+  if (!inBattle) groundClamp(ch);
 }
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
 // contact during the juke window he whiffs right past (see beginTackle).
@@ -3352,9 +3354,19 @@ function updatePlay(dt) {
       // Pre-throw the QB scrambles with the stick; once the ball's in the air
       // the stick steers the BALL instead (updateBall), so the QB holds.
       if (game.state === STATE.LIVE) {
-        const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
-        controlledMove(game.qb, dt, top);
-        if (pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
+        if (game.throwArmed) {
+          // Winding up: plant in the pocket and square up to the targeted WR so
+          // the throw always comes out facing the receiver (not the scramble dir).
+          game.qb.vel.set(0, 0, 0); game.qb.speed = 0;
+          const tgt = game.receivers[game.selected];
+          if (tgt) game.qb.heading = turnToward(game.qb.heading,
+            Math.atan2(tgt.group.position.x - game.qb.group.position.x, tgt.group.position.z - game.qb.group.position.z),
+            TURN_RATE * dt * 3);
+        } else {
+          const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+          controlledMove(game.qb, dt, top);
+          if (pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
+        }
       } else { game.qb.speed = 0; game.qb.vel.set(0, 0, 0); }
       updateOffense(dt); updateDefense();
     } else {
