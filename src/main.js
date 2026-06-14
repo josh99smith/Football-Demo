@@ -252,19 +252,20 @@ function makeCharacter(team) {
   // Offense = original character; defense = its own blue rigged character (or a
   // blue-tinted fallback if that model didn't load). Each keeps its own skin.
   const isDef = team === 'def';
-  const useDefModel = isDef && defTemplate;
-  const model = cloneSkeleton(useDefModel ? defTemplate : charTemplate);
-  model.scale.multiplyScalar(isDef ? DEF_SCALE : SCALE);
-  model.position.y = isDef ? DEF_GROUND_Y : GROUND_Y;
+  // Both teams render from the proven offense model (its head + helmet attach
+  // reliably); the defense is strongly tinted blue. The separate blue GLB looked
+  // headless at runtime (its cloned Head bone wasn't picked up), so we don't use it.
+  const model = cloneSkeleton(charTemplate);
+  model.scale.multiplyScalar(SCALE);
+  model.position.y = GROUND_Y;
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false;
       o.material = o.material.clone();
-      // Tint blue ONLY if we had to fall back to the offense model for defense.
-      if (isDef && !defTemplate) {
-        o.material.color.setHex(0x4f7bff);
-        o.material.emissive = new THREE.Color(0x14336e);
-        o.material.emissiveIntensity = 0.55;
+      if (isDef) { // away "uniform": clear blue body
+        o.material.color.setHex(0x5f8dff);
+        o.material.emissive = new THREE.Color(0x1a3a8c);
+        o.material.emissiveIntensity = 0.6;
       }
       o.material.needsUpdate = true;
     }
