@@ -500,28 +500,43 @@ class FlameEmitter {
   }
 }
 let ballFlame, playerFlame;
-// Per-frame: flame the ON FIRE ball/carrier (orange) and whoever you're turboing
-// (blue). Tapers off smoothly when the condition ends (color=null).
-function updateFlames(dt) {
-  if (!ballFlame) return;
+const _ST_FLAME = ['live', 'air', 'run', 'return', 'loose', 'battle', 'tackle'];
+// Who's on fire right now: {player, pCol(1=orange/2=blue), ballCol}. Shared by
+// the live emitter AND the replay recorder so the fx replay on the right body.
+function computeFlame() {
   const st = game.state;
-  const live = st !== STATE.REPLAY && st !== STATE.DEAD && st !== STATE.RESET;
+  const playing = _ST_FLAME.includes(st);
   const c = game.controlled;
-  const turboOn = live && input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0) && c && !c.ragdolling;
-  // Hot player: the ball handler on offense, your controlled defender on defense.
-  const hot = live ? (game.userOnOffense ? (game.carrier || ball.holder || game.qb) : c) : null;
-  let pcol = null, ptarget = null;
-  if (turboOn) { pcol = FLAME_BLUE; ptarget = c; }                                   // turbo = blue
-  else if (game.onFire && hot && !hot.ragdolling) { pcol = FLAME_ORANGE; ptarget = hot; } // ON FIRE = orange
-  if (ptarget) { const p = ptarget.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pcol, 85); }
-  else playerFlame.update(dt, 0, 0, 0, null);
-  // The ball: blue when its turboing carrier has it, orange when the ON FIRE team carries/throws it.
+  const turboOn = playing && input.turbo && !game.turboLock && (game.onFire || game.turboMeter > 0) && c && !c.ragdolling;
+  const hot = game.userOnOffense ? (game.carrier || ball.holder || game.qb) : c; // ball handler / your defender
+  const fireOn = (playing || st === STATE.DEAD) && game.onFire; // keep flames through the TD celebration
+  let player = null, pCol = 0;
+  if (turboOn) { player = c; pCol = 2; }
+  else if (fireOn && hot && !hot.ragdolling) { player = hot; pCol = 1; }
   const userHasBall = game.userOnOffense && (ball.mode === 'carried' || ball.mode === 'flying');
-  let bcol = null;
-  if (turboOn && (game.carrier === c || ball.holder === c)) bcol = FLAME_BLUE;
-  else if (game.onFire && userHasBall) bcol = FLAME_ORANGE;
-  if (bcol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, bcol, 60); }
+  let ballCol = 0;
+  if (turboOn && (game.carrier === c || ball.holder === c)) ballCol = 2;
+  else if (fireOn && userHasBall) ballCol = 1;
+  return { player, pCol, ballCol };
+}
+function emitFlames(dt, player, pCol, ballCol) {
+  if (!ballFlame) return;
+  if (player) { const p = player.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pCol === 2 ? FLAME_BLUE : FLAME_ORANGE, 85); }
+  else playerFlame.update(dt, 0, 0, 0, null);
+  if (ballCol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, ballCol === 2 ? FLAME_BLUE : FLAME_ORANGE, 60); }
   else ballFlame.update(dt, 0, 0, 0, null);
+}
+// Live (non-replay): ON FIRE ball/carrier orange, turbo player blue; tapers off.
+function updateFlames(dt) {
+  const f = computeFlame();
+  emitFlames(dt, f.player, f.pCol, f.ballCol);
+}
+// During the replay, replay the recorded flame fx on the replayed bodies.
+function driveReplayFlames(dt, fi) {
+  if (!ballFlame) return;
+  const fx = game.replay.fx, e = fx.length ? fx[Math.min(fx.length - 1, Math.max(0, Math.round(fi)))] : null;
+  if (!e) { emitFlames(dt, null, 0, 0); return; }
+  emitFlames(dt, e.pIdx >= 0 ? game.all[e.pIdx] : null, e.pCol, e.ballCol);
 }
 
 // ===========================================================================
@@ -822,7 +837,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer + looping multi-angle cam
+  replay: { frames: [], fx: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -1934,6 +1949,11 @@ function recordFrame() {
     for (const bo of ch.bones) { const p = bo.position, q = bo.quaternion; buf[o++] = p.x; buf[o++] = p.y; buf[o++] = p.z; buf[o++] = q.x; buf[o++] = q.y; buf[o++] = q.z; buf[o++] = q.w; }
   }
   const f = game.replay.frames; f.push(buf); if (f.length > REPLAY_MAX) f.shift();
+  // Capture the flame state too (so ON FIRE / turbo fx replay on the right body).
+  const fs = computeFlame();
+  const fx = game.replay.fx;
+  fx.push({ pIdx: fs.player ? game.all.indexOf(fs.player) : -1, pCol: fs.pCol, ballCol: fs.ballCol });
+  if (fx.length > REPLAY_MAX) fx.shift();
 }
 // Broadcast camera presets the replay cycles through, one per loop (azimuth
 // around the ball, distance, height, fov, slow orbit speed).
@@ -1959,6 +1979,7 @@ function startReplay() {
   r.angleIdx = Math.floor(Math.random() * REPLAY_ANGLES.length);
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
+  document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
   setReplayLabel();
   audio.whistle();
   return true;
@@ -1997,12 +2018,15 @@ function updateReplay(dt) {
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
   if (rpFadeEl) rpFadeEl.style.opacity = r.fade.toFixed(3);
+  driveReplayFlames(dt, r.i); // ON FIRE / turbo flames follow the replayed bodies
 }
 function endReplay() {
   if (game.state !== STATE.REPLAY) return;
   if (replayEl) replayEl.classList.add('hidden');
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
-  game.replay.frames = [];
+  document.body.classList.remove('replay-mode'); // restore the gameplay HUD
+  if (ballFlame) { ballFlame.update(0, 0, 0, 0, null); playerFlame.update(0, 0, 0, 0, null); } // clear replay flames
+  game.replay.frames = []; game.replay.fx = [];
   beginReset(); // possession was already set when the play ended
 }
 // Apply a defensive call to game.defense (on top of the base assignments).
@@ -2021,7 +2045,7 @@ function applyDefCall(call) {
 function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
-  game.replay.frames.length = 0; game.replay.bigHit = false; // fresh footage for this play
+  game.replay.frames.length = 0; game.replay.fx.length = 0; game.replay.bigHit = false; // fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
   game.playClock = 0; game.lastBreak = -10;
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press

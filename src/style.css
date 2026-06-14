@@ -445,6 +445,15 @@ html, body {
 @keyframes scoreFlash { 0% { opacity: 0.65; } 100% { opacity: 0; } }
 
 /* ---------- Instant replay ---------- */
+/* In replay mode, drop ALL the gameplay HUD/controls — only the replay overlay
+   (letterbox + REPLAY tag + CONTINUE) shows. */
+body.replay-mode #hud,
+body.replay-mode #ratecard,
+body.replay-mode #joystick,
+body.replay-mode .action-btn,
+body.replay-mode .mini-btn,
+body.replay-mode #fs-btn,
+body.replay-mode #build-badge { display: none !important; }
 /* Black fade overlay for the cuts between camera angles (opacity driven by JS).
    Sits under the replay chrome so the REPLAY tag / CONTINUE stay visible. */
 #rp-fade { position: fixed; inset: 0; z-index: 31; background: #000; opacity: 0; pointer-events: none; }
