@@ -1971,6 +1971,7 @@ function updateCpuRun(dt, turboOn, actionEdge) {
   if (game.controlled) { const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1); controlledMove(game.controlled, dt, top); }
   updateOffense(dt); updateDefense();
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+  aiCarrierMoves(c, game.defense, game.dir, dt); // CPU hurdles / kicks off the fence too
   checkRunOutcome(); // your defenders tackle the carrier on contact
 }
 // --- Interception runback -------------------------------------------------
@@ -2034,6 +2035,7 @@ function updateReturn(dt, turboOn, fireMul) {
   const top = game.controlled.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
   controlledMove(game.controlled, dt, top);
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
+  aiCarrierMoves(r, game.offense, -game.dir, dt); // returner hurdles chasers / kicks off the fence
   // Outcomes: house call, out of bounds, or run down.
   if (rp.z <= OWN_GOAL_Z) { endReturn('defTD', rp.z); return; } // returner reaches the house (cage keeps him inbounds otherwise)
   for (const o of game.offense) {
@@ -2964,10 +2966,10 @@ function doJuke(ch) {
 
 // A non-ragdolling defender roughly in front of the carrier (within `dist`,
 // aligned with his heading) — the target for a stiff-arm truck.
-function defenderAhead(ch, dist, dotMin) {
+function defenderAhead(ch, dist, dotMin, list = game.defense) {
   const hx = Math.sin(ch.heading), hz = Math.cos(ch.heading);
   let best = null, bestD = dist * dist;
-  for (const d of game.defense) {
+  for (const d of list) {
     if (d.ragdolling) continue;
     const dx = d.group.position.x - ch.group.position.x, dz = d.group.position.z - ch.group.position.z;
     const l = Math.hypot(dx, dz) || 1;
@@ -3028,7 +3030,7 @@ function doHurdle(ch, def) {
 // JUMP OFF THE CAGE — a ball carrier driven into the fence at speed kicks off it,
 // redirecting back inbound (and downfield) with a burst + a beat of immunity,
 // instead of getting pinned to the wall. Parkour vault-with-roll animation.
-function tryCageJump(c) {
+function tryCageJump(c, downDir = game.dir) {
   if (c.cageJumpCd > 0 || c.diveT > 0) return false;
   if (Math.hypot(c.vel.x, c.vel.z) < 6) return false; // need real pace into the wall
   const p = c.group.position, mx = CAGE_X - 1.8, mz = CAGE_Z - 1.8;
@@ -3036,16 +3038,29 @@ function tryCageJump(c) {
   const intoZ = (p.z > mz && c.vel.z > 0) || (p.z < -mz && c.vel.z < 0);
   if (!intoX && !intoZ) return false;
   c.cageJumpCd = 1.7; c.jukeTimer = 0.5; // immunity off the wall
-  const inwardX = p.x > 0 ? -1 : 1, downZ = game.dir; // back toward midfield, still downfield
+  const inwardX = p.x > 0 ? -1 : 1; // back toward midfield, still downfield (downDir)
   const b = c.baseSpeed * 1.35;
   c.vel.x = inwardX * b * (intoX ? 0.8 : 0.4);
-  c.vel.z = downZ * b * (intoZ ? 0.5 : 0.95);
+  c.vel.z = downDir * b * (intoZ ? 0.5 : 0.95);
   c.heading = Math.atan2(c.vel.x, c.vel.z);
   playOneShot(c, c.actions.cagevault ? 'cagevault' : 'juke', 0.6);
   burst(p.x, 1.6, p.z, 0x7fe0ff, 12, 7);
-  audio.juke(); shake.kick(inwardX, downZ, 0.3);
+  audio.juke(); shake.kick(inwardX, downDir, 0.3);
   showBanner('OFF THE WALL!', '#7fe0ff');
   return true;
+}
+// CPU ball-carrier instincts: kick off the fence when driven into it, and
+// occasionally HURDLE a defender square in his path. `opp` = the chasing team,
+// `downDir` = the carrier's downfield direction. Mirrors the player's moves.
+function aiCarrierMoves(c, opp, downDir, dt) {
+  if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
+  if (c.jukeCd > 0) c.jukeCd -= dt;
+  if (c.jukeTimer > 0) c.jukeTimer -= dt;
+  if (tryCageJump(c, downDir)) return;
+  if (c.jukeCd <= 0 && c.speed > 7 && c.actions.vault) {
+    const ahead = defenderAhead(c, 2.2, 0.6, opp);
+    if (ahead && Math.random() < 0.1) doHurdle(c, ahead); // ~once per close approach
+  }
 }
 // LATERAL/PITCH — flick the ball to a trailing teammate (behind the carrier).
 // A bad pitch near coverage can be fumbled (a live ball the defense may grab).
