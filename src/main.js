@@ -278,19 +278,45 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
   jt.position.set(0, 26, HALF_L + 6); jt.rotation.y = Math.PI; scene.add(jt); // behind the +Z end, screen faces the field
 }
 
-// --- Cage: arcade boundary walls (the ball bounces off, no out of bounds) ---
+// --- Cage: tall, grungy chain-link boundary the ball bounces off (no OOB) ---
 {
+  // Weathered chain-link: dark steel diamonds with rust speckle and grime.
   const linkTex = canvasTex(128, 128, (g, w, h) => {
-    g.clearRect(0, 0, w, h); g.strokeStyle = 'rgba(200,215,230,0.5)'; g.lineWidth = 3;
-    for (let i = -h; i < w; i += 16) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i + h, h); g.stroke(); g.beginPath(); g.moveTo(i, h); g.lineTo(i + h, 0); g.stroke(); }
+    g.clearRect(0, 0, w, h);
+    for (let pass = 0; pass < 2; pass++) {
+      g.lineWidth = pass ? 4 : 2.4;
+      g.strokeStyle = pass ? 'rgba(28,34,40,0.55)' : 'rgba(150,165,180,0.55)'; // shadow + steel
+      for (let i = -h; i < w; i += 14) {
+        g.beginPath(); g.moveTo(i, 0); g.lineTo(i + h, h); g.stroke();
+        g.beginPath(); g.moveTo(i, h); g.lineTo(i + h, 0); g.stroke();
+      }
+    }
+    for (let i = 0; i < 240; i++) { // rust + grime speckle
+      g.fillStyle = `rgba(${120 + Math.random() * 80},${50 + Math.random() * 40},${20 + Math.random() * 30},${0.1 + Math.random() * 0.4})`;
+      g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
+    }
+    for (let i = 0; i < 6; i++) { g.fillStyle = `rgba(10,14,18,${0.06 + Math.random() * 0.12})`; g.fillRect(Math.random() * w, Math.random() * h, 30 + Math.random() * 40, 30 + Math.random() * 40); }
   });
   linkTex.wrapS = linkTex.wrapT = THREE.RepeatWrapping;
-  const H = 5;
-  const wallMesh = (w, x, z, ry) => {
-    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.round(w / 4), 2);
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, H),
-      new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.7 }));
+  const H = 7.5;
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x2b3138, metalness: 0.65, roughness: 0.5 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.7, roughness: 0.35, emissive: 0x20262c, emissiveIntensity: 0.4 });
+  const wallMesh = (len, x, z, ry) => {
+    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.round(len / 3), 3);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, H),
+      new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.82 }));
     m.position.set(x, H / 2, z); m.rotation.y = ry; scene.add(m);
+    // Top edge trim (bright rail) + bottom rail + a kick plate.
+    const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, H, z); top.rotation.y = ry; scene.add(top);
+    const bot = new THREE.Mesh(new THREE.BoxGeometry(len, 0.22, 0.22), railMat); bot.position.set(x, 0.15, z); bot.rotation.y = ry; scene.add(bot);
+    const kick = new THREE.Mesh(new THREE.BoxGeometry(len, 0.7, 0.12), railMat); kick.position.set(x, 0.45, z); kick.rotation.y = ry; scene.add(kick);
+    // Posts along the run.
+    const n = Math.max(2, Math.round(len / 10));
+    for (let i = 0; i <= n; i++) {
+      const along = -len / 2 + (len / n) * i;
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, H, 8), railMat);
+      post.position.set(x + Math.cos(ry) * along, H / 2, z - Math.sin(ry) * along); scene.add(post);
+    }
   };
   wallMesh(FIELD_L + 3, CAGE_X, 0, Math.PI / 2); wallMesh(FIELD_L + 3, -CAGE_X, 0, Math.PI / 2); // sidelines
   wallMesh(FIELD_W + 3, 0, CAGE_Z, 0); wallMesh(FIELD_W + 3, 0, -CAGE_Z, 0);                     // end lines
@@ -323,6 +349,18 @@ function makeRing(color) {
 }
 const selRing = makeRing(0xffd54a);
 const ctrlRing = makeRing(0xffffff);
+// Landing indicator: a target reticle on the turf where a thrown/loose ball
+// will come down, so you can anticipate the play.
+const landRing = (() => {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.25, 1.65, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
+  ring.rotation.x = -Math.PI / 2; g.add(ring);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.35, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+  dot.rotation.x = -Math.PI / 2; g.add(dot);
+  g.position.y = 0.06; g.visible = false; scene.add(g); return g;
+})();
 
 // Broadcast lines: line of scrimmage (blue) + first-down (yellow). Each is a
 // bright stripe across the field flanked by tall sideline posts (down markers)
@@ -1801,16 +1839,22 @@ const _zAxis = new THREE.Vector3(0, 0, 1);
 const _hips = new THREE.Vector3();
 // Bounce a live ball off the boundary cage (reflect horizontal velocity, keep
 // it in bounds). Returns true on a wall hit.
-function cageBounce(p, damp) {
+function cageBounce(p, restitution) {
   let hit = false;
-  if (p.x > CAGE_X) { p.x = CAGE_X; ball.vx = -Math.abs(ball.vx) * damp; hit = true; }
-  else if (p.x < -CAGE_X) { p.x = -CAGE_X; ball.vx = Math.abs(ball.vx) * damp; hit = true; }
-  if (p.z > CAGE_Z) { p.z = CAGE_Z; ball.vz = -Math.abs(ball.vz) * damp; hit = true; }
-  else if (p.z < -CAGE_Z) { p.z = -CAGE_Z; ball.vz = Math.abs(ball.vz) * damp; hit = true; }
-  if (hit) { audio.hit(0.22); shake.add(0.05); }
+  if (p.x > CAGE_X) { p.x = CAGE_X; ball.vx = -Math.abs(ball.vx) * restitution; hit = true; }
+  else if (p.x < -CAGE_X) { p.x = -CAGE_X; ball.vx = Math.abs(ball.vx) * restitution; hit = true; }
+  if (p.z > CAGE_Z) { p.z = CAGE_Z; ball.vz = -Math.abs(ball.vz) * restitution; hit = true; }
+  else if (p.z < -CAGE_Z) { p.z = -CAGE_Z; ball.vz = Math.abs(ball.vz) * restitution; hit = true; }
+  if (hit) {
+    // The chain-link soaks up energy: bleed the tangential + vertical speed too,
+    // so the ball clearly slows after a carom.
+    ball.vx *= 0.88; ball.vz *= 0.88; ball.vy *= 0.85;
+    audio.hit(0.25); shake.add(0.06);
+  }
   return hit;
 }
 function updateBall(dt) {
+  if (ball.mode !== 'flying') landRing.visible = false; // landing reticle only mid-flight
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
   if (ball.mode === 'loose') return; // a live fumble — physics handled in updateLoose
   if (ball.mode === 'carried') {
@@ -1859,10 +1903,15 @@ function updateBall(dt) {
     p.z += ball.vz * dt;
     ball.vy -= ball.g * dt;
     p.y += ball.vy * dt;
-    cageBounce(p, 0.7); // bounce a thrown ball off the boundary walls (still live)
+    cageBounce(p, 0.55); // bounce a thrown ball off the boundary (slows it down)
     // Keep the receiver's homing target on the ball's projected landing spot.
     const tRem = Math.max(0.05, ball.flightTime - ball.airTime);
     ball.to.set(p.x + ball.vx * tRem, 0, p.z + ball.vz * tRem);
+    // Landing reticle on the turf where it'll come down (pulses), so you can read the play.
+    landRing.visible = true;
+    landRing.position.set(THREE.MathUtils.clamp(ball.to.x, -CAGE_X, CAGE_X), 0.06, THREE.MathUtils.clamp(ball.to.z, -CAGE_Z, CAGE_Z));
+    const pulse = 1 + Math.sin(performance.now() * 0.012) * 0.12;
+    landRing.scale.set(pulse, pulse, pulse);
     // Nose the long axis (local +Z) along the 3D velocity (the arc tangent) so
     // it tilts up then down, and spiral it about that axis.
     ball.spin += ball.spinRate * dt;
@@ -2270,7 +2319,7 @@ function updateLoose(dt, turboOn, actionEdge) {
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
-  cageBounce(p, 0.6); // a loose ball ricochets off the cage and stays live
+  cageBounce(p, 0.5); // a loose ball ricochets off the cage (and loses pace) and stays live
   // Everyone scrambles to the ball; you drive your nearest man.
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
