@@ -654,7 +654,7 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 // Variety + new-move clips from the merged Meshy pack (assets/animations2.glb).
-let idleClips = [], walkClips = [], celebClips = [];
+let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
@@ -781,6 +781,9 @@ async function loadAssets() {
   vaultClip = byName['Jump_Over_Obstacle_1'] ? inPlaceY(byName['Jump_Over_Obstacle_1'])
     : (byName['Parkour_Vault_2'] ? inPlaceY(byName['Parkour_Vault_2']) : jukeClip);
   cageVaultClip = byName['Parkour_Vault_with_Roll'] ? inPlaceY(byName['Parkour_Vault_with_Roll']) : vaultClip;
+  // Get-ups (played after a ragdoll when walking back to the line) — keep vertical
+  // motion so the body rises off the turf.
+  getUpClips = ['Stand_Up4', 'Stand_Up7'].map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -865,6 +868,7 @@ function makeCharacter(team) {
   if (vaultClip) actions.vault = oneShot(vaultClip);
   if (cageVaultClip) actions.cagevault = oneShot(cageVaultClip);
   if (celebClips.length) actions.celebrate = oneShot(celebClips[(Math.random() * celebClips.length) | 0]); // this player's TD dance
+  if (getUpClips.length) actions.getup = oneShot(getUpClips[(Math.random() * getUpClips.length) | 0]); // pop up after a knockdown
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
@@ -1944,6 +1948,9 @@ const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 // Prepare the next play's roles, formation spots and ball/marker state.
 // teleport=true snaps players to formation (kickoff); false lets them walk back.
 function preparePlay(teleport) {
+  // Who's on the ground? They'll pop up with a get-up before walking back (only
+  // on the jog-back reset, not a kickoff teleport).
+  const downed = teleport ? [] : game.all.filter((ch) => ch.ragdolling || (ch.ragdoll && ch.ragdoll.active));
   clearRagdolls(); // animation clips repose every bone on the next mixer update
   // Never build a formation from a corrupted LOS (would scatter the whole lineup).
   if (!Number.isFinite(game.los)) game.los = THREE.MathUtils.clamp(0, OWN_GOAL_Z + 1, GOAL_Z - 1);
@@ -1961,6 +1968,8 @@ function preparePlay(teleport) {
   setFumbleGlow(false);
   setupPossession();   // assign offense/defense roles for whoever has the ball
   placeFormation(teleport);
+  // Pop the downed players up where they fell (they then jog back during RESET).
+  for (const ch of downed) if (ch.actions.getup) { ch.heading = ch.resetHeading || 0; playOneShot(ch, 'getup', 1.5, true); }
   game.controlled = game.qb; game.carrier = null; game.selected = 0;
   game.returnActive = false; game.returner = null; game.fumbleLost = false;
   ball.mode = 'carried'; ball.holder = game.qb; ball.targetRecv = null;
@@ -1995,6 +2004,7 @@ const beginReset = () => enterReset(false); // after a play (jog back into place
 function updateReset(dt) {
   let settled = true;
   for (const ch of game.all) {
+    if (ch.oneShotT > 0) { ch.vel.set(0, 0, 0); ch.speed = 0; settled = false; continue; } // getting up — stay put until on his feet
     const p = ch.group.position, dx = ch.home.x - p.x, dz = ch.home.z - p.z, dist = Math.hypot(dx, dz);
     if (ch.resetDelay > 0 && dist > 0.6) { // hang back a beat before heading in
       ch.resetDelay -= dt; settled = false;
@@ -2699,7 +2709,7 @@ function updateBall(dt) {
     // Catchable once it has descended into reach. Resolve only when it actually
     // hits the turf (so an overthrow flies to the back/side wall and bounces),
     // with a safety timeout if it caroms around forever.
-    if (ball.vy < 0 && p.y < 2.6 && tryReception()) return;
+    if (ball.vy < 0 && p.y < 3.4 && tryReception()) return; // start the catch higher in the descent so the reach reads on time
     if (p.y <= 0.16 || ball.airTime > ball.flightTime + 3) {
       if (tryReception()) return;
       if (ball.hitFence) { ballLooseFromAir(); return; } // a wall carom is a live loose ball, never incomplete
