@@ -3471,9 +3471,11 @@ function groundClamp(ch) {
   ch.group.position.y = 0;             // measure from the baseline
   ch.group.updateMatrixWorld(true);   // refresh bone world matrices for this pose
   let lo = Infinity;
-  for (const b of ch.bones) { const y = b.matrixWorld.elements[13]; if (y < lo) lo = y; }
+  for (const b of ch.bones) { const y = b.matrixWorld.elements[13]; if (Number.isFinite(y) && y < lo) lo = y; }
   const TARGET = 0.04;                 // keep the lowest joint just above the turf
-  if (lo < TARGET) ch.group.position.y = TARGET - lo; // lift only (jumps stay airborne)
+  // Lift only, and CAP it: a legit ground pose never needs more than ~0.8yd, so a
+  // wild bone can't float the player up "in a plane above the field".
+  if (Number.isFinite(lo) && lo < TARGET) ch.group.position.y = Math.min(TARGET - lo, 0.8);
 }
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them

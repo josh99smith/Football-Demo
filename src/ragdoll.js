@@ -305,7 +305,7 @@ export class TackleRagdoll {
   applyLimits(dt) {
     if (!this.active) return;
     const hx = this.physics.cageHX, hz = this.physics.cageHZ;
-    const VMAX = 60; // cap runaway velocities so a glitch can't fling a body out / go haywire
+    const VMAX = 24; // cap runaway velocities so a glitch can't fling a body out / sky-high
     // Safety floor + hard cage walls: a body can never sink under the turf OR end
     // up outside the cage (belt-and-braces over the collider walls, in case a fast
     // body tunnels through). Velocity is also capped to keep the sim stable.
@@ -324,6 +324,7 @@ export class TackleRagdoll {
       const minY = seg.r * 0.85;
       let cx = t.x, cy = t.y, cz = t.z, hit = false;
       if (cy < minY) { cy = minY; if (v.y < 0) v.y = 0; hit = true; }
+      else if (cy > 8) { cy = 8; if (v.y > 0) v.y = 0; hit = true; } // ceiling: no body floats above the field
       if (hx != null) {
         const mx = hx - seg.r, mz = hz - seg.r;
         if (cx > mx) { cx = mx; if (v.x > 0) v.x = -v.x * 0.3; hit = true; } else if (cx < -mx) { cx = -mx; if (v.x < 0) v.x = -v.x * 0.3; hit = true; }
