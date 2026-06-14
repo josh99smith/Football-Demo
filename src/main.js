@@ -2201,7 +2201,7 @@ function switchControlled() {
   ctrlRing.visible = true;
 }
 const PASS_G = 10.7;      // gravity, yd/s^2 (~9.8 m/s^2)
-const PASS_VMAX = 37;     // arm strength: max launch speed, yd/s (snappier throws)
+const PASS_VMAX = 44;     // arm strength: max launch speed, yd/s (snappier throws)
 const BALL_NUDGE = 7;     // in-flight steering (yd/s^2 of redirect) — ON FIRE only, subtle
 
 // Real ballistics: power sets the launch ANGLE (tap = lofted lob, hold = flat
