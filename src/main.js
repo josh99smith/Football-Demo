@@ -670,7 +670,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  playIndex: 0, defCall: 0, choosing: false, // selected offensive play / defensive call / select open
+  playIndex: 0, defCall: 0, choosing: false, cpuLastPlay: -1, // offense play / def call / select open / CPU's last call
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -689,7 +689,7 @@ const ball = {
   to: new THREE.Vector3(), targetRecv: null,
   // Projectile state while flying.
   vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
-  spin: 0, spinRate: 0,
+  spin: 0, spinRate: 0, hitFence: false,
   // Catch: ball homes into the catcher's hands before the play resolves.
   catcher: null, secureT: 0, intercept: false, holder: null, intRolled: false,
   trail: [], trailHist: [], mats: [], // glowing comet trail (sprite pool) + ball materials
@@ -1593,7 +1593,12 @@ function snap() {
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
   game.cpuQBTimer = game.userOnOffense ? 0 : 1.1 + Math.random() * 0.7;
-  const play = game.userOnOffense ? (PLAYS[game.playIndex] || PLAYS[0]) : PLAYS[Math.floor(Math.random() * PLAYS.length)];
+  let play;
+  if (game.userOnOffense) play = PLAYS[game.playIndex] || PLAYS[0];
+  else { // CPU: mix it up — never run the same concept twice in a row
+    let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
+    game.cpuLastPlay = idx; play = PLAYS[idx];
+  }
   game.receivers.forEach((r, e) => { r.route = play.route(e, r.align.x, game.los); r.wp = 0; r.cutTimer = 0; r.job = 'route'; });
   game.offense.forEach((o) => { if (o.role === 'OL') o.job = 'block'; }); // linemen pass-protect
   game.defense.forEach((d) => {
@@ -1667,7 +1672,7 @@ function throwBall(power) {
   ball.startY = from.y; ball.airTime = 0; ball.flightTime = d / ball._solVh;
   // Spiral tighter/faster with arm strength.
   ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
-  ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false;
+  ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false; ball.hitFence = false;
   ball.mode = 'flying';
   game.state = STATE.AIR; selRing.visible = false;
   // Procedural throwing motion, varied by the throw: face the target and let
@@ -2014,7 +2019,7 @@ function updateBall(dt) {
     p.z += ball.vz * dt;
     ball.vy -= ball.g * dt;
     p.y += ball.vy * dt;
-    cageBounce(p, 0.55); // bounce a thrown ball off the boundary (slows it down)
+    if (cageBounce(p, 0.55)) ball.hitFence = true; // off the fence -> stays LIVE (never incomplete)
     // Keep the receiver's homing target on the ball's projected landing spot.
     const tRem = Math.max(0.05, ball.flightTime - ball.airTime);
     ball.to.set(p.x + ball.vx * tRem, 0, p.z + ball.vz * tRem);
@@ -2037,7 +2042,9 @@ function updateBall(dt) {
     // or when it hits the turf.
     if (ball.vy < 0 && p.y < 2.6 && tryReception()) return;
     if (ball.airTime >= ball.flightTime || p.y <= 0.16) {
-      if (!tryReception()) { ball.mode = 'rest'; endPlay('incomplete', game.los); }
+      if (tryReception()) return;
+      if (ball.hitFence) { ballLooseFromAir(); return; } // a fence carom is a live loose ball, never incomplete
+      ball.mode = 'rest'; endPlay('incomplete', game.los);
     }
   } else if (ball.mode === 'secured') {
     // Home the ball INTO the catcher's hands over a short beat so you see it
@@ -2406,6 +2413,17 @@ function nearestTeamToBall(team) {
 function setFumbleGlow(on) {
   setBallEmissive(on ? 0xffcc33 : 0x000000, on ? 0.9 : 0);
   if (ball.flame) { ball.flame.color.setHex(on ? 0xffd23a : 0xff6622); ball.flame.intensity = on ? 3.5 : (game.onFire ? 2 : 0); ball.flame.distance = on ? 10 : 7; }
+}
+// A pass that caromed off the fence drops in as a LIVE loose ball (scramble),
+// keeping its current bounced velocity — never an incompletion.
+function ballLooseFromAir() {
+  game.state = STATE.LOOSE; game.looseTimer = 5.0;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.g = 24;
+  setFumbleGlow(true); landRing.visible = false;
+  game.controlled = nearestTeamToBall(game.teamA);
+  ctrlRing.visible = true; selRing.visible = false;
+  showBanner('OFF THE FENCE!', '#7fe0ff'); audio.hit(0.4); shake.add(0.15);
+  setStatus('Loose ball — recover it!'); updateButtons();
 }
 function startFumble(carrier, hitX, hitZ) {
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
