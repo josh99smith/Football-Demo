@@ -43,6 +43,8 @@ function gradientCanvas(stops, w, h) {
 }
 let adBoardTex = null;            // scrolling LED advert ring (animated each frame)
 const crowdFlashes = [];          // pool of camera-flash sprites in the stands
+const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by the GLB towers once loaded)
+let towerTemplate = null, wallTemplate = null; // imported stadium props
 function makeAdTexture() {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#070b12'; g.fillRect(0, 0, 1024, 64);
@@ -104,7 +106,7 @@ function makeAdTexture() {
     const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 0.8), lampMat); bank.position.y = 30; g.add(bank);
     g.position.set(sx * 44, 0, sz * 62);
     bank.rotation.y = Math.atan2(-g.position.x, -g.position.z); // face the field center
-    scene.add(g);
+    scene.add(g); stadiumTowerVisuals.push(g); // removed if the GLB tower model loads
     // Each tower actually lights the field (constant cone, no falloff).
     const spot = new THREE.SpotLight(0xfff4d6, 1.6, 0, 0.66, 0.55, 0);
     spot.position.set(g.position.x, 31, g.position.z);
@@ -114,6 +116,33 @@ function makeAdTexture() {
   // The moon: a soft additive glow high in the sky.
   const moon = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeGlowTexture(), color: 0xcfe0ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
   moon.scale.set(34, 34, 1); moon.position.set(-130, 170, 120); scene.add(moon);
+}
+
+// Drop the imported stadium props into the scene once their GLBs have loaded:
+// the corner LIGHT TOWERS (replacing the procedural pole+bank visuals, keeping
+// the spotlights) and a ring of graffiti WALLS just outside the cage, facing in.
+function placeStadiumProps() {
+  const boxOf = (o) => { const b = new THREE.Box3().setFromObject(o); return { size: b.getSize(new THREE.Vector3()), min: b.min }; };
+  if (towerTemplate) {
+    for (const v of stadiumTowerVisuals) scene.remove(v); // swap out the procedural towers
+    const f = boxOf(towerTemplate), S = 34 / f.size.y; // ~34yd tall
+    for (const [x, z] of [[-44, -62], [-44, 62], [44, -62], [44, 62]]) {
+      const t = towerTemplate.clone(true);
+      t.scale.setScalar(S);
+      t.position.set(x, -f.min.y * S, z);   // base on the ground
+      t.rotation.y = Math.atan2(-x, -z);     // aim the lamp bank at the field center
+      t.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; } });
+      scene.add(t);
+    }
+  }
+  if (wallTemplate) {
+    const f = boxOf(wallTemplate), S = 9 / f.size.y, wW = f.size.x * S; // ~9yd tall segments
+    const place = (x, z, ry) => { const w = wallTemplate.clone(true); w.scale.setScalar(S); w.position.set(x, -f.min.y * S, z); w.rotation.y = ry; scene.add(w); };
+    const nz = Math.ceil((HALF_L * 2) / wW); // sidelines (front faces inward toward the field)
+    for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + 2, z, -Math.PI / 2); place(-HALF_W - 2, z, Math.PI / 2); }
+    const nx = Math.ceil((HALF_W * 2) / wW); // end lines
+    for (let i = 0; i < nx; i++) { const x = -HALF_W + wW * (i + 0.5); place(x, HALF_L + 2, Math.PI); place(x, -HALF_L - 2, 0); }
+  }
 }
 
 scene.add(new THREE.HemisphereLight(0x44588f, 0x0c1208, 0.6)); // cool night ambient
@@ -586,6 +615,10 @@ async function loadAssets() {
   try { helmetOffTemplate = (await loadGLB('assets/helmet_off.glb')).scene; } catch (e) { console.warn('off helmet missing', e); }
   try { helmetDefTemplate = (await loadGLB('assets/helmet_def.glb')).scene; } catch (e) { console.warn('def helmet missing', e); }
   try { footballTemplate = (await loadGLB('assets/football.glb')).scene; } catch (e) { console.warn('football model missing', e); }
+  // Imported stadium props (corner light towers + perimeter graffiti walls).
+  try { towerTemplate = (await loadGLB('assets/lighttower.glb')).scene; } catch (e) { console.warn('light tower missing', e); }
+  try { wallTemplate = (await loadGLB('assets/wall.glb')).scene; } catch (e) { console.warn('wall missing', e); }
+  placeStadiumProps();
   // The new merged Meshy pack (idle/walk variety, celebrations, parkour, scoop,
   // diving catch). Stripped to animation-only; same rig, so it drives our model
   // by bone name. Added on top of the original clips (kept for sprint/juke/
