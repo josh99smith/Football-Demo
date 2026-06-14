@@ -41,6 +41,17 @@ function gradientCanvas(stops, w, h) {
   g.fillStyle = grd; g.fillRect(0, 0, w, h);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
+let adBoardTex = null;            // scrolling LED advert ring (animated each frame)
+const crowdFlashes = [];          // pool of camera-flash sprites in the stands
+function makeAdTexture() {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#070b12'; g.fillRect(0, 0, 1024, 64);
+  const ads = [['REAPER ENERGY', '#ff4a2a'], ['BLITZ COLA', '#ffd23a'], ['TURF KING', '#3fe08a'], ['NIGHT OWL TIRES', '#5a8bff'], ['GRIDIRON BANK', '#ff8af0'], ['MESHY MOTORS', '#7fe0ff']];
+  g.font = 'bold 36px Arial Black, sans-serif'; g.textBaseline = 'middle';
+  let x = 10, i = 0;
+  while (x < 1024) { const [t, col] = ads[i++ % ads.length]; g.fillStyle = col; g.fillText(t, x, 34); x += g.measureText(t).width + 70; }
+  const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(7, 1); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+}
 {
   // Night sky: deep blue overhead fading to a city-glow horizon.
   const skyTex = gradientCanvas([[0, '#04060f'], [0.45, '#0a1430'], [0.8, '#172a52'], [1, '#2c3f66']], 8, 256);
@@ -63,10 +74,25 @@ function gradientCanvas(stops, w, h) {
   const stands = new THREE.Mesh(new THREE.CylinderGeometry(96, 80, 34, 56, 1, true),
     new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 }));
   stands.position.y = 13; scene.add(stands);
-  // Dark wall / advertising boards at field level under the stands.
-  const wall = new THREE.Mesh(new THREE.CylinderGeometry(79, 79, 4, 56, 1, true),
-    new THREE.MeshStandardMaterial({ color: 0x12202e, side: THREE.BackSide, roughness: 0.9 }));
-  wall.position.y = 2; scene.add(wall);
+  // Concrete stadium wall under the stands (real brick texture, loaded async).
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a5460, side: THREE.BackSide, roughness: 0.95 });
+  new THREE.TextureLoader().load('assets/brick_diffuse.jpg', (tx) => {
+    tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.repeat.set(46, 2); tx.colorSpace = THREE.SRGBColorSpace;
+    wallMat.map = tx; wallMat.color.setHex(0x7e8590); wallMat.needsUpdate = true;
+  });
+  new THREE.TextureLoader().load('assets/brick_bump.jpg', (tx) => { tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.repeat.set(46, 2); wallMat.bumpMap = tx; wallMat.bumpScale = 0.4; wallMat.needsUpdate = true; });
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(79, 79, 6, 64, 1, true), wallMat);
+  wall.position.y = 3; scene.add(wall);
+  // Animated LED advertising ring just inside the field-level wall.
+  const adRing = new THREE.Mesh(new THREE.CylinderGeometry(71, 71, 2.6, 64, 1, true),
+    new THREE.MeshBasicMaterial({ map: makeAdTexture(), side: THREE.BackSide }));
+  adRing.position.y = 1.5; scene.add(adRing); adBoardTex = adRing.material.map;
+  // Crowd camera flashes: a pool of additive sprites that pop randomly in the stands.
+  const flashTex = makeGlowTexture();
+  for (let i = 0; i < 44; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    s.scale.set(1.4, 1.4, 1); s.userData.f = 0; scene.add(s); crowdFlashes.push(s);
+  }
   // Four light towers in the corners (glowing lamp banks aimed at the field).
   const towerMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.6, metalness: 0.4 });
   const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff6d8, emissive: 0xfff0c8, emissiveIntensity: 2.4 });
@@ -110,6 +136,7 @@ const FIELD_W = 53.3, HALF_W = FIELD_W / 2;
 const FIELD_L = 120, HALF_L = FIELD_L / 2;
 const GOAL_Z = HALF_L - 10;          // +50: offense's target goal line
 const OWN_GOAL_Z = -(HALF_L - 10);   // -50
+const CAGE_X = HALF_W + 1.5, CAGE_Z = HALF_L + 1.5; // arcade boundary walls (no out of bounds)
 
 const turfMats = []; // {mat, rx, ry} — get the grass map once it loads
 function buildField() {
@@ -171,6 +198,14 @@ new THREE.TextureLoader().load('assets/grass.jpg', (tex) => {
   for (const { mat, rx, ry } of turfMats) {
     const tt = tex.clone(); tt.needsUpdate = true; tt.wrapS = tt.wrapT = THREE.RepeatWrapping; tt.repeat.set(rx, ry);
     mat.map = tt; mat.needsUpdate = true;
+  }
+});
+// Subtle turf relief (grayscale bump) so the grass catches the floodlights.
+new THREE.TextureLoader().load('assets/disturb.jpg', (tex) => {
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  for (const { mat, rx, ry } of turfMats) {
+    const tt = tex.clone(); tt.needsUpdate = true; tt.wrapS = tt.wrapT = THREE.RepeatWrapping; tt.repeat.set(rx, ry);
+    mat.bumpMap = tt; mat.bumpScale = 0.08; mat.needsUpdate = true;
   }
 });
 // Optional custom field texture: drop a JPEG/PNG at assets/field.png (or .jpg).
@@ -241,6 +276,30 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
   screen.position.z = 0.65; jt.add(screen);
   for (const sx of [-1, 1]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 22, 8), frameMat); pole.position.set(sx * 9, -17, 0); jt.add(pole); }
   jt.position.set(0, 26, HALF_L + 6); jt.rotation.y = Math.PI; scene.add(jt); // behind the +Z end, screen faces the field
+}
+
+// --- Cage: arcade boundary walls (the ball bounces off, no out of bounds) ---
+{
+  const linkTex = canvasTex(128, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h); g.strokeStyle = 'rgba(200,215,230,0.5)'; g.lineWidth = 3;
+    for (let i = -h; i < w; i += 16) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i + h, h); g.stroke(); g.beginPath(); g.moveTo(i, h); g.lineTo(i + h, 0); g.stroke(); }
+  });
+  linkTex.wrapS = linkTex.wrapT = THREE.RepeatWrapping;
+  const H = 5;
+  const wallMesh = (w, x, z, ry) => {
+    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.round(w / 4), 2);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, H),
+      new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.7 }));
+    m.position.set(x, H / 2, z); m.rotation.y = ry; scene.add(m);
+  };
+  wallMesh(FIELD_L + 3, CAGE_X, 0, Math.PI / 2); wallMesh(FIELD_L + 3, -CAGE_X, 0, Math.PI / 2); // sidelines
+  wallMesh(FIELD_W + 3, 0, CAGE_Z, 0); wallMesh(FIELD_W + 3, 0, -CAGE_Z, 0);                     // end lines
+  // Pylons at the four corners of each end zone.
+  const pylMat = new THREE.MeshStandardMaterial({ color: 0xff7a1a, emissive: 0xff5a00, emissiveIntensity: 0.8 });
+  for (const zz of [GOAL_Z, HALF_L, OWN_GOAL_Z, -HALF_L]) for (const xx of [-HALF_W + 0.3, HALF_W - 0.3]) {
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 8), pylMat);
+    p.position.set(xx, 0.55, zz); scene.add(p);
+  }
 }
 function drawJumbo(quarter, clock, scoreLine, downLine) {
   const key = quarter + clock + scoreLine + downLine;
@@ -1038,9 +1097,9 @@ function applySteer(ch, dt) {
   clampToField(ch);
 }
 function clampToField(ch) {
-  const p = ch.group.position;
-  p.x = THREE.MathUtils.clamp(p.x, -HALF_W - 3, HALF_W + 3);
-  p.z = THREE.MathUtils.clamp(p.z, -HALF_L + 0.5, HALF_L - 0.5);
+  const p = ch.group.position; // the cage keeps everyone in bounds
+  p.x = THREE.MathUtils.clamp(p.x, -CAGE_X + 0.4, CAGE_X - 0.4);
+  p.z = THREE.MathUtils.clamp(p.z, -CAGE_Z + 0.4, CAGE_Z - 0.4);
 }
 
 // ===========================================================================
@@ -1571,8 +1630,7 @@ function updateReturn(dt, turboOn, fireMul) {
   controlledMove(game.controlled, dt, top);
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
   // Outcomes: house call, out of bounds, or run down.
-  if (rp.z <= OWN_GOAL_Z) { endReturn('defTD', rp.z); return; }
-  if (Math.abs(rp.x) > HALF_W) { endReturn('tackle', rp.z); return; }
+  if (rp.z <= OWN_GOAL_Z) { endReturn('defTD', rp.z); return; } // returner reaches the house (cage keeps him inbounds otherwise)
   for (const o of game.offense) {
     if (o.ragdolling) continue;
     if (Math.hypot(o.group.position.x - rp.x, o.group.position.z - rp.z) <= TACKLE_R) { tackleReturner(o); return; }
@@ -1694,6 +1752,17 @@ const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new T
 const _zAxis = new THREE.Vector3(0, 0, 1);
 
 const _hips = new THREE.Vector3();
+// Bounce a live ball off the boundary cage (reflect horizontal velocity, keep
+// it in bounds). Returns true on a wall hit.
+function cageBounce(p, damp) {
+  let hit = false;
+  if (p.x > CAGE_X) { p.x = CAGE_X; ball.vx = -Math.abs(ball.vx) * damp; hit = true; }
+  else if (p.x < -CAGE_X) { p.x = -CAGE_X; ball.vx = Math.abs(ball.vx) * damp; hit = true; }
+  if (p.z > CAGE_Z) { p.z = CAGE_Z; ball.vz = -Math.abs(ball.vz) * damp; hit = true; }
+  else if (p.z < -CAGE_Z) { p.z = -CAGE_Z; ball.vz = Math.abs(ball.vz) * damp; hit = true; }
+  if (hit) { audio.hit(0.22); shake.add(0.05); }
+  return hit;
+}
 function updateBall(dt) {
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
   if (ball.mode === 'loose') return; // a live fumble — physics handled in updateLoose
@@ -1743,6 +1812,7 @@ function updateBall(dt) {
     p.z += ball.vz * dt;
     ball.vy -= ball.g * dt;
     p.y += ball.vy * dt;
+    cageBounce(p, 0.7); // bounce a thrown ball off the boundary walls (still live)
     // Keep the receiver's homing target on the ball's projected landing spot.
     const tRem = Math.max(0.05, ball.flightTime - ball.airTime);
     ball.to.set(p.x + ball.vx * tRem, 0, p.z + ball.vz * tRem);
@@ -1862,7 +1932,7 @@ function tryReception() {
 function checkRunOutcome() {
   const c = game.carrier.group.position;
   if (reachedGoal(c.z)) { endPlay('TD', c.z); return; }
-  if (Math.abs(c.x) > HALF_W || Math.abs(c.z) > HALF_L) { endPlay('oob', c.z); return; }
+  // No out of bounds — the cage keeps the carrier in (clampToField).
   for (const db of game.defense) {
     if (db.ragdolling) continue;
     if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { beginTackle(db); return; }
@@ -2153,7 +2223,7 @@ function updateLoose(dt, turboOn, actionEdge) {
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
-  if (Math.abs(p.x) > HALF_W || Math.abs(p.z) > HALF_L) { recoverDead(p.z); return; } // out of bounds
+  cageBounce(p, 0.6); // a loose ball ricochets off the cage and stays live
   // Everyone scrambles to the ball; you drive your nearest man.
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
@@ -2739,6 +2809,19 @@ function updateCamera(dt) {
 // ===========================================================================
 // Loop
 // ===========================================================================
+// Living stadium: scroll the LED ads and pop random crowd camera flashes.
+function updateAmbience(dt) {
+  if (adBoardTex) adBoardTex.offset.x = (adBoardTex.offset.x + dt * 0.06) % 1;
+  if (crowdFlashes.length) {
+    if (Math.random() < 0.5) {
+      const s = crowdFlashes[(Math.random() * crowdFlashes.length) | 0];
+      const th = Math.random() * Math.PI * 2, r = 84;
+      s.position.set(Math.cos(th) * r, 14 + Math.random() * 16, Math.sin(th) * r);
+      s.userData.f = 1;
+    }
+    for (const s of crowdFlashes) if (s.userData.f > 0) { s.userData.f -= dt * 3.5; s.material.opacity = Math.max(0, s.userData.f); }
+  }
+}
 const clock = new THREE.Clock();
 function animate() {
   const realDt = Math.min(clock.getDelta(), 0.05);
@@ -2759,6 +2842,7 @@ function animate() {
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
   }
 
+  updateAmbience(realDt);
   updateCamera(realDt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
