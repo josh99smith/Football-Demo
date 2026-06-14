@@ -53,12 +53,14 @@
   <!-- Big center-screen hit/score callout -->
   <div id="banner"></div>
 
-  <!-- Instant-replay broadcast overlay (letterbox + tag) -->
+  <!-- Instant-replay broadcast overlay: loops the play from different camera
+       angles with fade cuts until you continue. -->
+  <div id="rp-fade"></div>
   <div id="replay" class="hidden">
     <div class="rp-bar rp-top"></div>
     <div class="rp-bar rp-bottom"></div>
-    <div class="rp-tag"><span class="rp-dot"></span>INSTANT REPLAY</div>
-    <div class="rp-skip">tap to skip</div>
+    <div class="rp-tag"><span class="rp-dot"></span>INSTANT REPLAY<span id="rp-angle"></span></div>
+    <button id="rp-continue" class="rp-continue">CONTINUE&nbsp;▸</button>
   </div>
 
   <!-- 1-on-1 break-tackle battle (mash to break free) -->

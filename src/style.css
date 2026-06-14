@@ -413,6 +413,9 @@ html, body {
 @keyframes scoreFlash { 0% { opacity: 0.65; } 100% { opacity: 0; } }
 
 /* ---------- Instant replay ---------- */
+/* Black fade overlay for the cuts between camera angles (opacity driven by JS).
+   Sits under the replay chrome so the REPLAY tag / CONTINUE stay visible. */
+#rp-fade { position: fixed; inset: 0; z-index: 31; background: #000; opacity: 0; pointer-events: none; }
 #replay { position: fixed; inset: 0; z-index: 32; pointer-events: auto; }
 #replay.hidden { display: none; }
 #replay .rp-bar { position: fixed; left: 0; right: 0; height: 9vh; background: #000; }
@@ -425,7 +428,20 @@ html, body {
 }
 #replay .rp-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: rpBlink 1s steps(1) infinite; }
 @keyframes rpBlink { 50% { opacity: 0.2; } }
-#replay .rp-skip { position: fixed; bottom: calc(9vh + 10px); right: max(16px, env(safe-area-inset-right)); color: rgba(255,255,255,0.6); font-size: 12px; letter-spacing: 0.5px; }
+/* The angle name (SIDELINE / SKY CAM / …), pinned after the tag. */
+#rp-angle { font-style: normal; font-weight: 700; letter-spacing: 1px; font-size: 0.78em; color: var(--accent); }
+/* Continue button — tap it (or anywhere) to leave the replay loop. */
+.rp-continue {
+  position: fixed; bottom: calc(9vh + 12px); right: max(16px, env(safe-area-inset-right));
+  padding: 10px 18px; border-radius: 22px;
+  font-family: inherit; font-weight: 800; font-style: italic; letter-spacing: 1px;
+  font-size: clamp(13px, 3vw, 16px); color: #06120b;
+  background: var(--accent); border: 2px solid rgba(255,255,255,0.6);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5); cursor: pointer; touch-action: manipulation;
+  animation: rpPulse 1.4s ease-in-out infinite;
+}
+.rp-continue:active { transform: scale(0.93); }
+@keyframes rpPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
 
 /* ---------- Player ratings card ---------- */
 #ratecard {

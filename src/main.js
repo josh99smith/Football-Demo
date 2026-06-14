@@ -738,7 +738,7 @@ const game = {
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], i: 0, hold: 0, angle: 0, bigHit: false }, // instant-replay buffer + cam
+  replay: { frames: [], i: 0, hold: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -1789,6 +1789,12 @@ function finalizeReset() {
 // it back in slow motion from a cinematic broadcast angle.
 const REPLAY_MAX = 320; // ~5s at 60fps
 const replayEl = document.getElementById('replay');
+// Tap anywhere on the replay (or the CONTINUE button) to leave the loop.
+if (replayEl) {
+  const cont = (e) => { e.preventDefault(); audio.unlock(); endReplay(); };
+  replayEl.addEventListener('touchstart', cont, { passive: false });
+  replayEl.addEventListener('mousedown', cont);
+}
 // Capture the FINAL pose each frame as raw bone transforms (group + every bone),
 // so locomotion, procedural arm poses AND ragdolls all replay exactly. A frame
 // is one flat Float32Array: [ball pos3+quat4][per player: group pos3+quat4 + each
@@ -1806,12 +1812,31 @@ function recordFrame() {
   }
   const f = game.replay.frames; f.push(buf); if (f.length > REPLAY_MAX) f.shift();
 }
+// Broadcast camera presets the replay cycles through, one per loop (azimuth
+// around the ball, distance, height, fov, slow orbit speed).
+const REPLAY_ANGLES = [
+  { name: 'SIDELINE',  az: Math.PI * 0.42,  dist: 13, height: 3.4, fov: 40, orbit: 0.0016 },
+  { name: 'SKY CAM',   az: Math.PI * 0.25,  dist: 11, height: 15,  fov: 46, orbit: 0.0012 },
+  { name: 'REVERSE',   az: -Math.PI * 0.42, dist: 13, height: 3.4, fov: 40, orbit: -0.0016 },
+  { name: 'END ZONE',  az: 0,               dist: 16, height: 4.2, fov: 38, orbit: 0.0009 },
+  { name: 'LOW ANGLE', az: Math.PI * 0.7,   dist: 9,  height: 1.7, fov: 50, orbit: 0.0018 },
+];
+const rpFadeEl = document.getElementById('rp-fade');
+const rpAngleEl = document.getElementById('rp-angle');
+function setReplayLabel() {
+  const r = game.replay;
+  if (rpAngleEl) rpAngleEl.textContent = `${REPLAY_ANGLES[r.angleIdx].name}${r.loops > 0 ? ` · #${r.loops + 1}` : ''}`;
+}
 function startReplay() {
   if (game.replay.frames.length < 40) return false; // not enough footage — skip
   clearRagdolls(); // physics off; the recorded bone transforms ARE the pose
-  game.state = STATE.REPLAY; game.replay.i = 0; game.replay.hold = 0;
-  game.replay.angle = (Math.random() < 0.5 ? 1 : -1) * (Math.PI * 0.42); // low ~3/4 sideline angle
+  const r = game.replay;
+  game.state = STATE.REPLAY;
+  r.i = 0; r.hold = 0; r.fade = 0; r.loops = 0; r.phase = 'play'; r.snap = true;
+  r.angleIdx = Math.floor(Math.random() * REPLAY_ANGLES.length);
+  if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
+  setReplayLabel();
   audio.whistle();
   return true;
 }
@@ -1824,19 +1849,36 @@ function applyReplayFrame(fi) {
     for (const bo of ch.bones) { bo.position.set(buf[o++], buf[o++], buf[o++]); bo.quaternion.set(buf[o++], buf[o++], buf[o++], buf[o++]); }
   }
 }
+// Loops the play forever from a fresh camera angle each pass, with a black fade
+// cut between angles. Exits only when the player taps CONTINUE (endReplay).
 function updateReplay(dt) {
-  const f = game.replay.frames;
-  game.replay.i += 0.6; // ~0.6x slow-mo playback
-  if (game.replay.i >= f.length - 1) {
-    applyReplayFrame(f.length - 1);
-    game.replay.hold += dt;
-    if (game.replay.hold > 1.3) endReplay();
-    return;
+  const r = game.replay, f = r.frames, last = f.length - 1;
+  if (r.phase === 'play') {
+    r.i += 0.6; // ~0.6x slow-mo
+    if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
+    applyReplayFrame(r.i);
+  } else if (r.phase === 'hold') {
+    applyReplayFrame(last);
+    r.hold += dt;
+    if (r.hold > 0.8) r.phase = 'fadeout'; // freeze on the result, then cut
+  } else if (r.phase === 'fadeout') {
+    applyReplayFrame(last);
+    r.fade = Math.min(1, r.fade + dt * 2.6);
+    if (r.fade >= 1) { // fully black — switch angle and restart the play
+      r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.loops++;
+      r.i = 0; r.snap = true; r.phase = 'fadein'; setReplayLabel();
+    }
+  } else { // fadein: replay runs while we fade back up from black
+    r.i += 0.6; applyReplayFrame(Math.min(r.i, last));
+    r.fade = Math.max(0, r.fade - dt * 2.6);
+    if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
-  applyReplayFrame(game.replay.i);
+  if (rpFadeEl) rpFadeEl.style.opacity = r.fade.toFixed(3);
 }
 function endReplay() {
+  if (game.state !== STATE.REPLAY) return;
   if (replayEl) replayEl.classList.add('hidden');
+  if (rpFadeEl) rpFadeEl.style.opacity = '0';
   game.replay.frames = [];
   beginReset(); // possession was already set when the play ended
 }
@@ -3347,7 +3389,7 @@ function updatePlay(dt) {
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
   // Record footage while the ball is live (for the touchdown replay).
-  if (game.state !== STATE.PRESNAP && game.state !== STATE.DEAD && game.state !== STATE.RESET) recordFrame();
+  if (game.state !== STATE.PRESNAP && game.state !== STATE.DEAD && game.state !== STATE.RESET && game.state !== STATE.REPLAY) recordFrame();
 
   if (selRing.visible && game.receivers[game.selected]) {
     const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
@@ -3409,13 +3451,16 @@ function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
 
 function updateCamera(dt) {
   if (game.state === STATE.REPLAY) {
-    // Cinematic broadcast shot: a low, tight angle that slowly orbits the ball.
+    // Cinematic broadcast shot: the current preset angle, slowly orbiting the
+    // ball. On an angle cut (r.snap, set while the screen is black) we jump the
+    // camera so the new shot is already framed when we fade back up.
+    const r = game.replay, ang = REPLAY_ANGLES[r.angleIdx];
     const b = ball.mesh.position;
-    const a = game.replay.angle + game.replay.i * 0.0016; // gentle dolly/orbit
-    _tp.set(b.x + Math.sin(a) * 13, 3.4, b.z + Math.cos(a) * 13);
-    cam.pos.lerp(_tp, Math.min(1, dt * 3));
-    cam.lookCur.lerp(b, Math.min(1, dt * 5));
-    const wantFov = 40; if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
+    const a = ang.az + r.i * ang.orbit;
+    _tp.set(b.x + Math.sin(a) * ang.dist, ang.height, b.z + Math.cos(a) * ang.dist);
+    if (r.snap) { cam.pos.copy(_tp); cam.lookCur.copy(b); r.snap = false; }
+    else { cam.pos.lerp(_tp, Math.min(1, dt * 3)); cam.lookCur.lerp(b, Math.min(1, dt * 5)); }
+    if (Math.abs(camera.fov - ang.fov) > 0.01) { camera.fov = ang.fov; camera.updateProjectionMatrix(); }
     camera.position.copy(cam.pos); camera.lookAt(cam.lookCur);
     sun.position.set(b.x + 40, 70, b.z + 20); sun.target.position.set(b.x, 0, b.z);
     return;
