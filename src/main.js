@@ -1954,7 +1954,7 @@ function preparePlay(teleport) {
   game.controlled = game.qb; game.carrier = null; game.selected = 0;
   game.returnActive = false; game.returner = null; game.fumbleLost = false;
   ball.mode = 'carried'; ball.holder = game.qb; ball.targetRecv = null;
-  ball.catcher = null; ball.secureT = 0; ball.intercept = false;
+  ball.catcher = null; ball.secureT = 0; ball.intercept = false; ball.fromFence = false;
   selRing.visible = false; ctrlRing.visible = false;
   losLine.position.z = game.los;
   firstDownLine.position.z = THREE.MathUtils.clamp(game.firstDown, -HALF_L + 1, HALF_L - 1);
@@ -2777,15 +2777,10 @@ function tryReception() {
   for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
 
   const dbBall = bestDef && bestDef.rt ? bestDef.rt.skill : 0.55; // DB ball skills (hands/timing)
-  // No receiver in catching range yet — but a defender right on the ball can
-  // still jump it (skilled DBs more often). Otherwise keep flying.
-  if (!bestR) {
-    if (bestDef && dD <= INTERCEPT_R && !ball.intRolled) {
-      ball.intRolled = true; // one roll per throw, not per frame
-      if (Math.random() < 0.18 + dbBall * 0.32) { startSecure(bestDef, true); return true; }
-    }
-    return false;
-  }
+  // No receiver in catching range — keep it flying. Defenders never pick it out
+  // of the air: an interception only happens when an overthrow caroms off the
+  // FENCE and a defender recovers the live loose ball (see ballLooseFromAir).
+  if (!bestR) return false;
 
   // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
@@ -2802,8 +2797,7 @@ function tryReception() {
   if (game.onFire) pCatch += 0.12;
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
-  if (dD <= INTERCEPT_R && Math.random() < 0.16 + dbBall * 0.32) { startSecure(bestDef, true); return true; } // pick
-  passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away
+  passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away (no direct pick — only off the fence)
 }
 function checkRunOutcome() {
   const c = game.carrier.group.position;
@@ -3193,6 +3187,7 @@ function setFumbleGlow(on) {
 function ballLooseFromAir() {
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
   ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.g = 24;
+  ball.fromFence = true; // a defense recovery of THIS loose ball is an interception
   setFumbleGlow(true); landRing.visible = false;
   game.controlled = nearestTeamToBall(game.teamA);
   ctrlRing.visible = true; selRing.visible = false;
@@ -3202,7 +3197,7 @@ function ballLooseFromAir() {
 function startFumble(carrier, hitX, hitZ) {
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
   const cp = carrier.group.position;
-  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.fromFence = false;
   ball.mesh.position.set(cp.x, 1.2, cp.z);
   const ang = Math.atan2(hitX, hitZ) + (Math.random() - 0.5) * 1.2, sp = 5 + Math.random() * 5;
   ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 5.5 + Math.random() * 3.5;
@@ -3266,7 +3261,12 @@ function recoverFumble(ch) {
   audio.catch(); shake.add(0.25);
   const spotZ = ch.group.position.z;
   if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense keeps it
-  else { showBanner('TURNOVER!', '#5a8bff'); audio.cheer(0.5); endPlay('fumble', spotZ); }          // defense takes it
+  else if (ball.fromFence) {
+    // Defense came up with an overthrow that caromed off the fence = INTERCEPTION.
+    showBanner('INTERCEPTED!', '#ff5a3a'); audio.cheer(0.5);
+    if (game.userOnOffense) beginReturn(ch);            // CPU runs the pick back; you chase
+    else endPlay('intercept', spotZ);                   // your pick — you get it next snap
+  } else { showBanner('TURNOVER!', '#5a8bff'); audio.cheer(0.5); endPlay('fumble', spotZ); } // a real fumble
 }
 function recoverDead(spotZ) {
   setFumbleGlow(false); ball.mode = 'rest';
