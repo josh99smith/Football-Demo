@@ -3222,6 +3222,7 @@ function ballLooseFromAir() {
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
   ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.g = 24;
   ball.fromFence = true; // a defense recovery of THIS loose ball is an interception
+  ball.grabCd = 0.55;    // let it bounce before anyone can fall on it
   setFumbleGlow(true); landRing.visible = false;
   game.controlled = nearestTeamToBall(game.teamA);
   ctrlRing.visible = true; selRing.visible = false;
@@ -3231,7 +3232,7 @@ function ballLooseFromAir() {
 function startFumble(carrier, hitX, hitZ) {
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
   const cp = carrier.group.position;
-  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.fromFence = false;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.fromFence = false; ball.grabCd = 0.55; // let it bounce before anyone can fall on it
   ball.mesh.position.set(cp.x, 1.2, cp.z);
   const ang = Math.atan2(hitX, hitZ) + (Math.random() - 0.5) * 1.2, sp = 5 + Math.random() * 5;
   ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 5.5 + Math.random() * 3.5;
@@ -3246,16 +3247,27 @@ function startFumble(carrier, hitX, hitZ) {
 }
 function updateLoose(dt, turboOn, actionEdge) {
   const p = ball.mesh.position;
-  // Bouncing, glowing loose ball.
+  if (ball.grabCd > 0) ball.grabCd -= dt;
+  // Bouncing, glowing loose ball — lively and unpredictable.
   ball.vy -= ball.g * dt;
   p.x += ball.vx * dt; p.y += ball.vy * dt; p.z += ball.vz * dt;
   const gy = 0.22;
-  if (p.y <= gy) { p.y = gy; if (ball.vy < 0) { ball.vy = -ball.vy * 0.45; if (ball.vy < 1.4) ball.vy = 0; } ball.vx *= 0.62; ball.vz *= 0.62; }
-  ball.vx *= (1 - dt * 0.85); ball.vz *= (1 - dt * 0.85);
+  if (p.y <= gy) {
+    p.y = gy;
+    if (ball.vy < 0) { ball.vy = -ball.vy * 0.6; if (ball.vy < 1.0) ball.vy = 0; } // bouncier
+    ball.vx *= 0.8; ball.vz *= 0.8;
+    // Erratic squirt off the point of the ball — a fumble takes crazy hops.
+    if (Math.abs(ball.vy) > 0.8 || Math.hypot(ball.vx, ball.vz) > 1.2) {
+      const a = Math.random() * Math.PI * 2, k = 1.5 + Math.random() * 4.5;
+      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k;
+      if (ball.vy < 1.5) ball.vy += Math.random() * 3; // occasional pop up
+    }
+  }
+  ball.vx *= (1 - dt * 0.5); ball.vz *= (1 - dt * 0.5); // rolls a while
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
-  cageBounce(p, 0.5); // a loose ball ricochets off the cage (and loses pace) and stays live
+  cageBounce(p, 0.6); // a loose ball ricochets off the cage and stays live
   // Everyone scrambles to the ball; you drive your nearest man.
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
@@ -3265,7 +3277,7 @@ function updateLoose(dt, turboOn, actionEdge) {
   if (game.controlled) {
     const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1);
     controlledMove(game.controlled, dt, top);
-    if (actionEdge) { // dive on the ball — extends your reach for a beat
+    if (actionEdge) { // dive on the ball — extends your reach + recovery odds for a beat
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
       o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
       o.recoverT = 0.45;
@@ -3274,16 +3286,26 @@ function updateLoose(dt, turboOn, actionEdge) {
     }
   }
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
-  // Recovery: a player on the low ball falls on it (a dive reaches farther).
-  if (p.y < 1.3) {
+  // Recovery: only a LOW, settling ball can be fallen on — and even then it can be
+  // BOBBLED loose again (random). A hot, squirting ball can't be corralled at all.
+  const hsp = Math.hypot(ball.vx, ball.vz);
+  if (ball.grabCd <= 0 && p.y < 1.0 && hsp < 6.5) {
     let rec = null, recD = Infinity;
     for (const ch of game.all) {
       if (ch.ragdolling) continue;
-      const reach = ch.recoverT > 0 ? 2.3 : 1.3;
+      const reach = ch.recoverT > 0 ? 1.9 : 1.0;
       const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
       if (d <= reach && d < recD) { recD = d; rec = ch; }
     }
-    if (rec) { recoverFumble(rec); return; }
+    if (rec) {
+      const settle = THREE.MathUtils.clamp(1 - hsp / 6.5, 0, 1); // 0 hot .. 1 dead
+      const pGet = 0.2 + settle * 0.45 + (rec.recoverT > 0 ? 0.28 : 0); // diving + a dead ball = near-sure
+      if (Math.random() < pGet) { recoverFumble(rec); return; }
+      // MUFFED — kick it loose again with a random squirt; brief grab cooldown.
+      const a = Math.random() * Math.PI * 2, k = 3.5 + Math.random() * 5;
+      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k; ball.vy = 2.5 + Math.random() * 3.5;
+      ball.grabCd = 0.4; rec.recoverT = 0; shake.add(0.12);
+    }
   }
   game.looseTimer -= dt;
   if (game.looseTimer <= 0) recoverDead(p.z);
