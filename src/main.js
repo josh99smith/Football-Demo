@@ -103,6 +103,42 @@ function makeAdTexture() {
   const adRing = new THREE.Mesh(new THREE.CylinderGeometry(95, 95, 6, 64, 1, true),
     new THREE.MeshBasicMaterial({ map: makeAdTexture(), side: THREE.BackSide }));
   adRing.position.y = 30; scene.add(adRing); adBoardTex = adRing.material.map;
+  // Cut-out fans: real individuals (sliced from a photo, dark background keyed
+  // out) as billboard sprites scattered randomly across rows in the bowl, in
+  // front of the crowd texture — gives the stands real, varied people with depth.
+  {
+    const AC = 8, AR = 5, NCELLS = 40;       // atlas grid
+    new THREE.TextureLoader().load('assets/fans.png', (atlas) => {
+      const img = atlas.image;                // slice each cell into its own canvas texture (robust)
+      const cw = img.width / AC, ch = img.height / AR;
+      const mats = [];                        // one material per individual fan
+      for (let i = 0; i < NCELLS; i++) {
+        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+        cv.getContext('2d').drawImage(img, (i % AC) * cw, Math.floor(i / AC) * ch, cw, ch, 0, 0, cw, ch);
+        const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+        mats.push(new THREE.SpriteMaterial({ map: t, transparent: true, alphaTest: 0.4, depthWrite: true, fog: true }));
+      }
+      // Rake them up the bowl on a cone a few units INSIDE the wall so they sit
+      // clearly in front of the crowd texture (bowl wall: r80@y-4 -> r96@y30).
+      const ROWS_N = 7, PER_ROW = 74;         // ~520 fans in tiers around the bowl
+      const wallR = (y) => 80 + (y + 4) / 34 * 16;
+      for (let r = 0; r < ROWS_N; r++) {
+        const f = r / (ROWS_N - 1);
+        const yb = 2 + f * 23;                // 2 .. 25 up the tiers
+        for (let k = 0; k < PER_ROW; k++) {
+          const a = (k / PER_ROW) * Math.PI * 2 + r * 0.04 + (Math.random() - 0.5) * 0.05;
+          const y = yb + (Math.random() - 0.5) * 1.2;
+          const rr = wallR(y) - 4.5 - Math.random() * 1.5; // tuck inside the wall
+          const s = new THREE.Sprite(mats[(Math.random() * NCELLS) | 0]);
+          s.center.set(0.5, 0);               // anchor at the feet
+          const h = 3.0 + Math.random() * 0.9; // person height
+          s.scale.set(h * 0.45, h, 1);
+          s.position.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
+          scene.add(s);
+        }
+      }
+    });
+  }
   // Crowd camera flashes: a pool of additive sprites that pop randomly in the stands.
   const flashTex = makeGlowTexture();
   for (let i = 0; i < 44; i++) {
