@@ -44,6 +44,8 @@ function gradientCanvas(stops, w, h) {
 let adBoardTex = null;            // scrolling LED advert ring (animated each frame)
 const crowdFlashes = [];          // pool of camera-flash sprites in the stands
 const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by the GLB towers once loaded)
+const towerGlows = [];            // additive bloom halos at the lamp banks (fake bloom + a slow flare twinkle)
+let _glowTex = null;              // shared glow texture for the lamp bloom halos (lazily built)
 let towerTemplate = null, wallTemplate = null, cartTemplate = null; // imported stadium props
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
 // one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
@@ -163,6 +165,10 @@ function makeAdTexture() {
     spot.position.set(g.position.x, 31, g.position.z);
     spot.target.position.set(g.position.x * 0.12, 0, g.position.z * 0.12);
     scene.add(spot, spot.target);
+    // Fake bloom: a big soft halo + a tight bright core at the lamp bank. Lives
+    // independent of the tower MESH so it survives the GLB swap. driveTowerGlows
+    // gives it a slow lens-flare twinkle.
+    addTowerGlow(g.position.x, 30, g.position.z);
   }
   // The moon: a soft additive glow high in the sky.
   const moon = new THREE.Sprite(new THREE.SpriteMaterial({ map: makeGlowTexture(), color: 0xcfe0ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
@@ -1260,7 +1266,7 @@ const game = {
   looseCrowdT: 0,                       // how long 3+ players have crowded the loose ball
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
+  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -1295,6 +1301,25 @@ function makeGlowTexture() {
   grd.addColorStop(1, 'rgba(255,170,70,0)');
   g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+// A bloom halo (big soft glow + bright core) at a stadium lamp. Pushed to
+// towerGlows so driveTowerGlows can twinkle it like a harsh stadium floodlight.
+function addTowerGlow(x, y, z) {
+  _glowTex = _glowTex || makeGlowTexture();
+  const mk = (s, op) => {
+    const m = new THREE.SpriteMaterial({ map: _glowTex, color: 0xfff2d2, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, fog: false });
+    const sp = new THREE.Sprite(m); sp.scale.set(s, s, 1); sp.position.set(x, y, z); sp.renderOrder = 3; scene.add(sp); return sp;
+  };
+  const halo = mk(13, 0.42), core = mk(5, 0.85);
+  towerGlows.push({ halo, core, base: 1, phase: Math.random() * Math.PI * 2 });
+}
+// Slow, subtle floodlight shimmer (a hint of lens-flare life, not a strobe).
+function driveTowerGlows(t) {
+  for (const g of towerGlows) {
+    const k = 0.9 + 0.1 * Math.sin(t * 1.7 + g.phase);
+    g.halo.material.opacity = 0.42 * k; g.core.material.opacity = 0.85 * k;
+    g.core.scale.setScalar(5 * (0.96 + 0.04 * k));
+  }
 }
 
 // --- Home-team touchdown celebration: random FIREWORKS or LIGHT SHOW --------
@@ -2762,13 +2787,18 @@ function setReplayLabel() {
   const r = game.replay;
   if (rpAngleEl) rpAngleEl.textContent = `${REPLAY_ANGLES[r.angleIdx].name}${r.loops > 0 ? ` · #${r.loops + 1}` : ''}`;
 }
-function startReplay() {
+// highlight: bias the first pass to the signature moment — open LOW ANGLE,
+// jump near the impact, and run it in slow-mo. Used for big/dirty hits.
+function startReplay(highlight = false) {
   if (game.replay.frames.length < 40) return false; // not enough footage — skip
   clearRagdolls(); // physics off; the recorded bone transforms ARE the pose
   const r = game.replay;
   game.state = STATE.REPLAY;
-  r.i = 0; r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
-  r.angleIdx = Math.floor(Math.random() * REPLAY_ANGLES.length);
+  const last = r.frames.length - 1;
+  r.rate = highlight ? 0.45 : 0.85; // slow-mo on the highlight pass
+  r.i = highlight ? Math.max(0, Math.floor(last * 0.55)) : 0; // start near the hit
+  r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
+  r.angleIdx = highlight ? 4 /* LOW ANGLE */ : Math.floor(Math.random() * REPLAY_ANGLES.length);
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
@@ -2794,20 +2824,20 @@ function applyReplayFrame(fi) {
 function updateReplay(dt) {
   const r = game.replay, f = r.frames, last = f.length - 1;
   if (r.phase === 'play') {
-    r.i += 0.85; // playback speed (full-play replays would drag at deep slow-mo)
+    r.i += r.rate; // playback speed (full-play replays would drag at deep slow-mo; highlight pass is slower)
     r.seg += dt;
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
     else if (r.seg >= REPLAY_SEG) { r.phase = 'cutout'; } // mid-play broadcast cut to a new angle
     applyReplayFrame(Math.min(r.i, last));
   } else if (r.phase === 'cutout') { // quick fade to black while the action keeps running
-    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.min(1, r.fade + dt * 3.4);
     if (r.fade >= 1 || r.i >= last) {
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.seg = 0; r.snap = true; setReplayLabel();
       if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; } else r.phase = 'cutin';
     }
   } else if (r.phase === 'cutin') { // fade back up from the new angle, action continues
-    r.i += 0.85; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 3.4);
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
     else if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
@@ -2820,10 +2850,10 @@ function updateReplay(dt) {
     r.fade = Math.min(1, r.fade + dt * 2.6);
     if (r.fade >= 1) { // fully black — switch angle and restart the play from the top
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.loops++;
-      r.i = 0; r.seg = 0; r.snap = true; r.phase = 'fadein'; setReplayLabel();
+      r.i = 0; r.seg = 0; r.snap = true; r.phase = 'fadein'; r.rate = 0.85; setReplayLabel(); // later loops run full-speed from the top
     }
   } else { // fadein: replay runs from the start while we fade back up from black
-    r.i += 0.85; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 2.6);
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
@@ -3303,7 +3333,7 @@ function endPlay(result, endZ) {
   // to the end of the dead-ball beat so the celebration plays live first.
   const bigHit = game.replay.bigHit; game.replay.bigHit = false;
   if (result === 'TD') game.pendingReplay = true;
-  else if (result === 'tackle' && bigHit) startReplay();
+  else if (result === 'tackle' && bigHit) startReplay(true); // big/dirty hit → low-angle slow-mo highlight
 }
 // TD celebration: the scorer + the two nearest teammates break into their dance
 // (each player's celebrate clip was picked at build for variety).
@@ -3862,6 +3892,7 @@ function beginTackle(lead, force = false) {
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
     setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
     audio.say(dirty ? 'dirtyHit' : gang ? 'gang' : 'bigHit');
+    if (dirty || (big && Math.random() < 0.4)) game.replay.bigHit = true; // dirty hit always gets the highlight; big hits sometimes
   } else {
     timeScale.bulletTime(0.22, 0.4, 0.7);
     hitZoom(0.9);
@@ -5055,6 +5086,7 @@ function animate() {
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
+  driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
 
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
