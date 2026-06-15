@@ -191,10 +191,10 @@ function placeStadiumProps() {
       w.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
       camOccluders.push(w);
     };
-    const nz = Math.ceil((HALF_L * 2) / wW); // sidelines (front faces inward toward the field)
-    for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + 2, z, -Math.PI / 2); place(-HALF_W - 2, z, Math.PI / 2); }
+    const nz = Math.ceil((HALF_L * 2) / wW); // sidelines, set back past the bench lane
+    for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + SIDELINE, z, -Math.PI / 2); place(-HALF_W - SIDELINE, z, Math.PI / 2); }
     const nx = Math.ceil((HALF_W * 2) / wW); // end lines
-    for (let i = 0; i < nx; i++) { const x = -HALF_W + wW * (i + 0.5); place(x, HALF_L + 2, Math.PI); place(x, -HALF_L - 2, 0); }
+    for (let i = 0; i < nx; i++) { const x = -HALF_W + wW * (i + 0.5); place(x, HALF_L + SIDELINE, Math.PI); place(x, -HALF_L - SIDELINE, 0); }
   }
 }
 
@@ -220,7 +220,8 @@ const FIELD_W = 53.3, HALF_W = FIELD_W / 2;
 const FIELD_L = 120, HALF_L = FIELD_L / 2;
 const GOAL_Z = HALF_L - 10;          // +50: offense's target goal line
 const OWN_GOAL_Z = -(HALF_L - 10);   // -50
-const CAGE_X = HALF_W, CAGE_Z = HALF_L; // boundary walls right on the out-of-bounds lines
+const CAGE_X = HALF_W, CAGE_Z = HALF_L; // active-play cage / chain-link fence at the out-of-bounds lines
+const SIDELINE = 9; // margin between the cage fence and the outer walls — the team-bench lane
 
 const turfMats = []; // {mat, rx, ry} — get the grass map once it loads
 function buildField() {
@@ -230,6 +231,14 @@ function buildField() {
   const surround = new THREE.Mesh(new THREE.PlaneGeometry(420, 420), surroundMat);
   surround.rotation.x = -Math.PI / 2; surround.position.y = -0.02;
   surround.receiveShadow = true; field.add(surround);
+  // Team-bench lanes: a darker apron just outside each sideline (between the cage
+  // fence and the outer walls) where the bench players pace and emote.
+  const apMat = new THREE.MeshStandardMaterial({ color: 0x24301d, roughness: 1 });
+  for (const sx of [-1, 1]) {
+    const ap = new THREE.Mesh(new THREE.PlaneGeometry(SIDELINE, FIELD_L + 6), apMat);
+    ap.rotation.x = -Math.PI / 2; ap.position.set(sx * (HALF_W + SIDELINE / 2), -0.01, 0);
+    ap.receiveShadow = true; field.add(ap);
+  }
 
   const stripes = 12, sl = FIELD_L / stripes;
   for (let i = 0; i < stripes; i++) {
@@ -1430,6 +1439,58 @@ function spawnTeams() {
   }
   game.all = [...game.teamA, ...game.teamB];
   setupPossession();
+}
+// Team benches: 7 reserves per team pacing their own sideline lane, facing the
+// field and emoting. They're NOT in game.all (no play logic touches them).
+function spawnBench() {
+  game.benchA = []; game.benchB = []; game.bench = [];
+  const lane = HALF_W + SIDELINE * 0.5; // center of the bench apron
+  for (let i = 0; i < 7; i++) {
+    const a = makeCharacter('off'); setupBench(a, -lane, i); game.benchA.push(a); // team A: left sideline
+    const b = makeCharacter('def'); setupBench(b, lane, i);  game.benchB.push(b); // team B: right sideline
+  }
+  game.bench = [...game.benchA, ...game.benchB];
+}
+function setupBench(ch, lane, i) {
+  ch.isBench = true; ch.lane = lane;
+  ch.faceField = lane > 0 ? -Math.PI / 2 : Math.PI / 2; // inward toward the field
+  const z = -HALF_L + 16 + i * ((FIELD_L - 32) / 6);
+  ch.group.position.set(lane + (Math.random() - 0.5) * 2, 0, z);
+  ch.heading = ch.faceField; ch.group.rotation.set(0, ch.heading, 0);
+  ch.benchTarget = z; ch.benchWait = Math.random() * 3; ch.emoteCd = 3 + Math.random() * 7;
+}
+function updateBench(dt) {
+  if (!game.bench) return;
+  for (const ch of game.bench) {
+    if (ch.oneShotT > 0) { ch.oneShotT -= dt; ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0; continue; }
+    const p = ch.group.position; let moving = false;
+    ch.emoteCd -= dt;
+    if (ch.benchWait > 0) { ch.benchWait -= dt; ch.heading = ch.faceField; }
+    else {
+      const dz = ch.benchTarget - p.z;
+      if (Math.abs(dz) > 0.5) {                       // pace toward the target spot
+        p.z += Math.sign(dz) * Math.min(Math.abs(dz), 2.6 * dt);
+        p.x += (ch.lane - p.x) * Math.min(1, dt * 2); // ease back to the lane
+        ch.heading = dz > 0 ? 0 : Math.PI; moving = true;
+      } else {                                        // arrived: face the field, wait, pick a new spot
+        ch.heading = ch.faceField; ch.benchWait = 1.5 + Math.random() * 4;
+        ch.benchTarget = THREE.MathUtils.clamp(p.z + (Math.random() - 0.5) * 44, -HALF_L + 14, HALF_L - 14);
+      }
+    }
+    if (ch.emoteCd <= 0 && ch.actions.celebrate) {    // periodic emote (cheer/clap)
+      playOneShot(ch, 'celebrate', 1.5 + Math.random(), true);
+      ch.emoteCd = 7 + Math.random() * 9; ch.heading = ch.faceField;
+    }
+    setClip(ch, moving ? 'walk' : 'idle');
+    ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0;
+  }
+}
+// Both benches erupt (e.g. on a touchdown).
+function benchReact() {
+  if (!game.bench) return;
+  for (const ch of game.bench) if (ch.actions.celebrate && Math.random() < 0.85) {
+    playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
+  }
 }
 // Assign offense (ball) / defense (cover) roles based on who has the ball,
 // using the Blitz personnel formations. game.receivers = eligibles in `elig`
@@ -2979,7 +3040,7 @@ function endPlay(result, endZ) {
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
-    flashScreen(); confetti(endZ); // celebratory flash + shower in the end zone
+    flashScreen(); confetti(endZ); benchReact(); // celebratory flash + shower + the benches erupt
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
       celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
@@ -4681,6 +4742,7 @@ function animate() {
   const dt = realDt * timeScale.update(realDt);
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
+  updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
 
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
@@ -4706,7 +4768,7 @@ window.addEventListener('resize', () => {
 });
 
 loadAssets().then(() => {
-  spawnTeams(); makeBall();
+  spawnTeams(); spawnBench(); makeBall();
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   newPlay();
