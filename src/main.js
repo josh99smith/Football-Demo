@@ -2244,8 +2244,10 @@ function updateReset(dt) {
 function finalizeReset() {
   for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
   game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
-  if (game.userOnOffense) { game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false; }
-  else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
+  if (game.userOnOffense) {
+    game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
+    startSpecialCam('hero', game.qb, 2.6); // cinematic pre-play hero shot on the star
+  } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
   setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
 }
@@ -2407,6 +2409,7 @@ function applyDefCall(call) {
 function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
+  cam.special = null; // drop the pre-snap hero shot
   clearPlayResult(); // wipe last play's readout
   recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
@@ -2824,6 +2827,7 @@ function celebrateTD() {
     .sort((a, b) => (scorer ? dist2(px(a), px(scorer)) - dist2(px(b), px(scorer)) : 0))
     .slice(0, 3)];
   for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3, true);
+  if (scorer) startSpecialCam('td', scorer, 2.4); // low up-angle flex/standover on the scorer
 }
 
 // ===========================================================================
@@ -4203,12 +4207,39 @@ const cam = {
   lookCur: new THREE.Vector3(0, 1.3, 0),
   cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
   back: 11, hgt: 6.8, aheadL: 11, lookH: 1.5, fovKick: 0, // eased framing + snap zoom punch
+  special: null,                          // cinematic override: pre-snap hero / post-TD flex
 };
 const _tp = new THREE.Vector3(), _tl = new THREE.Vector3(), _fp = new THREE.Vector3();
 const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
 function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
+// Cinematic camera override: 'hero' (low slow orbit on the star pre-snap) or
+// 'td' (low up-angle flex/standover on the scorer). Cleared when it expires or
+// the play state moves on (see updateCamera).
+function startSpecialCam(kind, target, dur) {
+  cam.special = { kind, target, t: 0, dur, baseAz: game.dir > 0 ? 0 : Math.PI };
+}
+function driveSpecialCam(sp, dt) {
+  const o = sp.target.group.position;
+  if (sp.kind === 'hero') {
+    const a = sp.baseAz + sp.t * 0.45;                 // slow orbit in front of the QB
+    _tp.set(o.x + Math.sin(a) * 6.2, 2.4, o.z + Math.cos(a) * 6.2);
+    _tl.set(o.x, 1.7, o.z);
+  } else {                                             // 'td' — low, looking UP at the raised arms
+    const a = sp.baseAz + sp.t * 0.6;
+    _tp.set(o.x + Math.sin(a) * 4.6, 1.15, o.z + Math.cos(a) * 4.6);
+    _tl.set(o.x, 2.5, o.z);
+  }
+  if (sp.t < 0.001) { cam.pos.copy(_tp); cam.lookCur.copy(_tl); }
+  else { cam.pos.lerp(_tp, Math.min(1, dt * 3)); cam.lookCur.lerp(_tl, Math.min(1, dt * 4)); }
+  const wantFov = sp.kind === 'td' ? 42 : 48;
+  camera.fov += (wantFov - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix();
+  shake.update(dt);
+  camera.position.set(cam.pos.x + shake.offX, Math.max(0.8, cam.pos.y + shake.offY), cam.pos.z + shake.offZ);
+  camera.lookAt(cam.lookCur);
+  sun.position.set(o.x + 40, 70, o.z + 20); sun.target.position.set(o.x, 0, o.z);
+}
 
 // ONLY during a REPLAY, hide a cage panel / perimeter wall that's actually
 // blocking the camera's view of the players — i.e. the camera is behind it on
@@ -4251,6 +4282,16 @@ function updateCamera(dt) {
     camera.position.copy(cam.pos); camera.lookAt(cam.lookCur);
     sun.position.set(b.x + 40, 70, b.z + 20); sun.target.position.set(b.x, 0, b.z);
     return;
+  }
+  // Cinematic override (pre-snap hero / post-TD flex). Yields back to live framing
+  // when it expires or the play state moves past its moment.
+  if (cam.special) {
+    const sp = cam.special; sp.t += dt;
+    const live = sp.target && sp.target.group && !sp.target.ragdolling && (sp.kind === 'hero'
+      ? (game.state === STATE.PRESNAP || game.state === STATE.RESET)
+      : (game.state === STATE.DEAD || game.celebrating));
+    if (sp.t >= sp.dur || !live) cam.special = null;
+    else { driveSpecialCam(sp, dt); return; }
   }
   const t = game.controlled || game.qb;
   const ret = game.state === STATE.RETURN || game.returnActive;

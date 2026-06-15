@@ -25,6 +25,16 @@ html, body {
   height: 100%;
   position: fixed;
   inset: 0;
+  /* Cinematic grade: a touch more contrast + punch (the gritty Blitz look). */
+  filter: contrast(1.08) saturate(1.06);
+}
+/* Vignette over the game, beneath the HUD — darkened corners for broadcast feel. */
+#grade {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: radial-gradient(ellipse 75% 75% at center, rgba(0, 0, 0, 0) 52%, rgba(0, 0, 0, 0.42) 100%);
 }
 
 /* ---------- Loading ---------- */
