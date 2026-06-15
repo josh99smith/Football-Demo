@@ -1247,6 +1247,7 @@ const game = {
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
+  clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0,
   tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
   drag: { active: false, t: 0, dur: 0, hx: 0, hz: 0, grabbers: [], baseAng: 0, big: false, closing: 0, gangShown: 0 }, // wrap-and-drag-down before the pile collapses to ragdolls (+ dynamic pile-on state)
@@ -2484,12 +2485,18 @@ function flashScreen() {
 // delay-of-game play clock counts down and auto-snaps at zero. The quarter only
 // rolls over between plays (the current play always finishes).
 function tickClock(dt) {
-  if (game.gameOver || game.choosing) return; // clock waits while you pick a play
-  if (game.state === STATE.PRESNAP) {
+  if (game.gameOver) return;
+  // Running game clock: keeps ticking through the dead-ball/reset/play-call. It
+  // ONLY pauses after a stoppage (a score, an incomplete pass, or a turnover —
+  // game.clockStopped, set in endPlay/endReturn) until the next snap clears it,
+  // and during the instant-replay cutaway.
+  if (!game.clockStopped && game.state !== STATE.REPLAY) {
+    game.gameClock = Math.max(0, game.gameClock - dt);
+  }
+  // Delay-of-game play clock ticks pre-snap once a play has been called.
+  if (game.state === STATE.PRESNAP && !game.choosing) {
     game.snapClock -= dt;
     if (game.snapClock <= 0) { game.snapClock = 0; setStatus('Delay of game — snapped!'); snap(); }
-  } else if (game.state !== STATE.DEAD && game.state !== STATE.RESET) {
-    game.gameClock = Math.max(0, game.gameClock - dt); // clock stops between plays
   }
   updateHUD();
 }
@@ -2497,7 +2504,7 @@ function advanceQuarter() {
   game.quarter += 1;
   clearBloodStains(); // fresh turf each quarter
   if (game.quarter > 4) { endGame(); return; }
-  game.gameClock = QUARTER_LEN;
+  game.gameClock = QUARTER_LEN; game.clockStopped = true; // new quarter waits for the snap
   audio.whistle();
   if (game.quarter === 3) showBanner('HALFTIME', '#ffd23a');
   else showBanner(`Q${game.quarter}`, '#ffd23a');
@@ -2510,7 +2517,7 @@ function endGame() {
 }
 function resetGame() {
   game.scoreOff = 0; game.scoreDef = 0;
-  game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false;
+  game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
   game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
   game.fireCount = 0; douseFire();
@@ -2848,6 +2855,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
+  game.clockStopped = false; // the snap starts the clock running again
   cam.fovKick = 5; // quick zoom punch on the snap
   cam.special = null; // drop the pre-snap hero shot
   groundPlayers(); // per-play check: every player on the field plane, feet attached
@@ -3166,6 +3174,7 @@ function tackleReturner(tackler) {
 function endReturn(result, spotZ) {
   game.returnActive = false; game.returner = null;
   game.state = STATE.DEAD; game.deadTimer = 1.1;
+  game.clockStopped = true; // a pick-six (score) or turnover stops the clock
   ball.mode = 'rest';
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
   douseFire(); // the player threw the pick — fire out
@@ -3225,6 +3234,7 @@ function endPlay(result, endZ) {
   game.state = STATE.DEAD; game.deadTimer = 1.1;
   hideFieldChrome(); updateButtons(); // never let a reticle/turbo ring outlive the play
   const userHad = game.userOnOffense;
+  game.clockStopped = true; // scores / incompletes / turnovers stop the clock; an in-bounds tackle re-starts it below
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
     flashScreen(); confetti(endZ); benchReact(); // flash + shower + benches erupt
@@ -3262,7 +3272,7 @@ function endPlay(result, endZ) {
     } else {
       const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
       if (result === 'incomplete') setPlayResult('INCOMPLETE');
-      else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); }
+      else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); game.clockStopped = false; } // a tackle/OOB keeps the clock running
       setStatus(result === 'incomplete' ? 'Incomplete'
         : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
           : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
@@ -3271,7 +3281,7 @@ function endPlay(result, endZ) {
       if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; }
       else {
         game.los = spot; game.down += 1;
-        if (game.down > 4) { if (userHad) douseFire(); setStatus('Turnover on downs'); giveBallTo(!userHad, spot); }
+        if (game.down > 4) { if (userHad) douseFire(); setStatus('Turnover on downs'); giveBallTo(!userHad, spot); game.clockStopped = true; } // turnover on downs stops the clock
       }
     }
   }
