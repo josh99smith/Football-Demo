@@ -1352,10 +1352,10 @@ const sweepLights = [];         // spotlights (white) for the light show
 let fwLightI = 0;
 let strobe = null;              // red strobe (light show)
 const CELEB_CHANCE = 0.5;       // odds a home TD triggers a stadium celebration
-const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0 };
+const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0, grand: false };
 (function initCelebFx() {
   const tex = makeGlowTexture();
-  for (let i = 0; i < 420; i++) {
+  for (let i = 0; i < 640; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
     s.visible = false; s.userData = { vx: 0, vy: 0, vz: 0, life: 0, max: 1, base: 1, drag: 0.3, glitter: false, ph: 0 }; scene.add(s); fwSparks.push(s);
   }
@@ -1441,7 +1441,12 @@ function updateCelebFx(dt) {
     }
     stepShells(dt);
     celebFx.next -= dt;
-    if (celebFx.next <= 0) { celebFx.next = 0.55 + Math.random() * 0.5; launchShell((Math.random() - 0.5) * 70, celebFx.z * 0.3 + (Math.random() - 0.5) * 44); }
+    if (celebFx.next <= 0) {
+      // Grand finale: a near-constant barrage across the sky; otherwise a steady drizzle.
+      celebFx.next = celebFx.grand ? 0.22 + Math.random() * 0.22 : 0.55 + Math.random() * 0.5;
+      const n = celebFx.grand ? 2 + (Math.random() * 2 | 0) : 1;
+      for (let k = 0; k < n; k++) launchShell((Math.random() - 0.5) * 84, celebFx.z * 0.2 + (Math.random() - 0.5) * 64);
+    }
   } else if (celebFx.mode === 'lightshow') {
     celebFx.t += dt;
     celebFx.dim = Math.min(1, celebFx.dim + dt * 2.5); applyArenaDim(celebFx.dim);
@@ -1477,13 +1482,14 @@ function stepShells(dt) {
     if (sh.fuse <= 0 || sh.vy < 2) { fireworkBurst(sh.x, sh.y, sh.z, sh.col); fwShells.splice(i, 1); }
   }
 }
-function startCelebParty(z) {
+function startCelebParty(z, grand = false) {
   celebFx.mode = 'party'; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  celebFx.grand = grand; // grand = end-of-game barrage (way more fireworks)
   for (const L of sweepLights) { L.intensity = 0; L.visible = true; }
   audio.cheer(1);
 }
 function stopCelebParty() {
-  if (celebFx.mode === 'party') celebFx.mode = null; // the restore branch eases the arena back up + fades the lights
+  if (celebFx.mode === 'party') { celebFx.mode = null; celebFx.grand = false; } // restore branch eases the arena back up + fades the lights
 }
 function makeBall() {
   // The ball lives in a GROUP whose local +Z is the long axis; the flight code
@@ -3451,71 +3457,132 @@ function celebrateTD() {
   return scorer;
 }
 
-// ---- End-of-game DANCE PARTY: the winners bust their best moves while the
-// losers hang their heads, under confetti + a rainbow strobe/spotlight show.
+// ---- End-of-game GRAND FINALE: a phased, cinematic celebration.
+//  1) RUN   — the winners sprint joyfully around the field while a barrage of
+//             fireworks fills the sky; the losers slump off to the side.
+//  2) GATHER — the winners converge on midfield.
+//  3) DANCE  — they form a circle and break into a looping dance party.
+// Cinematic camera cuts between tracking / wide / sky / orbit shots throughout.
 // Runs from FINAL until the player taps REMATCH (resetGame -> endFinale).
+const FIN_RUN = 5.5, FIN_GATHER_MAX = 5.0, FIN_RADIUS = 3.8; // phase durations + dance-circle radius
+function finWander() {
+  return new THREE.Vector3(
+    THREE.MathUtils.clamp((Math.random() - 0.5) * (HALF_W - 4) * 2, -HALF_W + 5, HALF_W - 5), 0,
+    THREE.MathUtils.clamp((Math.random() - 0.5) * (HALF_L - 14) * 2, -HALF_L + 14, HALF_L - 14));
+}
 function startFinale() {
   const userWon = game.scoreOff >= game.scoreDef;
   const winners = (userWon ? game.teamA : game.teamB).filter((c) => c && !c.ragdolling);
   const losers = (userWon ? game.teamB : game.teamA).filter((c) => c && !c.ragdolling);
-  // Center the party on the winners' average spot, kept clear of the end zones.
-  let cx = 0, cz = 0;
-  for (const c of winners) { cx += c.group.position.x; cz += c.group.position.z; }
-  cx = winners.length ? cx / winners.length : 0; cz = winners.length ? cz / winners.length : 0;
-  cx = THREE.MathUtils.clamp(cx, -HALF_W + 10, HALF_W - 10);
-  cz = THREE.MathUtils.clamp(cz, -HALF_L + 24, HALF_L - 24);
-  const center = new THREE.Vector3(cx, 0, cz);
-  // Winners ring up around the middle and dance, facing in.
-  winners.forEach((c, i) => {
+  const center = new THREE.Vector3(0, 0, 0); // midfield: the eventual dance circle
+  // The circle slots the winners gather into.
+  const slots = winners.map((_, i) => {
     const a = (i / Math.max(1, winners.length)) * Math.PI * 2;
-    c.group.position.set(cx + Math.cos(a) * 3.6, 0, cz + Math.sin(a) * 3.6);
-    c.heading = Math.atan2(cx - c.group.position.x, cz - c.group.position.z);
-    c.vel.set(0, 0, 0); c.speed = 0; c.sulk = false; c.dancing = true; restoreHelmet(c);
-    if (!c.actions.dance && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true); // fallback if no dance clip
+    return new THREE.Vector3(Math.cos(a) * FIN_RADIUS, 0, Math.sin(a) * FIN_RADIUS);
   });
-  // Losers slump in a line off to the side, turned away, heads hung.
+  // Winners take off on a joy-run: full speed, no fatigue, a fresh wander target.
+  winners.forEach((c) => {
+    c.sulk = false; c.dancing = false; c.turbo = true; c.fatigue = 1;
+    c.finTarget = finWander(); c.vel.set(0, 0, 0); restoreHelmet(c);
+  });
+  // Losers slump in a line off to one side, turned away, heads hung.
   losers.forEach((c, i) => {
     c.group.position.set(
-      THREE.MathUtils.clamp(cx + (i - (losers.length - 1) / 2) * 2.4, -HALF_W + 3, HALF_W - 3),
-      0, THREE.MathUtils.clamp(cz + 16, -HALF_L + 3, HALF_L - 3));
-    c.heading = Math.atan2(c.group.position.x - cx, c.group.position.z - cz); // facing away from the party
+      THREE.MathUtils.clamp((i - (losers.length - 1) / 2) * 2.4, -HALF_W + 3, HALF_W - 3),
+      0, THREE.MathUtils.clamp(HALF_L - 16, -HALF_L + 3, HALF_L - 3));
+    c.heading = Math.atan2(c.group.position.x, c.group.position.z); // facing away from midfield
     c.vel.set(0, 0, 0); c.speed = 0; c.dancing = false; c.sulk = true; c.sulkPh = Math.random() * 6.283;
     if (!c.actions.sulk) setClip(c, 'idle'); // procedural sulk pose layers on idle; real clip drives itself
     restoreHelmet(c);
   });
   cam.special = null; game.celebrating = false;
-  game.finale = { active: true, t: 0, winners, losers, center, confT: 0, userWon };
+  game.finale = { active: true, phase: 'run', t: 0, total: 0, winners, losers, center, slots, userWon,
+    cam: { i: 0, t: 0, dur: 0, shot: null, target: null, ang: 0, snap: true } };
   const sb = document.getElementById('simbar'); if (sb) sb.classList.add('hidden'); // game's over
-  startCelebParty(cz);
+  startCelebParty(center.z, true); // GRAND: way more fireworks
   benchReact();
   audio.say(userWon ? 'win' : 'lose', { force: true, swell: 1 });
 }
 function updateFinale(dt) {
   const f = game.finale; if (!f || !f.active) return;
-  f.t += dt;
-  for (const c of f.winners) { // dance clip loops on its own; only re-fire the one-shot fallback
-    if (c.ragdolling) continue;
-    if (!c.actions.dance && c.oneShotT <= 0 && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
-    c.speed = 0; c.vel.set(0, 0, 0);
+  f.t += dt; f.total += dt;
+  if (f.phase === 'run') {
+    for (const c of f.winners) {
+      if (c.ragdolling) continue;
+      const p = c.group.position, t = c.finTarget;
+      const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz);
+      if (d < 2.4) c.finTarget = finWander();          // reached it — pick a new spot
+      else { c.desired.x = dx / d; c.desired.z = dz / d; c.turbo = true; applySteer(c, dt); }
+    }
+    if (f.t >= FIN_RUN) { f.phase = 'gather'; f.t = 0; f.cam.shot = null; }
+  } else if (f.phase === 'gather') {
+    let allIn = true;
+    f.winners.forEach((c, i) => {
+      if (c.ragdolling) return;
+      const p = c.group.position, t = f.slots[i];
+      const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz);
+      if (d > 1.0) { allIn = false; c.desired.x = dx / d; c.desired.z = dz / d; c.turbo = false; applySteer(c, dt); }
+      else { c.vel.set(0, 0, 0); c.speed = 0; }
+    });
+    if (allIn || f.t >= FIN_GATHER_MAX) { // snap into a clean circle and start dancing
+      f.phase = 'dance'; f.t = 0; f.cam.shot = null;
+      f.winners.forEach((c, i) => {
+        const s = f.slots[i];
+        c.group.position.set(s.x, 0, s.z);
+        c.heading = Math.atan2(f.center.x - s.x, f.center.z - s.z); // face the middle
+        c.vel.set(0, 0, 0); c.speed = 0; c.dancing = true;
+      });
+    }
+  } else { // dance
+    for (const c of f.winners) {
+      c.speed = 0; c.vel.set(0, 0, 0);
+      if (!c.actions.dance && c.oneShotT <= 0 && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
+    }
   }
   for (const c of f.losers) { c.speed = 0; c.vel.set(0, 0, 0); }
-  f.confT -= dt; // a steady drizzle of confetti over the dance floor
-  if (f.confT <= 0) { f.confT = 0.7; confetti(f.center.z, f.center.x); }
 }
 function endFinale() {
   const f = game.finale; if (!f) return;
-  for (const c of [...f.winners, ...f.losers]) { c.sulk = false; c.dancing = false; }
+  for (const c of [...f.winners, ...f.losers]) { c.sulk = false; c.dancing = false; c.turbo = false; }
   game.finale = null; stopCelebParty();
   const sb = document.getElementById('simbar'); if (sb) sb.classList.remove('hidden');
 }
+// Cinematic finale camera: cuts between shot types every few seconds. The shot
+// menu depends on the phase (chase the runners early, orbit the circle late);
+// every shot keeps the fireworks-filled sky in play.
 function driveFinaleCam(dt) {
-  const f = game.finale, c = f.center;
-  const a = f.t * 0.32; // slow showcase orbit around the celebrating winners
-  _tp.set(c.x + Math.sin(a) * 11, 4.6, c.z + Math.cos(a) * 11);
-  _tl.set(c.x, 2.1, c.z);
-  if (f.t < 0.05) { cam.pos.copy(_tp); cam.lookCur.copy(_tl); }
-  else { cam.pos.lerp(_tp, Math.min(1, dt * 2)); cam.lookCur.lerp(_tl, Math.min(1, dt * 3)); }
-  camera.fov += (52 - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix();
+  const f = game.finale, c = f.center, cm = f.cam;
+  cm.t += dt;
+  const menu = f.phase === 'dance' ? ['orbit', 'sky', 'wide']
+    : f.phase === 'gather' ? ['wide', 'orbit'] : ['track', 'wide', 'sky'];
+  if (cm.shot === null || cm.t >= cm.dur) { // cut to a new shot
+    cm.t = 0; cm.dur = 3.0 + Math.random() * 1.6;
+    cm.shot = menu[(cm.i++) % menu.length];
+    cm.target = f.winners[(Math.random() * f.winners.length) | 0] || f.winners[0];
+    cm.ang = Math.random() * Math.PI * 2;
+    cm.snap = true;
+  }
+  let px, py, pz, lx, ly, lz, fov = 50;
+  if (cm.shot === 'track' && cm.target) {           // low chase behind a sprinting winner
+    const o = cm.target.group.position, h = cm.target.heading;
+    px = o.x - Math.sin(h) * 5.5; pz = o.z - Math.cos(h) * 5.5; py = 2.3;
+    lx = o.x; ly = 1.7; lz = o.z; fov = 52;
+  } else if (cm.shot === 'wide') {                   // high, slow-drifting wide of the whole field + sky
+    const a = cm.ang + cm.t * 0.07;
+    px = c.x + Math.sin(a) * 24; pz = c.z + Math.cos(a) * 24; py = 13;
+    lx = c.x; ly = 4.0; lz = c.z; fov = 46;
+  } else if (cm.shot === 'sky') {                    // low, tilted UP so the fireworks fill the frame
+    px = c.x + Math.sin(cm.ang) * 7; pz = c.z + Math.cos(cm.ang) * 7; py = 1.5;
+    lx = c.x; ly = 17; lz = c.z; fov = 64;
+  } else {                                           // orbit the dance circle, low and close
+    const a = cm.ang + cm.t * 0.42;
+    px = c.x + Math.sin(a) * 10; pz = c.z + Math.cos(a) * 10; py = 3.8;
+    lx = c.x; ly = 2.0; lz = c.z; fov = 50;
+  }
+  _tp.set(px, py, pz); _tl.set(lx, ly, lz);
+  if (cm.snap) { cam.pos.copy(_tp); cam.lookCur.copy(_tl); cm.snap = false; }
+  else { cam.pos.lerp(_tp, Math.min(1, dt * 2.2)); cam.lookCur.lerp(_tl, Math.min(1, dt * 3)); }
+  camera.fov += (fov - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix();
   shake.update(dt);
   camera.position.set(cam.pos.x + shake.offX, Math.max(1.0, cam.pos.y + shake.offY), cam.pos.z + shake.offZ);
   camera.lookAt(cam.lookCur);
