@@ -2723,6 +2723,80 @@ function restoreHelmet(ch) {
   r.parent.add(h); h.position.copy(r.pos); h.quaternion.copy(r.quat); h.scale.copy(r.scale);
   const i = flyingHelmets.findIndex((f) => f.h === h); if (i >= 0) flyingHelmets.splice(i, 1);
 }
+
+// --- TORN IN HALF: a rare, brutal big-hit gore hook. The body splits at the
+// waist into two rigid chunks (top: torso + head + arms; bottom: pelvis + legs)
+// that tumble apart, blood gushing from the split (same spray as the head pop).
+// Each half is a clone of the player's posed mesh with the OTHER half's bone
+// chain collapsed to zero scale. Halves are built once per player and reused.
+const tornPieces = [];
+function buildHalf(ch, collapseNames) {
+  // THREE.Object3D.copy() deep-clones userData via JSON; the helmet stores a
+  // circular userData.rest (parent bone), which would throw. Blank all userData
+  // on the source for the clone, then restore the originals.
+  const stash = [];
+  ch.model.traverse((o) => { if (o.userData && Object.keys(o.userData).length) { stash.push([o, o.userData]); o.userData = {}; } });
+  let piece;
+  try { piece = cloneSkeleton(ch.model); } finally { for (const [o, ud] of stash) o.userData = ud; }
+  piece.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+  const bones = []; piece.traverse((o) => { if (o.isBone) bones.push(o); });
+  const g = new THREE.Group(); g.add(piece); g.visible = false; scene.add(g);
+  return { g, bones, collapse: collapseNames };
+}
+function collapseHalf(half) { for (const b of half.bones) if (half.collapse.includes(b.name)) b.scale.setScalar(0.0001); }
+function tearInHalf(ch, hx, hz, power) {
+  if (!ch.model || ch.torn) return;
+  if (!ch._torn) ch._torn = { top: buildHalf(ch, ['LeftUpLeg', 'RightUpLeg']), bottom: buildHalf(ch, ['Spine02']) };
+  const T = ch._torn, src = ch.bones;
+  for (const half of [T.top, T.bottom]) {
+    const dst = half.bones;
+    for (let i = 0; i < dst.length && i < src.length; i++) { dst[i].position.copy(src[i].position); dst[i].quaternion.copy(src[i].quaternion); }
+    collapseHalf(half); // pose copy doesn't touch scale, but re-assert the collapse
+    half.g.position.copy(ch.group.position); half.g.quaternion.copy(ch.group.quaternion); half.g.visible = true;
+  }
+  ch.model.visible = false; ch.torn = true; // swap the whole body for the two chunks
+  // Blood geyser from the waist — same particle logic as the head pop.
+  bloodSpray(ch.group.position.x, 1.0, ch.group.position.z, 64);
+  audio.bigHit();
+  // Launch: the top half flies up and back tumbling; the pelvis/legs drop & topple.
+  const l = Math.hypot(hx, hz) || 1, sp = 2.4 + (power || 80) / 24;
+  tornPieces.push({ g: T.top.g, restY: -1.0, vx: (hx / l) * sp + (Math.random() - 0.5) * 1.4, vy: 5.5 + Math.random() * 2.5, vz: (hz / l) * sp + (Math.random() - 0.5) * 1.4, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 5 + Math.random() * 6, rest: false });
+  tornPieces.push({ g: T.bottom.g, restY: -0.15, vx: (hx / l) * sp * 0.5 + (Math.random() - 0.5), vy: 3 + Math.random() * 1.5, vz: (hz / l) * sp * 0.5 + (Math.random() - 0.5), ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 3 + Math.random() * 3, rest: false });
+  // Log the tear so the instant replay can re-enact it (same as helmet pops).
+  if (game.state !== STATE.REPLAY) {
+    const ev = game.replay.evPool.pop() || {};
+    ev.type = 'tear'; ev.fi = game.replay.frames.length; ev.pIdx = game.all.indexOf(ch);
+    ev.hx = hx; ev.hz = hz; ev.power = power || 80; ev.fired = false;
+    game.replay.events.push(ev);
+  }
+}
+function updateTornPieces(dt) {
+  if (!tornPieces.length) return;
+  const G = 20;
+  for (const f of tornPieces) {
+    if (f.rest) continue;
+    f.vy -= G * dt;
+    const p = f.g.position;
+    p.x += f.vx * dt; p.y += f.vy * dt; p.z += f.vz * dt;
+    if (p.y <= f.restY) {
+      p.y = f.restY;
+      if (f.vy < 0) f.vy = -f.vy * 0.3; // small bounce
+      f.vx *= 0.6; f.vz *= 0.6; f.spin *= 0.5;
+      if (Math.abs(f.vy) < 1 && Math.hypot(f.vx, f.vz) < 0.5) { f.rest = true; f.vy = f.vx = f.vz = 0; }
+    }
+    p.x = THREE.MathUtils.clamp(p.x, -HALF_W + 0.5, HALF_W - 0.5);
+    p.z = THREE.MathUtils.clamp(p.z, -HALF_L + 0.5, HALF_L - 0.5);
+    _hAxis.set(f.ax, f.ay, f.az).normalize(); _hQ.setFromAxisAngle(_hAxis, f.spin * dt); f.g.quaternion.premultiply(_hQ);
+  }
+}
+function restoreTear(ch) {
+  if (!ch.torn) return;
+  ch.torn = false; ch.model.visible = true;
+  if (ch._torn) {
+    ch._torn.top.g.visible = false; ch._torn.bottom.g.visible = false;
+    for (let i = tornPieces.length - 1; i >= 0; i--) if (tornPieces[i].g === ch._torn.top.g || tornPieces[i].g === ch._torn.bottom.g) tornPieces.splice(i, 1);
+  }
+}
 // Per-play safety check: guarantee every player sits on the ONE correct field
 // plane with feet down — no sink / lift / lean / ragdoll residue from the prior
 // play carries into the next. Run at every play start (finalizeReset + snap).
@@ -2730,6 +2804,7 @@ function groundPlayers() {
   for (const ch of game.all) {
     if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
     restoreHelmet(ch); // snap a popped-off helmet back onto the head
+    restoreTear(ch);   // un-split a torn-in-half body
     restoreRestPose(ch); // clean skeleton each play (no bone-position drift from ragdolls/replay)
     ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0; ch.fatigue = 1; // fresh legs each play
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
@@ -2918,8 +2993,8 @@ function startReplay(highlight = false) {
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
-  for (const ch of game.all) restoreHelmet(ch); // helmets back on; the replay re-pops them at the recorded frame
-  for (const ev of r.events) ev.fired = false;  // arm the pop events for this replay pass
+  for (const ch of game.all) { restoreHelmet(ch); restoreTear(ch); } // reset gore; the replay re-enacts it at the recorded frame
+  for (const ev of r.events) ev.fired = false;  // arm the gore events for this replay pass
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
   document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
@@ -2968,7 +3043,7 @@ function updateReplay(dt) {
     if (r.fade >= 1) { // fully black — switch angle and restart the play from the top
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.loops++;
       r.i = 0; r.seg = 0; r.snap = true; r.phase = 'fadein'; r.rate = 0.85; setReplayLabel(); // later loops run full-speed from the top
-      for (const ch of game.all) restoreHelmet(ch); // re-seat helmets so they pop again this loop
+      for (const ch of game.all) { restoreHelmet(ch); restoreTear(ch); } // reset gore so it re-enacts this loop
       for (const ev of r.events) ev.fired = false;
     }
   } else { // fadein: replay runs from the start while we fade back up from black
@@ -2977,9 +3052,11 @@ function updateReplay(dt) {
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
   if (rpFadeEl) rpFadeEl.style.opacity = r.fade.toFixed(3);
-  // Re-enact each helmet pop (flying helmet + blood geyser) as playback reaches it.
+  // Re-enact each gore event (helmet pop or torn-in-half) as playback reaches it.
   for (const ev of r.events) {
-    if (!ev.fired && r.i >= ev.fi) { ev.fired = true; const ch = game.all[ev.pIdx]; if (ch) popHelmet(ch, ev.hx, ev.hz, ev.power); }
+    if (ev.fired || r.i < ev.fi) continue;
+    ev.fired = true; const ch = game.all[ev.pIdx]; if (!ch) continue;
+    if (ev.type === 'tear') tearInHalf(ch, ev.hx, ev.hz, ev.power); else popHelmet(ch, ev.hx, ev.hz, ev.power);
   }
   driveReplayFlames(dt, r.i); // ON FIRE / turbo flames follow the replayed bodies
 }
@@ -4151,14 +4228,16 @@ function beginTackle(lead, force = false) {
     else if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); shake.add(0.72); impactFlash(true); }
     else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); shake.add(0.5); impactFlash(false); }
     audio.bigHit();
-    // DIRTY hit: knock the runner's helmet clean off (tumbling ballistic prop),
-    // and the tackler showboats a standover over the downed runner.
-    // TESTING: pop on any big/gang hit (not just dirty) to see it more often.
-    if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
+    // Gore: most often the helmet pops off; rarely the whole body is RIPPED IN
+    // HALF at the waist (head stays with the top). The two are mutually exclusive.
+    const tear = (big || gang) && Math.random() < 0.12;
+    if (tear) tearInHalf(carrier, hitX, hitZ, power);
+    else if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
-    if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
+    if (tear) showBanner('RIPPED IN HALF!', '#ff2a2a', { power });
+    else if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
-    setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
+    setStatus(tear ? 'RIPPED IN HALF!' : dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
     audio.say(dirty ? 'dirtyHit' : gang ? 'gang' : 'bigHit');
     game.replay.bigHit = true; // a violent instant hit (big/dirty/gang) always earns the slow-mo highlight
   } else {
@@ -5371,6 +5450,7 @@ function animate() {
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
+  updateTornPieces(dt);    // torn-in-half body chunks tumble + settle
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
