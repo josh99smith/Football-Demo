@@ -2396,6 +2396,7 @@ function groundPlayers() {
   for (const ch of game.all) {
     if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
     restoreHelmet(ch); // snap a popped-off helmet back onto the head
+    restoreRestPose(ch); // clean skeleton each play (no bone-position drift from ragdolls/replay)
     ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0; ch.fatigue = 1; // fresh legs each play
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
@@ -3903,17 +3904,24 @@ function anyRagdollActive() {
   return false;
 }
 
+// Snap a player's bones back to their rest transforms. CRITICAL: clips are
+// rotation-only (the mixer writes quaternions + Hips.Y, never other bone
+// POSITIONS), so anything that moves bone positions — the ragdoll drive AND the
+// instant replay (applyReplayFrame overwrites every bone position with recorded,
+// sometimes ragdoll-collapsed, frames) — leaves them permanently displaced
+// unless we restore them here. Without it: legs under the turf, worsening each
+// replay. Must run for ALL players, not just the ones flagged ragdolling.
+function restoreRestPose(ch) {
+  if (!ch.restPose) return;
+  for (const [bone, pos, quat] of ch.restPose) { bone.position.copy(pos); bone.quaternion.copy(quat); }
+}
 function clearRagdolls() {
   for (const ch of game.all) {
     const wasRagdoll = ch.ragdolling || (ch.ragdoll && ch.ragdoll.active);
     if (ch.ragdoll) ch.ragdoll.dispose();
     ch.ragdolling = false;
-    // Snap every bone back to its rest pose so the mixer (rotation-only) starts
-    // from a clean skeleton — fixes lower-body-under-the-field after a tackle.
-    if (wasRagdoll && ch.restPose) {
-      for (const [bone, pos, quat] of ch.restPose) { bone.position.copy(pos); bone.quaternion.copy(quat); }
-      ch.mixer.setTime(0); // re-evaluate the current clip onto the clean pose
-    }
+    restoreRestPose(ch);
+    if (wasRagdoll && ch.mixer) ch.mixer.setTime(0); // re-evaluate the current clip onto the clean pose
   }
 }
 
@@ -4483,6 +4491,12 @@ function updatePlay(dt) {
       p.set(Number.isFinite(h.x) ? h.x : 0, 0, Number.isFinite(h.z) ? h.z : 0);
       ch.vel.set(0, 0, 0); ch.speed = 0;
     }
+    // Also self-heal the scalar state the sweep used to miss: a NaN heading (e.g.
+    // atan2 of a transient NaN velocity) is never written by the mixer, so it
+    // would persist and spread NaN through every sin/cos -> erratic movement.
+    if (!Number.isFinite(ch.heading)) ch.heading = 0;
+    if (!Number.isFinite(ch.speed)) ch.speed = 0;
+    if (ch.desired && (!Number.isFinite(ch.desired.x) || !Number.isFinite(ch.desired.z))) { ch.desired.x = 0; ch.desired.z = 0; }
     clampToField(ch);
     if (liveBall) updateFatigue(ch, dt); // tire with exertion while the ball's live
   }
