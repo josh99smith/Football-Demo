@@ -2189,6 +2189,22 @@ function resetGame() {
 const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 // Prepare the next play's roles, formation spots and ball/marker state.
 // teleport=true snaps players to formation (kickoff); false lets them walk back.
+// Per-play safety check: guarantee every player sits on the ONE correct field
+// plane with feet down — no sink / lift / lean / ragdoll residue from the prior
+// play carries into the next. Run at every play start (finalizeReset + snap).
+function groundPlayers() {
+  for (const ch of game.all) {
+    if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
+    ch.ragdolling = false; ch.grabbing = false;
+    const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
+    if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
+    if (!Number.isFinite(p.z)) p.z = Number.isFinite(h.z) ? h.z : 0;
+    p.y = 0;                                      // feet attached to the field
+    ch.group.rotation.set(0, ch.heading || 0, 0); // upright — clear any lean/tilt
+    ch.vel.set(0, 0, 0); ch.speed = 0;
+    clampToField(ch);
+  }
+}
 function preparePlay(teleport) {
   // Who's on the ground? They'll pop up with a get-up before walking back (only
   // on the jog-back reset, not a kickoff teleport).
@@ -2276,6 +2292,7 @@ function updateReset(dt) {
 }
 function finalizeReset() {
   for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
+  groundPlayers(); // per-play check: everyone on the field plane, feet down
   game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
   if (game.userOnOffense) {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
@@ -2446,6 +2463,7 @@ function snap() {
   game.state = STATE.LIVE;
   cam.fovKick = 5; // quick zoom punch on the snap
   cam.special = null; // drop the pre-snap hero shot
+  groundPlayers(); // per-play check: every player on the field plane, feet attached
   clearPlayResult(); // wipe last play's readout
   recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
