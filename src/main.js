@@ -1806,13 +1806,14 @@ function updateDefense() {
   const inAir = ball.mode === 'flying';
   for (const d of game.defense) {
     if (d.ragdolling || d === game.controlled) continue; // knocked down, or the player drives him
-    d.engaged = false;
+    d.engaged = false; d.pursuit = false;
     const dp = px(d);
     let steer = { x: 0, z: 0 };
     if (carrierIsRunning && carrier) {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
-      d.turbo = dist2(dp, px(carrier)) > 4 * 4;
+      d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
+      d.pursuit = true;
       // A blocker in the way screens this pursuer (slows him — opens a lane).
       const blk = nearestBlockerTo(dp);
       d.engaged = !!blk && distXZ(px(blk), dp) < 1.6;
@@ -1966,6 +1967,9 @@ function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
   let speed = (ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed) * fatigueSpeed(ch);
   if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
+  // Chase-down burst: a fast defender turboing after the ball carrier in the open
+  // gets a pursuit bonus scaled by SPEED, so a breakaway can be run down.
+  if (ch.pursuit && ch.turbo && ch.rt) speed *= 1 + 0.26 * Math.max(0, ch.rt.speed - 0.5);
   if (ch.engaged) speed *= 0.4; // a pass rusher walled off by a blocker is slowed
   let tvx = 0, tvz = 0;
   if (len > 1e-3) { tvx = dx / len * speed; tvz = dz / len * speed; }
@@ -3018,7 +3022,7 @@ function cpuQB(dt) {
   game.cpuQBTimer -= dt;
   const rusher = nearestDefenderTo(px(qb));
   const pressure = rusher ? distXZ(px(rusher), px(qb)) : 99;
-  const pressured = pressure < 2.4;
+  const pressured = pressure < 3.2; // feel the heat earlier so he doesn't just eat sacks
   // Drop back, then hold the pocket; flee sideways if a rusher closes.
   if (game.cpuQBTimer > 0.35 && !pressured) { qb.desired = { x: 0, z: -game.dir }; qb.turbo = false; }
   else qb.desired = { x: 0, z: 0 };
@@ -3032,16 +3036,18 @@ function cpuQB(dt) {
   const cov = target ? nearestDefenderTo(px(target)) : null;
   const sep = (target && cov) ? distXZ(px(target), px(cov)) : 9;
   const ready = game.cpuQBTimer <= 0;   // dropback finished — only then look to throw
-  const desperate = game.cpuQBTimer < -1.4 || (pressured && pressure < 1.2);
-  if (target && ((ready && (sep > 2.0 || pressured)) || desperate)) {
+  // Under real pressure he'll heave it (even into a tighter window) rather than
+  // take the sack; if there's nothing, he scrambles or throws it away.
+  const desperate = game.cpuQBTimer < -1.2 || (pressured && pressure < 2.1);
+  if (target && ((ready && (sep > 1.8 || pressured)) || desperate)) {
     // Throw to the open man; longer throws get more zip. Accuracy = QB skill.
     ball.targetRecv = target; game.selected = game.receivers.indexOf(target);
     throwBall(THREE.MathUtils.clamp(0.2 + distXZ(px(qb), px(target)) / 50, 0.2, 0.85));
-  } else if (pressured && pastLine(qb)) {
-    enterRun(qb, ''); // take off — he crossed the line
+  } else if (pressured && (pastLine(qb) || pressure < 2.4)) {
+    enterRun(qb, ''); // feeling the rush with no throw — take off and scramble
   } else if (pressured) {
     const away = Math.sign(qb.group.position.x - (rusher ? rusher.group.position.x : 0)) || 1;
-    qb.desired = { x: away, z: game.dir * 0.25 }; qb.turbo = true; // climb/escape the pocket
+    qb.desired = { x: away, z: game.dir * 0.3 }; qb.turbo = true; // climb/escape the pocket
   } else if (ready) {
     game.cpuQBTimer = 0.25; // nobody open yet — keep scanning
   }
