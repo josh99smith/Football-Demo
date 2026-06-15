@@ -2725,12 +2725,14 @@ function restoreHelmet(ch) {
 }
 
 // --- TORN IN HALF: a rare, brutal big-hit gore hook. The body splits at the
-// waist into two rigid chunks (top: torso + head + arms; bottom: pelvis + legs)
-// that tumble apart, blood gushing from the split (same spray as the head pop).
-// Each half is a clone of the player's posed mesh with the OTHER half's bone
-// chain collapsed to zero scale. Halves are built once per player and reused.
-const tornPieces = [];
-function buildHalf(ch, collapseNames) {
+// waist into two halves (top: torso + head + arms + helmet; bottom: pelvis +
+// legs), each a full RAGDOLL that flops and settles, blood gushing from the
+// split (same spray as the head pop). Each half is a clone of the player whose
+// body geometry is sliced at the waist (triangles kept on one side only) so the
+// skeleton stays intact — a real ragdoll drives it (no zero-scale bones, which
+// would NaN drive()'s worldToLocal). Built once per player, reused.
+const tornRagdolls = []; // active half ragdolls to step alongside game.all
+function buildHalf(ch, keepTop, bit) {
   // THREE.Object3D.copy() deep-clones userData via JSON; the helmet stores a
   // circular userData.rest (parent bone), which would throw. Blank all userData
   // on the source for the clone, then restore the originals.
@@ -2738,37 +2740,58 @@ function buildHalf(ch, collapseNames) {
   ch.model.traverse((o) => { if (o.userData && Object.keys(o.userData).length) { stash.push([o, o.userData]); o.userData = {}; } });
   let piece;
   try { piece = cloneSkeleton(ch.model); } finally { for (const [o, ud] of stash) o.userData = ud; }
-  piece.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+  // Slice the body mesh at the waist: keep only the triangles on this half's side
+  // (skeleton + skin weights untouched, so a full ragdoll still drives it).
+  let sm = null; piece.traverse((o) => { if (o.isSkinnedMesh && !sm) sm = o; });
+  if (sm && sm.geometry.index) {
+    const geo = sm.geometry.clone(); sm.geometry = geo; // don't touch the shared original
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox, waist = bb.min.y + (bb.max.y - bb.min.y) * 0.5;
+    const pos = geo.attributes.position, src = geo.index.array, keep = [];
+    for (let t = 0; t < src.length; t += 3) {
+      const a = src[t], b = src[t + 1], c = src[t + 2];
+      const my = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
+      if ((my >= waist) === keepTop) keep.push(a, b, c);
+    }
+    geo.setIndex(keep);
+  }
+  // The helmet is a separate mesh on the head bone — keep it only on the top half.
+  if (!keepTop) piece.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) o.visible = false; });
+  piece.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; } });
   const bones = []; piece.traverse((o) => { if (o.isBone) bones.push(o); });
   const g = new THREE.Group(); g.add(piece); g.visible = false; scene.add(g);
-  return { g, bones, collapse: collapseNames };
+  const ragdoll = physics ? new TackleRagdoll(physics) : null;
+  if (ragdoll) ragdoll.bind(piece);
+  return { g, piece, bones, ragdoll, bit, active: false };
 }
-function collapseHalf(half) { for (const b of half.bones) if (half.collapse.includes(b.name)) b.scale.setScalar(0.0001); }
+const _tearHD = new THREE.Vector3(), _tearCV = new THREE.Vector3();
 function tearInHalf(ch, hx, hz, power) {
   if (!ch.model || ch.torn) return;
-  if (!ch._torn) ch._torn = { top: buildHalf(ch, ['LeftUpLeg', 'RightUpLeg']), bottom: buildHalf(ch, ['Spine02']) };
+  if (!ch._torn) ch._torn = { top: buildHalf(ch, true, 0x1000), bottom: buildHalf(ch, false, 0x2000) };
+  // The original body is replaced by the two halves — drop its ragdoll.
+  if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
+  ch.ragdolling = false;
   const T = ch._torn, src = ch.bones;
+  const l = Math.hypot(hx, hz) || 1; _tearHD.set(hx / l, 0, hz / l);
+  const bvx = ch.vel ? ch.vel.x : 0, bvz = ch.vel ? ch.vel.z : 0;
   for (const half of [T.top, T.bottom]) {
-    const dst = half.bones;
-    for (let i = 0; i < dst.length && i < src.length; i++) { dst[i].position.copy(src[i].position); dst[i].quaternion.copy(src[i].quaternion); }
-    collapseHalf(half); // pose copy doesn't touch scale, but re-assert the collapse
-    // Anchor on the field directly under the body, then measure where the lowest
-    // bone sits so the chunk RESTS on the turf (fixed offsets sank it through).
-    half.g.position.set(ch.group.position.x, 0, ch.group.position.z);
-    half.g.quaternion.copy(ch.group.quaternion); half.g.visible = true;
+    const dst = half.bones; // pose the clone to the victim's CURRENT pose (full, incl. scale → valid capsules)
+    for (let i = 0; i < dst.length && i < src.length; i++) { dst[i].position.copy(src[i].position); dst[i].quaternion.copy(src[i].quaternion); dst[i].scale.copy(src[i].scale); }
+    half.g.position.copy(ch.group.position); half.g.quaternion.copy(ch.group.quaternion); half.g.visible = true;
     half.g.updateMatrixWorld(true);
-    let lo = Infinity;
-    for (const b of half.bones) { const y = b.matrixWorld.elements[13]; if (Number.isFinite(y) && y < lo) lo = y; }
-    half.restY = Number.isFinite(lo) ? (0.12 - lo) : 0; // group Y at which the lowest joint rests just above the turf
+    if (half.ragdoll) {
+      // Top half launches up & back; the legs drop and topple. Different collision
+      // bits so the two overlapping ragdolls don't shove each other apart.
+      const up = half === T.top ? 6.5 : 1.0;
+      _tearCV.set(bvx * 0.4, up, bvz * 0.4);
+      half.ragdoll.spawn(_tearCV, _tearHD, half === T.top ? 4 + (power || 80) / 24 : 2, half.bit, 'twist');
+      half.active = half.ragdoll.active;
+      if (half.active && !tornRagdolls.includes(half.ragdoll)) tornRagdolls.push(half.ragdoll);
+    }
   }
   ch.model.visible = false; ch.torn = true; // swap the whole body for the two chunks
-  // Blood geyser from the waist — same particle logic as the head pop.
-  bloodSpray(ch.group.position.x, 1.0, ch.group.position.z, 64);
+  bloodSpray(ch.group.position.x, 1.0, ch.group.position.z, 64); // geyser from the waist
   audio.bigHit();
-  // Launch: the top half flies up and back tumbling; the pelvis/legs drop & topple.
-  const l = Math.hypot(hx, hz) || 1, sp = 2.4 + (power || 80) / 24;
-  tornPieces.push({ g: T.top.g, restY: T.top.restY, vx: (hx / l) * sp + (Math.random() - 0.5) * 1.4, vy: 5.5 + Math.random() * 2.5, vz: (hz / l) * sp + (Math.random() - 0.5) * 1.4, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 5 + Math.random() * 6, rest: false });
-  tornPieces.push({ g: T.bottom.g, restY: T.bottom.restY, vx: (hx / l) * sp * 0.5 + (Math.random() - 0.5), vy: 3 + Math.random() * 1.5, vz: (hz / l) * sp * 0.5 + (Math.random() - 0.5), ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 3 + Math.random() * 3, rest: false });
   // Log the tear so the instant replay can re-enact it (same as helmet pops).
   if (game.state !== STATE.REPLAY) {
     const ev = game.replay.evPool.pop() || {};
@@ -2777,31 +2800,15 @@ function tearInHalf(ch, hx, hz, power) {
     game.replay.events.push(ev);
   }
 }
-function updateTornPieces(dt) {
-  if (!tornPieces.length) return;
-  const G = 20;
-  for (const f of tornPieces) {
-    if (f.rest) continue;
-    f.vy -= G * dt;
-    const p = f.g.position;
-    p.x += f.vx * dt; p.y += f.vy * dt; p.z += f.vz * dt;
-    if (p.y <= f.restY) {
-      p.y = f.restY;
-      if (f.vy < 0) f.vy = -f.vy * 0.3; // small bounce
-      f.vx *= 0.6; f.vz *= 0.6; f.spin *= 0.5;
-      if (Math.abs(f.vy) < 1 && Math.hypot(f.vx, f.vz) < 0.5) { f.rest = true; f.vy = f.vx = f.vz = 0; }
-    }
-    p.x = THREE.MathUtils.clamp(p.x, -HALF_W + 0.5, HALF_W - 0.5);
-    p.z = THREE.MathUtils.clamp(p.z, -HALF_L + 0.5, HALF_L - 0.5);
-    _hAxis.set(f.ax, f.ay, f.az).normalize(); _hQ.setFromAxisAngle(_hAxis, f.spin * dt); f.g.quaternion.premultiply(_hQ);
-  }
-}
 function restoreTear(ch) {
   if (!ch.torn) return;
   ch.torn = false; ch.model.visible = true;
   if (ch._torn) {
-    ch._torn.top.g.visible = false; ch._torn.bottom.g.visible = false;
-    for (let i = tornPieces.length - 1; i >= 0; i--) if (tornPieces[i].g === ch._torn.top.g || tornPieces[i].g === ch._torn.bottom.g) tornPieces.splice(i, 1);
+    for (const half of [ch._torn.top, ch._torn.bottom]) {
+      half.g.visible = false; half.active = false;
+      if (half.ragdoll && half.ragdoll.active) half.ragdoll.dispose();
+      const i = tornRagdolls.indexOf(half.ragdoll); if (i >= 0) tornRagdolls.splice(i, 1);
+    }
   }
 }
 // Per-play safety check: guarantee every player sits on the ONE correct field
@@ -5457,7 +5464,6 @@ function animate() {
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
-  updateTornPieces(dt);    // torn-in-half body chunks tumble + settle
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
@@ -5465,13 +5471,15 @@ function animate() {
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
   // visible 1/60 chunks. Then the rigid bodies drive the skinned bones.
-  if (physics && anyRagdollActive()) {
+  if (physics && (anyRagdollActive() || tornRagdolls.length)) {
     physics.step(Math.min(dt, 1 / 30), (subDt) => {
       for (const ch of game.all)
         if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.applyLimits(subDt);
+      for (const rd of tornRagdolls) if (rd.active) rd.applyLimits(subDt); // torn-in-half body halves
     });
     for (const ch of game.all)
       if (ch.ragdolling && ch.ragdoll && ch.ragdoll.active) ch.ragdoll.drive();
+    for (const rd of tornRagdolls) if (rd.active) rd.drive();
   }
 
   updateAmbience(realDt);
