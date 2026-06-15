@@ -2749,6 +2749,7 @@ function enterReset(teleport) {
   cam.fwdX = Math.sin(face); cam.fwdZ = Math.cos(face);
   if (game.gameOver) {
     game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = PLAY_CLOCK;
+    if (playSelectEl) playSelectEl.classList.add('hidden'); // never strand the play picker over the finale
     if (!game.finale) startFinale(); // kick off the winners' dance party
     updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
     return;
