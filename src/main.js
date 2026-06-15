@@ -1061,6 +1061,9 @@ function makeCharacter(team) {
     // Face forward: world-identity orientation at rest = headWorldQuat^-1.
     helmet.quaternion.copy(hq).invert();
     headBone.add(helmet);
+    // Remember the rest attachment so a popped-off helmet can snap back next play.
+    helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
+    helmet.userData.flying = false;
   }
 
   return {
@@ -2196,12 +2199,62 @@ function resetGame() {
 const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 // Prepare the next play's roles, formation spots and ball/marker state.
 // teleport=true snaps players to formation (kickoff); false lets them walk back.
+// --- Popped helmets (a DIRTY HIT knocks the runner's lid off) ---------------
+// A lightweight ballistic prop (gravity + bounce + tumble), not a Rapier body.
+const flyingHelmets = [];
+const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion();
+function popHelmet(ch, hx, hz, power) {
+  const h = ch.helmet;
+  if (!h || !h.userData.rest || h.userData.flying) return;
+  scene.attach(h); // detach from the head bone, keeping its current world transform
+  h.userData.flying = true;
+  const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
+  flyingHelmets.push({
+    h,
+    vx: (hx / l) * spd + ch.vel.x * 0.3 + (Math.random() - 0.5) * 1.6,
+    vy: 5.5 + Math.random() * 2.6,
+    vz: (hz / l) * spd + ch.vel.z * 0.3 + (Math.random() - 0.5) * 1.6,
+    ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5,
+    spin: 13 + Math.random() * 10, rest: false,
+  });
+  audio.fence(0.3); // chin-strap pop / clatter
+}
+function updateFlyingHelmets(dt) {
+  if (!flyingHelmets.length) return;
+  const G = 22, GROUND = 0.28;
+  for (const f of flyingHelmets) {
+    if (f.rest) continue;
+    f.vy -= G * dt;
+    const p = f.h.position;
+    p.x += f.vx * dt; p.y += f.vy * dt; p.z += f.vz * dt;
+    if (p.y <= GROUND) {
+      p.y = GROUND;
+      if (f.vy < 0) f.vy = -f.vy * 0.42;          // bounce
+      f.vx *= 0.7; f.vz *= 0.7; f.spin *= 0.6;    // friction
+      if (Math.abs(f.vy) < 1.2 && Math.hypot(f.vx, f.vz) < 0.6) { f.rest = true; f.vy = f.vx = f.vz = 0; }
+    }
+    p.x = THREE.MathUtils.clamp(p.x, -HALF_W + 0.3, HALF_W - 0.3);
+    p.z = THREE.MathUtils.clamp(p.z, -HALF_L + 0.3, HALF_L - 0.3);
+    _hAxis.set(f.ax, f.ay, f.az).normalize();
+    _hQ.setFromAxisAngle(_hAxis, f.spin * dt);
+    f.h.quaternion.premultiply(_hQ);              // tumble
+  }
+}
+function restoreHelmet(ch) {
+  const h = ch.helmet;
+  if (!h || !h.userData.flying) return;
+  const r = h.userData.rest;
+  h.userData.flying = false;
+  r.parent.add(h); h.position.copy(r.pos); h.quaternion.copy(r.quat); h.scale.copy(r.scale);
+  const i = flyingHelmets.findIndex((f) => f.h === h); if (i >= 0) flyingHelmets.splice(i, 1);
+}
 // Per-play safety check: guarantee every player sits on the ONE correct field
 // plane with feet down — no sink / lift / lean / ragdoll residue from the prior
 // play carries into the next. Run at every play start (finalizeReset + snap).
 function groundPlayers() {
   for (const ch of game.all) {
     if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
+    restoreHelmet(ch); // snap a popped-off helmet back onto the head
     ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0;
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
@@ -3435,7 +3488,9 @@ function beginTackle(lead, force = false) {
     else if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); shake.add(0.72); impactFlash(true); }
     else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); shake.add(0.5); impactFlash(false); }
     audio.bigHit();
-    // Standover: after a DIRTY hit the tackler showboats over the downed runner.
+    // DIRTY hit: knock the runner's helmet clean off (tumbling ballistic prop),
+    // and the tackler showboats a standover over the downed runner.
+    if (dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
     if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
@@ -4542,6 +4597,7 @@ function animate() {
   // tackles) while the camera/shake run on real time and stay snappy.
   const dt = realDt * timeScale.update(realDt);
   updatePlay(dt);
+  updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
 
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
