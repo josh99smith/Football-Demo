@@ -1241,6 +1241,76 @@ function makeGlowTexture() {
   g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
+
+// --- Touchdown celebration FX: fireworks + sweeping spotlights --------------
+const FW_COLORS = [0xff4d4d, 0x4d9bff, 0xffd23a, 0x6dff8a, 0xff7adf, 0xffffff];
+const fwSparks = [];            // pooled additive glow sprites (the spark trails)
+const fwLights = [];            // brief colored point-flashes at each burst
+const sweepLights = [];         // colored spotlights that sweep the field
+let fwLightI = 0;
+const celebFx = { active: false, t: 0, next: 0, z: 0 };
+(function initCelebFx() {
+  const tex = makeGlowTexture();
+  for (let i = 0; i < 170; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    s.visible = false; s.userData = { vx: 0, vy: 0, vz: 0, life: 0, max: 1, base: 1 }; scene.add(s); fwSparks.push(s);
+  }
+  for (let i = 0; i < 4; i++) { const L = new THREE.PointLight(0xffffff, 0, 70, 1.6); L.visible = false; L.userData = { f: 0 }; scene.add(L); fwLights.push(L); }
+  for (let i = 0; i < 3; i++) {
+    const L = new THREE.SpotLight([0xff5555, 0x55a0ff, 0xffe24a][i], 0, 150, Math.PI / 9, 0.55, 1.0);
+    L.position.set(Math.cos(i / 3 * Math.PI * 2) * 34, 40, Math.sin(i / 3 * Math.PI * 2) * 34);
+    L.visible = false; // off (and skipped by the renderer) except during a celebration
+    scene.add(L); scene.add(L.target); sweepLights.push(L);
+  }
+})();
+function fireworkBurst(x, y, z) {
+  const col = FW_COLORS[(Math.random() * FW_COLORS.length) | 0];
+  let n = 0;
+  for (const s of fwSparks) {
+    if (s.userData.life > 0) continue;
+    s.visible = true; s.position.set(x, y, z); s.material.color.setHex(col); s.material.opacity = 1;
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = 6 + Math.random() * 11;
+    const u = s.userData;
+    u.vx = Math.sin(ph) * Math.cos(th) * sp; u.vy = Math.cos(ph) * sp; u.vz = Math.sin(ph) * Math.sin(th) * sp;
+    u.life = u.max = 0.9 + Math.random() * 0.7; u.base = 0.8 + Math.random() * 0.8;
+    if (++n >= 30) break;
+  }
+  const L = fwLights[fwLightI++ % fwLights.length];
+  L.color.setHex(col); L.position.set(x, y, z); L.intensity = 7; L.visible = true; L.userData.f = 1;
+}
+function updateCelebFx(dt) {
+  // sparks: gravity + fade
+  for (const s of fwSparks) {
+    const u = s.userData; if (u.life <= 0) continue;
+    u.life -= dt;
+    if (u.life <= 0) { s.visible = false; s.material.opacity = 0; continue; }
+    u.vy -= 9 * dt;
+    s.position.x += u.vx * dt; s.position.y += u.vy * dt; s.position.z += u.vz * dt;
+    const f = u.life / u.max; s.material.opacity = f;
+    const sc = u.base * (0.5 + f * 0.7); s.scale.set(sc, sc, sc);
+  }
+  for (const L of fwLights) if (L.visible) { L.userData.f -= dt * 2.2; L.intensity = Math.max(0, L.userData.f) * 7; if (L.userData.f <= 0) L.visible = false; }
+  // show controller: schedule bursts + sweep the spotlights, then ease off
+  if (celebFx.active) {
+    celebFx.t += dt; celebFx.next -= dt;
+    if (celebFx.next <= 0 && celebFx.t < 3.0) {
+      celebFx.next = 0.16 + Math.random() * 0.34;
+      fireworkBurst((Math.random() - 0.5) * 72, 24 + Math.random() * 16, celebFx.z * 0.4 + (Math.random() - 0.5) * 56);
+    }
+    for (let i = 0; i < sweepLights.length; i++) {
+      const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 7, 8);
+      const a = celebFx.t * 1.7 + i * 2.1;
+      L.target.position.set(Math.cos(a) * 22, 0, celebFx.z * 0.3 + Math.sin(a) * 22); L.target.updateMatrixWorld();
+    }
+    if (celebFx.t > 3.4) celebFx.active = false;
+  } else {
+    for (const L of sweepLights) if (L.visible) { L.intensity = Math.max(0, L.intensity - dt * 5); if (L.intensity <= 0) L.visible = false; }
+  }
+}
+function startCelebrationFx(z) {
+  celebFx.active = true; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  for (const L of sweepLights) L.visible = true; // turn the sweeping spotlights on for the show
+}
 function makeBall() {
   // The ball lives in a GROUP whose local +Z is the long axis; the flight code
   // noses that axis along the arc and spins about it (the spiral).
@@ -3058,7 +3128,7 @@ function endPlay(result, endZ) {
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
-    flashScreen(); confetti(endZ); benchReact(); // celebratory flash + shower + the benches erupt
+    flashScreen(); confetti(endZ); benchReact(); startCelebrationFx(endZ); // flash + shower + benches erupt + fireworks/spotlights
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
       celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
@@ -4774,6 +4844,7 @@ function animate() {
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
+  updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
 
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
