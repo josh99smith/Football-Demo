@@ -1073,6 +1073,8 @@ function makeCharacter(team) {
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
     route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, recoverT: 0, cageJumpCd: 0, engaged: false,
+    tauntT: 0, tauntCd: 0, diveT: 0, diveCd: 0, // showboat window/cooldown + diving-tackle window/cooldown
+    backped: false,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -2017,6 +2019,11 @@ function carrierContext(c) {
     return { label: 'HURDLE', hot: true, run: (x) => doHurdle(x, ahead) };
   if (ahead && c.jukeCd <= 0)
     return { label: 'STIFF ARM', hot: true, run: (x) => stiffArm(x, ahead) };
+  // Wide open downfield (nearest defender well back) — showboat for style (risk:
+  // a hit while taunting strips the ball; reward: a turbo pop if you survive it).
+  const nd = nearestDefenderTo(px(c));
+  if (fast && c.tauntCd <= 0 && (!nd || distXZ(px(c), px(nd)) > 9))
+    return { label: 'TAUNT', hot: false, run: doTaunt };
   return { label: 'JUKE', hot: false, run: doJuke };
 }
 // Refresh the action button to the carrier's current context (called per-frame
@@ -2195,7 +2202,7 @@ const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 function groundPlayers() {
   for (const ch of game.all) {
     if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
-    ch.ragdolling = false; ch.grabbing = false;
+    ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0;
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
     if (!Number.isFinite(p.z)) p.z = Number.isFinite(h.z) ? h.z : 0;
@@ -2658,19 +2665,30 @@ function updateCpuRun(dt, turboOn, actionEdge) {
   if (!c) { endPlay('incomplete', game.los); return; }
   // Re-acquire control if our man got knocked down (or was never set).
   if (!game.controlled || game.controlled.ragdolling) switchDefender();
-  if (actionEdge && game.controlled) { // dive/lunge tackle with the controlled defender
-    const o = game.controlled, dx = c.group.position.x - o.group.position.x, dz = c.group.position.z - o.group.position.z;
-    const l = Math.hypot(dx, dz) || 1; const burst = o.baseSpeed * 1.25;
-    o.vel.x = dx / l * burst; o.vel.z = dz / l * burst; o.heading = Math.atan2(dx, dz);
-    playOneShot(o, 'tackle', 0.4);
-    if (l <= 2.4) { beginTackle(o); return; }
+  const o = game.controlled;
+  if (o && o.diveCd > 0) o.diveCd -= dt;
+  // An airborne dive in progress: carry the leap, then connect or eat the turf.
+  if (o && o.diveT > 0) {
+    o.diveT -= dt;
+    o.group.position.x += o.vel.x * dt; o.group.position.z += o.vel.z * dt; // momentum carries the dive
+    o.speed = Math.hypot(o.vel.x, o.vel.z); clampToField(o);
+    if (distXZ(px(o), px(c)) <= 1.9) { o.diveT = 0; beginTackle(o); return; } // dive connects
+    if (o.diveT <= 0) knockdownDefender(o); // whiffed the dive -> hits the turf, carrier slips away
+  } else if (actionEdge && o) {
+    const dx = c.group.position.x - o.group.position.x, dz = c.group.position.z - o.group.position.z;
+    const l = Math.hypot(dx, dz) || 1; o.heading = Math.atan2(dx, dz);
+    if (l <= 2.4) { // in range: an immediate lunge tackle
+      const burst = o.baseSpeed * 1.25; o.vel.x = dx / l * burst; o.vel.z = dz / l * burst;
+      playOneShot(o, 'tackle', 0.4); beginTackle(o); return;
+    }
+    if (l <= 4.2 && o.diveCd <= 0) diveTackle(o, dx / l, dz / l); // just out of reach: leave your feet
   }
   // Carrier AI: head for the goal, cut from the nearest defender.
   let steer = seek(px(c), THREE.MathUtils.clamp(c.group.position.x * 0.5, -14, 14), atkGoalZ() + game.dir * 3);
   const chaser = nearestDefenderTo(px(c));
   if (chaser) { const ax = c.group.position.x - chaser.group.position.x, al = Math.abs(ax) || 1; steer = addSteer(steer, { x: ax / al, z: 0 }, 0.5); }
   c.desired = addSteer(steer, separation(c, game.offense, 2.5), 0.2); c.turbo = true;
-  if (game.controlled) { const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1); controlledMove(game.controlled, dt, top); }
+  if (game.controlled && !game.controlled.ragdolling && game.controlled.diveT <= 0) { const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1); controlledMove(game.controlled, dt, top); } // (the dive integrates its own momentum)
   updateOffense(dt); updateDefense();
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
   aiCarrierMoves(c, game.defense, game.dir, dt); // CPU hurdles / kicks off the fence too
@@ -3340,9 +3358,10 @@ function beginTackle(lead, force = false) {
   }
 
   // Random FUMBLE: a jarring hit can knock the ball loose. Bigger hits and gang
-  // tackles pop it more often. The carrier goes down and the ball pops free for
-  // a live scramble (see startFumble) instead of the play ending.
-  if (Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0)) {
+  // tackles pop it more often — and a hit while TAUNTING strips it every time
+  // (that's the risk of showboating). The carrier goes down and the ball pops
+  // free for a live scramble (see startFumble) instead of the play ending.
+  if (carrier.tauntT > 0 || Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0)) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
@@ -3416,6 +3435,8 @@ function beginTackle(lead, force = false) {
     else if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); shake.add(0.72); impactFlash(true); }
     else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); shake.add(0.5); impactFlash(false); }
     audio.bigHit();
+    // Standover: after a DIRTY hit the tackler showboats over the downed runner.
+    if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
     if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
     setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
@@ -3814,7 +3835,13 @@ function applyArmAction(ch, dt) {
   const tgt = ch.armPoseTarget;
   const chestY = ch.group.position.y + 1.2;
   const reach = tgt ? THREE.MathUtils.clamp(1.2 + (tgt.y - chestY) * 1.0, 0.4, 2.6) : 1.6;
-  if (ch.armPose === 'stiffarm') {
+  if (ch.armPose === 'taunt') {
+    // Thrust the ball arm overhead and HOLD it there — showboating with the ball
+    // aloft while still running (the carried ball follows the hand up).
+    const e = Math.min(1, t * 4);
+    _tq.setFromAxisAngle(_xAxisL, -2.6 * e); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.2 * e); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+  } else if (ch.armPose === 'stiffarm') {
     // The off-arm punches straight out to ward off / truck — extends fast and
     // HOLDS for the move (not a quick wind-and-return), so it reads as a stiff-arm.
     const e = Math.min(1, t * 5);
@@ -3959,6 +3986,26 @@ function doJuke(ch) {
   shake.kick(rx * side, rz * side, 0.25);
   playOneShot(ch, 'juke', 0.45); // dodge-roll animation
   audio.juke();
+}
+// Blitz TAUNT: thrust the ball aloft and showboat mid-stride in the open field.
+// Risk/reward — a hit while the window is open strips the ball (see beginTackle);
+// survive it and you get a turbo pop (see the RUN timer block).
+function doTaunt(ch) {
+  if (ch.tauntCd > 0) return;
+  ch.tauntCd = 2.2; ch.tauntT = 1.0;            // cooldown + the vulnerable showboat window
+  triggerArmAction(ch, 'taunt', 1.0, null);     // ball arm raised overhead, overlaid on the run
+  showBanner('TAUNT!', '#ffd23a', { icon: 'star' });
+  audio.cheer(0.5); shake.kick(0, 0, 0.05);
+}
+// Blitz DIVING TACKLE (defense): leave your feet to extend the reach when the
+// carrier is just out of lunge range. (nx,nz) is the unit dir to the carrier;
+// the airborne window resolves to a hit or a whiff in updateCpuRun.
+function diveTackle(o, nx, nz) {
+  o.diveCd = 1.4; o.diveT = 0.42;                 // cooldown + airborne window
+  const burst = o.baseSpeed * 1.75;
+  o.vel.x = nx * burst; o.vel.z = nz * burst;     // launch toward the carrier
+  playOneShot(o, o.actions.divecatch ? 'divecatch' : 'tackle', 0.5, true); // airborne dive pose
+  shake.kick(nx, nz, 0.1);
 }
 
 // A non-ragdolling defender roughly in front of the carrier (within `dist`,
@@ -4195,6 +4242,8 @@ function updatePlay(dt) {
       if (c.jukeCd > 0) c.jukeCd -= dt;
       if (c.spinT > 0) c.spinT -= dt;
       if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
+      if (c.tauntCd > 0) c.tauntCd -= dt;
+      if (c.tauntT > 0) { c.tauntT -= dt; if (c.tauntT <= 0) game.turboMeter = Math.min(1, game.turboMeter + 0.25); } // survived the showboat -> turbo pop
       tryCageJump(c); // driven into the fence at speed -> kick off it, stay in play
       const top = c.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
       controlledMove(c, dt, top);
