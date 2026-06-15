@@ -827,8 +827,8 @@ function addBloodStain(x, z) {
 }
 function clearBloodStains() { for (const m of bloodStains) { m.visible = false; m.material.opacity = 0; } }
 // Touchdown confetti: a full-pool, multi-color shower that rains down.
-function confetti(z) {
-  const x = game.carrier ? game.carrier.group.position.x : 0;
+function confetti(z, atX) {
+  const x = Number.isFinite(atX) ? atX : (game.carrier ? game.carrier.group.position.x : 0);
   const zc = THREE.MathUtils.clamp(z, -HALF_L + 2, HALF_L - 2);
   const cols = [0xffd23a, 0xff5a5a, 0x5a8bff, 0x5aff8a, 0xff8af0, 0xffffff];
   let i = 0;
@@ -1268,6 +1268,7 @@ const game = {
   resetTimer: 0,                        // between-plays walk-back countdown
   replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
+  finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
@@ -1400,11 +1401,7 @@ function updateCelebFx(dt) {
 
   if (celebFx.mode === 'fireworks') {
     celebFx.t += dt;
-    for (let i = fwShells.length - 1; i >= 0; i--) {  // rising shells leave a trail, then burst
-      const sh = fwShells[i]; sh.y += sh.vy * dt; sh.vy -= 13 * dt; sh.fuse -= dt; sh.trail -= dt;
-      if (sh.trail <= 0) { sh.trail = 0.02; spawnSpark(sh.x + (Math.random() - 0.5) * 0.3, sh.y, sh.z + (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 1.5, -1 - Math.random() * 2, (Math.random() - 0.5) * 1.5, 0.3 + Math.random() * 0.2, 0.35 + Math.random() * 0.25, 0xffd9a0, 0.6, false); }
-      if (sh.fuse <= 0 || sh.vy < 2) { fireworkBurst(sh.x, sh.y, sh.z, sh.col); fwShells.splice(i, 1); }
-    }
+    stepShells(dt);
     celebFx.next -= dt;
     if (celebFx.next <= 0 && celebFx.t < 3.2) {
       celebFx.next = 0.3 + Math.random() * 0.4;
@@ -1412,6 +1409,24 @@ function updateCelebFx(dt) {
       if (Math.random() < 0.5) launchShell((Math.random() - 0.5) * 70, celebFx.z * 0.35 + (Math.random() - 0.5) * 50);
     }
     if (celebFx.t > 4.0 && fwShells.length === 0) celebFx.mode = null;
+  } else if (celebFx.mode === 'party') {
+    // End-of-game dance party: a partial dim (dancers stay lit), a rainbow strobe,
+    // color-cycling sweep spotlights, and a steady drizzle of fireworks. Runs
+    // until stopCelebParty() flips the mode off (REMATCH).
+    celebFx.t += dt;
+    celebFx.dim = Math.min(0.5, celebFx.dim + dt * 1.5); applyArenaDim(celebFx.dim);
+    const hue = (t * 0.5) % 1;
+    strobe.visible = true; strobe.color.setHSL(hue, 1, 0.5);
+    strobe.intensity = (Math.sin(t * 26) > 0 ? 1.9 : 0.25);
+    for (let i = 0; i < sweepLights.length; i++) {
+      const L = sweepLights[i]; L.color.setHSL((hue + i / sweepLights.length) % 1, 1, 0.6);
+      L.intensity = Math.min(L.intensity + dt * 8, 9);
+      const a = celebFx.t * 2.4 + i * 2.1;
+      L.target.position.set(Math.cos(a) * 18, 0, celebFx.z * 0.3 + Math.sin(a) * 18); L.target.updateMatrixWorld();
+    }
+    stepShells(dt);
+    celebFx.next -= dt;
+    if (celebFx.next <= 0) { celebFx.next = 0.55 + Math.random() * 0.5; launchShell((Math.random() - 0.5) * 70, celebFx.z * 0.3 + (Math.random() - 0.5) * 44); }
   } else if (celebFx.mode === 'lightshow') {
     celebFx.t += dt;
     celebFx.dim = Math.min(1, celebFx.dim + dt * 2.5); applyArenaDim(celebFx.dim);
@@ -1438,6 +1453,22 @@ function startLightShow(z) {
   celebFx.mode = 'lightshow'; celebFx.t = 0; celebFx.z = Number.isFinite(z) ? z : 0;
   for (const L of sweepLights) { L.color.setHex(0xffffff); L.intensity = 0; L.visible = true; } // white field spotlights
   audio.cheer(0.6);
+}
+// Rising shells trail then burst — shared by the fireworks celeb and the party.
+function stepShells(dt) {
+  for (let i = fwShells.length - 1; i >= 0; i--) {
+    const sh = fwShells[i]; sh.y += sh.vy * dt; sh.vy -= 13 * dt; sh.fuse -= dt; sh.trail -= dt;
+    if (sh.trail <= 0) { sh.trail = 0.02; spawnSpark(sh.x + (Math.random() - 0.5) * 0.3, sh.y, sh.z + (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 1.5, -1 - Math.random() * 2, (Math.random() - 0.5) * 1.5, 0.3 + Math.random() * 0.2, 0.35 + Math.random() * 0.25, 0xffd9a0, 0.6, false); }
+    if (sh.fuse <= 0 || sh.vy < 2) { fireworkBurst(sh.x, sh.y, sh.z, sh.col); fwShells.splice(i, 1); }
+  }
+}
+function startCelebParty(z) {
+  celebFx.mode = 'party'; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  for (const L of sweepLights) { L.intensity = 0; L.visible = true; }
+  audio.cheer(1);
+}
+function stopCelebParty() {
+  if (celebFx.mode === 'party') celebFx.mode = null; // the restore branch eases the arena back up + fades the lights
 }
 function makeBall() {
   // The ball lives in a GROUP whose local +Z is the long axis; the flight code
@@ -2550,6 +2581,7 @@ function endGame() {
   showBanner('FINAL', game.scoreOff >= game.scoreDef ? '#3fe08a' : '#ff6a5a');
 }
 function resetGame() {
+  endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.scoreOff = 0; game.scoreDef = 0;
   game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
@@ -2676,6 +2708,7 @@ function enterReset(teleport) {
   cam.fwdX = Math.sin(face); cam.fwdZ = Math.cos(face);
   if (game.gameOver) {
     game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = PLAY_CLOCK;
+    if (!game.finale) startFinale(); // kick off the winners' dance party
     updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
     return;
   }
@@ -3359,6 +3392,74 @@ function celebrateTD() {
   for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3, true);
   if (scorer) startSpecialCam('td', scorer, 2.4); // low up-angle flex/standover on the scorer
   return scorer;
+}
+
+// ---- End-of-game DANCE PARTY: the winners bust their best moves while the
+// losers hang their heads, under confetti + a rainbow strobe/spotlight show.
+// Runs from FINAL until the player taps REMATCH (resetGame -> endFinale).
+function startFinale() {
+  const userWon = game.scoreOff >= game.scoreDef;
+  const winners = (userWon ? game.teamA : game.teamB).filter((c) => c && !c.ragdolling);
+  const losers = (userWon ? game.teamB : game.teamA).filter((c) => c && !c.ragdolling);
+  // Center the party on the winners' average spot, kept clear of the end zones.
+  let cx = 0, cz = 0;
+  for (const c of winners) { cx += c.group.position.x; cz += c.group.position.z; }
+  cx = winners.length ? cx / winners.length : 0; cz = winners.length ? cz / winners.length : 0;
+  cx = THREE.MathUtils.clamp(cx, -HALF_W + 10, HALF_W - 10);
+  cz = THREE.MathUtils.clamp(cz, -HALF_L + 24, HALF_L - 24);
+  const center = new THREE.Vector3(cx, 0, cz);
+  // Winners ring up around the middle and dance, facing in.
+  winners.forEach((c, i) => {
+    const a = (i / Math.max(1, winners.length)) * Math.PI * 2;
+    c.group.position.set(cx + Math.cos(a) * 3.6, 0, cz + Math.sin(a) * 3.6);
+    c.heading = Math.atan2(cx - c.group.position.x, cz - c.group.position.z);
+    c.vel.set(0, 0, 0); c.speed = 0; c.sulk = false; c.dancing = true; restoreHelmet(c);
+    if (c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
+  });
+  // Losers slump in a line off to the side, turned away, heads hung.
+  losers.forEach((c, i) => {
+    c.group.position.set(
+      THREE.MathUtils.clamp(cx + (i - (losers.length - 1) / 2) * 2.4, -HALF_W + 3, HALF_W - 3),
+      0, THREE.MathUtils.clamp(cz + 16, -HALF_L + 3, HALF_L - 3));
+    c.heading = Math.atan2(c.group.position.x - cx, c.group.position.z - cz); // facing away from the party
+    c.vel.set(0, 0, 0); c.speed = 0; c.dancing = false; c.sulk = true; c.sulkPh = Math.random() * 6.283;
+    setClip(c, 'idle'); restoreHelmet(c);
+  });
+  cam.special = null; game.celebrating = false;
+  game.finale = { active: true, t: 0, winners, losers, center, confT: 0, userWon };
+  startCelebParty(cz);
+  benchReact();
+  audio.say(userWon ? 'win' : 'lose', { force: true, swell: 1 });
+}
+function updateFinale(dt) {
+  const f = game.finale; if (!f || !f.active) return;
+  f.t += dt;
+  for (const c of f.winners) { // keep them dancing — re-fire the celebrate as it ends
+    if (c.ragdolling) continue;
+    if (c.oneShotT <= 0 && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
+    c.speed = 0; c.vel.set(0, 0, 0);
+  }
+  for (const c of f.losers) { c.speed = 0; c.vel.set(0, 0, 0); }
+  f.confT -= dt; // a steady drizzle of confetti over the dance floor
+  if (f.confT <= 0) { f.confT = 0.7; confetti(f.center.z, f.center.x); }
+}
+function endFinale() {
+  const f = game.finale; if (!f) return;
+  for (const c of [...f.winners, ...f.losers]) { c.sulk = false; c.dancing = false; }
+  game.finale = null; stopCelebParty();
+}
+function driveFinaleCam(dt) {
+  const f = game.finale, c = f.center;
+  const a = f.t * 0.32; // slow showcase orbit around the celebrating winners
+  _tp.set(c.x + Math.sin(a) * 11, 4.6, c.z + Math.cos(a) * 11);
+  _tl.set(c.x, 2.1, c.z);
+  if (f.t < 0.05) { cam.pos.copy(_tp); cam.lookCur.copy(_tl); }
+  else { cam.pos.lerp(_tp, Math.min(1, dt * 2)); cam.lookCur.lerp(_tl, Math.min(1, dt * 3)); }
+  camera.fov += (52 - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix();
+  shake.update(dt);
+  camera.position.set(cam.pos.x + shake.offX, Math.max(1.0, cam.pos.y + shake.offY), cam.pos.z + shake.offZ);
+  camera.lookAt(cam.lookCur);
+  sun.position.set(c.x + 40, 70, c.z + 20); sun.target.position.set(c.x, 0, c.z);
 }
 
 // ===========================================================================
@@ -4435,6 +4536,18 @@ function applyBattleArms(ch, isTackler) {
     if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.12); ch.headBone.quaternion.multiply(_tq); } // chin up
   }
 }
+// Dejected loser pose for the end-game finale: head hung to the chest, shoulders
+// slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
+function applySulkPose(ch) {
+  const t = performance.now() * 0.001;
+  if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.7); ch.headBone.quaternion.multiply(_tq); }
+  const set = (b, r, a) => { if (b && r) { _tq.setFromAxisAngle(_xAxisL, a); b.quaternion.copy(r).multiply(_tq); b.updateMatrixWorld(true); } };
+  set(ch.upperArm, ch.upperArmRest, 0.2); set(ch.foreArm, ch.foreArmRest, 0.5);
+  set(ch.leftArm, ch.leftArmRest, 0.2); set(ch.leftForeArm, ch.leftForeArmRest, 0.5);
+  const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
+  _qLeanY.setFromAxisAngle(_UP, ch.heading); _qLeanX.setFromAxisAngle(_XAX, lean);
+  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
+}
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
 // one-shots (the parkour vault/roll, diving catch, loose-ball scoop, celebration
@@ -4498,6 +4611,7 @@ function updateAnimation(ch, dt) {
   else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
   else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
   else if (ch.armPoseT > 0) applyArmAction(ch, dt);
+  else if (ch.sulk) applySulkPose(ch); // end-game loser: head hung, shoulders slumped
   // Idle variety now comes from real per-player idle clips (see makeCharacter),
   // so no procedural stance offset is layered on top.
   // Keep dynamic poses out of the turf: one-shots clamp in their own branch
@@ -4680,7 +4794,7 @@ function updatePlay(dt) {
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
-    if (game.gameOver) { if (actionEdge) resetGame(); }
+    if (game.gameOver) { updateFinale(dt); if (actionEdge) resetGame(); }
     else if (!game.choosing) {
       if (game.userOnOffense) {
         if (actionEdge) snap();             // QB holds his spot — just snap it
@@ -4974,6 +5088,7 @@ function updateCamera(dt) {
     sun.position.set(b.x + 40, 70, b.z + 20); sun.target.position.set(b.x, 0, b.z);
     return;
   }
+  if (game.finale && game.finale.active) { driveFinaleCam(dt); return; } // end-game dance party
   // Cinematic override (pre-snap hero / post-TD flex). Yields back to live framing
   // when it expires or the play state moves past its moment.
   if (cam.special) {

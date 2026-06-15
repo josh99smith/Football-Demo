@@ -26,6 +26,8 @@ const VO_LINES = {
   firstDown: ['First down!', "Movin' the chains!"],
   sack:      ['Sack!', 'Got the quarterback!', 'Dropped him!'],
   scramble:  ['He takes off!', 'Out of the pocket!'],
+  win:       ['That\'s the ballgame!', 'Final whistle — what a win!', 'Your champions!'],
+  lose:      ['Tough loss out there.', 'Not their night.', 'They left it all on the field.'],
 };
 const VO_CLIPS = { /* event: ['assets/vo/<event>1.mp3', ...] — add real clips here */ };
 export class AudioManager {
