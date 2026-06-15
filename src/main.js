@@ -103,39 +103,42 @@ function makeAdTexture() {
   const adRing = new THREE.Mesh(new THREE.CylinderGeometry(95, 95, 6, 64, 1, true),
     new THREE.MeshBasicMaterial({ map: makeAdTexture(), side: THREE.BackSide }));
   adRing.position.y = 30; scene.add(adRing); adBoardTex = adRing.material.map;
-  // Cut-out fans: real individuals (sliced from a photo, dark background keyed
-  // out) as billboard sprites scattered randomly across rows in the bowl, in
-  // front of the crowd texture — gives the stands real, varied people with depth.
+  // Cut-out fans: real individuals (sliced from a photo, dark bg keyed out) raked
+  // up the bowl in front of the crowd texture. Rendered as ONE InstancedMesh per
+  // atlas cell (each face pre-oriented toward the field center) — ~88 draw calls
+  // for thousands of fans instead of one per sprite, with no per-frame cost.
   {
     const AC = 11, AR = 8, NCELLS = 88;      // atlas grid (88 distinct fans clipped from the sheet)
     new THREE.TextureLoader().load('assets/fans.png', (atlas) => {
-      const img = atlas.image;                // slice each cell into its own canvas texture (robust)
-      const cw = img.width / AC, ch = img.height / AR;
-      const mats = [];                        // one material per individual fan
-      for (let i = 0; i < NCELLS; i++) {
-        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-        cv.getContext('2d').drawImage(img, (i % AC) * cw, Math.floor(i / AC) * ch, cw, ch, 0, 0, cw, ch);
-        const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
-        mats.push(new THREE.SpriteMaterial({ map: t, transparent: true, alphaTest: 0.4, depthWrite: true, fog: true }));
-      }
-      // Rake them up the bowl on a cone a few units INSIDE the wall so they sit
-      // clearly in front of the crowd texture (bowl wall: r80@y-4 -> r96@y30).
-      const ROWS_N = 14, PER_ROW = 175;       // ~2450 fans, packed shoulder-to-shoulder
+      const img = atlas.image, cw = img.width / AC, ch = img.height / AR;
+      const ROWS_N = 16, PER_ROW = 190;       // ~3000 fans, packed shoulder-to-shoulder
       const wallR = (y) => 80 + (y + 4) / 34 * 16;
+      const byCell = Array.from({ length: NCELLS }, () => []); // placements grouped by fan type
       for (let r = 0; r < ROWS_N; r++) {
-        const f = r / (ROWS_N - 1);
-        const yb = 1.5 + f * 24;              // 1.5 .. 25.5 up the tiers (denser rows)
+        const f = r / (ROWS_N - 1), yb = 1.5 + f * 24;
         for (let k = 0; k < PER_ROW; k++) {
-          const a = (k / PER_ROW) * Math.PI * 2 + r * 0.5 * (Math.PI * 2 / PER_ROW) + (Math.random() - 0.5) * 0.018; // stagger rows, tight spacing
+          const a = (k / PER_ROW) * Math.PI * 2 + r * 0.5 * (Math.PI * 2 / PER_ROW) + (Math.random() - 0.5) * 0.018;
           const y = yb + (Math.random() - 0.5) * 0.7;
-          const rr = wallR(y) - 4.2 - Math.random() * 1.2; // tuck inside the wall
-          const s = new THREE.Sprite(mats[(Math.random() * NCELLS) | 0]);
-          s.center.set(0.5, 0);               // anchor at the feet
-          const h = 2.5 + Math.random() * 0.7; // a touch smaller so more pack in
-          s.scale.set(h * 0.45, h, 1);
-          s.position.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
-          scene.add(s);
+          const rr = wallR(y) - 4.2 - Math.random() * 1.2;
+          const h = 2.5 + Math.random() * 0.7;
+          byCell[(Math.random() * NCELLS) | 0].push({ x: Math.cos(a) * rr, y, z: Math.sin(a) * rr, w: h * 0.45, h });
         }
+      }
+      const baseGeo = new THREE.PlaneGeometry(1, 1);
+      const m = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+      for (let cell = 0; cell < NCELLS; cell++) {
+        const list = byCell[cell]; if (!list.length) continue;
+        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+        cv.getContext('2d').drawImage(img, (cell % AC) * cw, Math.floor(cell / AC) * ch, cw, ch, 0, 0, cw, ch);
+        const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, fog: true });
+        const im = new THREE.InstancedMesh(baseGeo, mat, list.length); im.frustumCulled = false;
+        list.forEach((pl, i) => {
+          q.setFromAxisAngle(UP, Math.atan2(-pl.x, -pl.z)); // face the field center
+          pos.set(pl.x, pl.y + pl.h * 0.5, pl.z); scl.set(pl.w, pl.h, 1);
+          im.setMatrixAt(i, m.compose(pos, q, scl));
+        });
+        im.instanceMatrix.needsUpdate = true; scene.add(im);
       }
     });
   }
