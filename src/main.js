@@ -574,10 +574,21 @@ function reticleLive() {
   return s === STATE.LIVE || s === STATE.AIR || s === STATE.RUN || s === STATE.RETURN ||
     s === STATE.TACKLE || s === STATE.BATTLE || s === STATE.LOOSE;
 }
+// Hide every on-field selection element + name tags (used when entering REPLAY,
+// where the per-frame reticle update doesn't run).
+function hideFieldChrome() {
+  ctrlRing.visible = false; selRing.visible = false;
+  carrierSwirl.visible = false; turboArc.visible = false;
+  for (const ch of game.all) if (ch.nameTag) ch.nameTag.visible = false;
+}
 function updateReticles() {
   const t = performance.now() * 0.001;
-  // Blue concentric reticle on the controlled player, pulsing outward.
-  if (ctrlRing.visible && game.controlled) {
+  // Blue concentric reticle on the controlled player, pulsing outward. Self-hide
+  // when there's no valid moment/player so it never strands on the turf.
+  const ctlOk = game.controlled && !game.controlled.ragdolling &&
+    (reticleLive() || (game.state === STATE.PRESNAP && !game.userOnOffense));
+  if (ctrlRing.visible && !ctlOk) ctrlRing.visible = false;
+  if (ctrlRing.visible) {
     const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.035, p.z);
     const rings = ctrlRing.userData.rings;
     for (let i = 0; i < rings.length; i++) {
@@ -2317,6 +2328,9 @@ function startReplay() {
   game.state = STATE.REPLAY;
   r.i = 0; r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
   r.angleIdx = Math.floor(Math.random() * REPLAY_ANGLES.length);
+  // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
+  // the on-field chrome now or it strands at the play's end spot through the replay.
+  hideFieldChrome();
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
   document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
