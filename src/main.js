@@ -3275,6 +3275,7 @@ function endPlay(result, endZ) {
   game.state = STATE.DEAD; game.deadTimer = 1.1;
   hideFieldChrome(); updateButtons(); // never let a reticle/turbo ring outlive the play
   const userHad = game.userOnOffense;
+  let tackleGain = 0; // yards on a tackle/oob result — drives the big-play replay
   game.clockStopped = true; // scores / incompletes / turnovers stop the clock; an in-bounds tackle re-starts it below
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
@@ -3314,6 +3315,7 @@ function endPlay(result, endZ) {
       giveBallTo(!userHad, driveStartForUser(!userHad)); // conceding team kicks off to the other
     } else {
       const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
+      tackleGain = gained;
       if (result === 'incomplete') setPlayResult('INCOMPLETE');
       else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); game.clockStopped = false; } // a tackle/OOB keeps the clock running
       setStatus(result === 'incomplete' ? 'Incomplete'
@@ -3332,8 +3334,17 @@ function endPlay(result, endZ) {
   // Broadcast replay: a big gang-tackle cuts to it immediately; a TD DEFERS it
   // to the end of the dead-ball beat so the celebration plays live first.
   const bigHit = game.replay.bigHit; game.replay.bigHit = false;
-  if (result === 'TD') game.pendingReplay = true;
-  else if (result === 'tackle' && bigHit) startReplay(true); // big/dirty hit → low-angle slow-mo highlight
+  if (result === 'TD') { game.pendingReplay = true; }
+  else if (result === 'tackle' || result === 'oob') {
+    // Show a replay when it's worth it: a violent/dirty hit (slow-mo highlight),
+    // a big gain or a sack (a big play), or — so they show up regularly — an
+    // occasional ordinary tackle. Otherwise straight to the next play.
+    const bigPlay = Math.abs(tackleGain) >= 16;
+    if (bigHit) startReplay(true);            // low-angle slow-mo highlight
+    else if (bigPlay || Math.random() < 0.2) startReplay(false); // multi-angle from the top
+  } else if ((result === 'fumble' || result === 'intercept') && Math.random() < 0.5) {
+    startReplay(false); // turnovers are highlight-worthy too
+  }
 }
 // TD celebration: the scorer + the two nearest teammates break into their dance
 // (each player's celebrate clip was picked at build for variety).
@@ -3616,6 +3627,7 @@ function checkSack() {
     if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
       game.carrier = game.qb; beginTackle(d, true);
       showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit(); audio.say('sack', { force: true });
+      game.replay.bigHit = true; // a sack is always a highlight
       return;
     }
   }
@@ -3892,7 +3904,7 @@ function beginTackle(lead, force = false) {
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
     setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
     audio.say(dirty ? 'dirtyHit' : gang ? 'gang' : 'bigHit');
-    if (dirty || (big && Math.random() < 0.4)) game.replay.bigHit = true; // dirty hit always gets the highlight; big hits sometimes
+    game.replay.bigHit = true; // a violent instant hit (big/dirty/gang) always earns the slow-mo highlight
   } else {
     timeScale.bulletTime(0.22, 0.4, 0.7);
     hitZoom(0.9);
