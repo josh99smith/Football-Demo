@@ -2108,6 +2108,15 @@ const turboBtn = document.getElementById('turbo-btn');
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
+  // Skip / sim controls (tap fires on press; trigger once).
+  const tap = (el, fn) => {
+    if (!el) return;
+    const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); fn(); };
+    el.addEventListener('touchstart', go, { passive: false });
+    el.addEventListener('mousedown', go);
+  };
+  tap(document.getElementById('sim-q'), () => skipQuarter());
+  tap(document.getElementById('sim-end'), () => simToGameEnd());
 })();
 
 // Fullscreen toggle — on mobile this hides the browser address bar so the play
@@ -2285,6 +2294,8 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
     if (e.code === 'KeyE') input.diveEdge = true;   // stiff arm
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
+    if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
+    if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
     if (game.choosing) {
       if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
@@ -2589,6 +2600,36 @@ function resetGame() {
   game.fireCount = 0; douseFire();
   showBanner('KICKOFF', '#ffd23a');
   newPlay();
+}
+
+// ---- Skip / simulate the clock ------------------------------------------
+// Believable points for a quarter we're fast-forwarding past (most quarters a
+// score or two each).
+function simQuarterScore() {
+  const pts = () => { const r = Math.random(); return r < 0.42 ? 0 : r < 0.55 ? 3 : r < 0.86 ? 7 : 14; };
+  game.scoreOff += pts(); game.scoreDef += pts();
+}
+// Jump to the next quarter (or to the final whistle if it's the 4th): tally some
+// scoring for the quarter being skipped, expire the clock, then re-line-up —
+// preparePlay advances the period (advanceQuarter / endGame -> dance party).
+function skipQuarter() {
+  if (game.gameOver) return;
+  if (game.state === STATE.REPLAY) endReplay();
+  simQuarterScore();
+  game.gameClock = 0; game.clockStopped = true;
+  clearRagdolls(); douseFire();
+  newPlay();
+}
+// Fast-forward through every remaining quarter to the final whistle. Routes
+// through the normal game-over path so the end-of-game celebration fires.
+function simToGameEnd() {
+  if (game.gameOver) return;
+  if (game.state === STATE.REPLAY) endReplay();
+  for (let q = game.quarter; q <= 4; q++) simQuarterScore(); // score the quarters we skip
+  game.quarter = 4;            // the next prepare advances to 5 = FINAL
+  game.gameClock = 0; game.clockStopped = true;
+  clearRagdolls(); douseFire();
+  newPlay();                   // -> preparePlay -> advanceQuarter(5) -> endGame -> startFinale
 }
 
 const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
@@ -3427,6 +3468,7 @@ function startFinale() {
   });
   cam.special = null; game.celebrating = false;
   game.finale = { active: true, t: 0, winners, losers, center, confT: 0, userWon };
+  const sb = document.getElementById('simbar'); if (sb) sb.classList.add('hidden'); // game's over
   startCelebParty(cz);
   benchReact();
   audio.say(userWon ? 'win' : 'lose', { force: true, swell: 1 });
@@ -3447,6 +3489,7 @@ function endFinale() {
   const f = game.finale; if (!f) return;
   for (const c of [...f.winners, ...f.losers]) { c.sulk = false; c.dancing = false; }
   game.finale = null; stopCelebParty();
+  const sb = document.getElementById('simbar'); if (sb) sb.classList.remove('hidden');
 }
 function driveFinaleCam(dt) {
   const f = game.finale, c = f.center;
