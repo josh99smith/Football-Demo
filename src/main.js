@@ -214,7 +214,8 @@ function placeStadiumProps() {
   }
 }
 
-scene.add(new THREE.HemisphereLight(0x44588f, 0x0c1208, 0.6)); // cool night ambient
+const hemi = new THREE.HemisphereLight(0x44588f, 0x0c1208, 0.6); // cool night ambient
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xb9c8ee, 0.85); // moonlight key (soft shadows)
 sun.position.set(40, 70, 20);
 sun.castShadow = true;
@@ -1282,74 +1283,122 @@ function makeGlowTexture() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-// --- Touchdown celebration FX: fireworks + sweeping spotlights --------------
-const FW_COLORS = [0xff4d4d, 0x4d9bff, 0xffd23a, 0x6dff8a, 0xff7adf, 0xffffff];
-const fwSparks = [];            // pooled additive glow sprites (the spark trails)
+// --- Home-team touchdown celebration: random FIREWORKS or LIGHT SHOW --------
+// Only fires for the home (player's) team, and only sometimes. Two flavors:
+//  - 'fireworks': realistic shells rise on a trail and burst into peonies +
+//    glitter, framed by a dedicated sky cam (see driveSpecialCam 'fireworks').
+//  - 'lightshow': the arena goes dark, a red strobe pulses and white spotlights
+//    sweep the field.
+const FW_COLORS = [0xff3b3b, 0x3aa0ff, 0xffd23a, 0x6dff7a, 0xff6ae0, 0xff9a3a, 0x9d7bff, 0xffffff];
+const fwSparks = [];            // pooled additive glow sprites (spark + glitter)
+const fwShells = [];            // rising shells (rockets) that burst at apex
 const fwLights = [];            // brief colored point-flashes at each burst
-const sweepLights = [];         // colored spotlights that sweep the field
+const sweepLights = [];         // spotlights (white) for the light show
 let fwLightI = 0;
-const celebFx = { active: false, t: 0, next: 0, z: 0 };
+let strobe = null;              // red strobe (light show)
+const CELEB_CHANCE = 0.5;       // odds a home TD triggers a stadium celebration
+const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0 };
 (function initCelebFx() {
   const tex = makeGlowTexture();
-  for (let i = 0; i < 170; i++) {
+  for (let i = 0; i < 420; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
-    s.visible = false; s.userData = { vx: 0, vy: 0, vz: 0, life: 0, max: 1, base: 1 }; scene.add(s); fwSparks.push(s);
+    s.visible = false; s.userData = { vx: 0, vy: 0, vz: 0, life: 0, max: 1, base: 1, drag: 0.3, glitter: false, ph: 0 }; scene.add(s); fwSparks.push(s);
   }
-  for (let i = 0; i < 4; i++) { const L = new THREE.PointLight(0xffffff, 0, 70, 1.6); L.visible = false; L.userData = { f: 0 }; scene.add(L); fwLights.push(L); }
+  for (let i = 0; i < 6; i++) { const L = new THREE.PointLight(0xffffff, 0, 80, 1.6); L.visible = false; L.userData = { f: 0 }; scene.add(L); fwLights.push(L); }
   for (let i = 0; i < 3; i++) {
-    const L = new THREE.SpotLight([0xff5555, 0x55a0ff, 0xffe24a][i], 0, 150, Math.PI / 9, 0.55, 1.0);
-    L.position.set(Math.cos(i / 3 * Math.PI * 2) * 34, 40, Math.sin(i / 3 * Math.PI * 2) * 34);
-    L.visible = false; // off (and skipped by the renderer) except during a celebration
-    scene.add(L); scene.add(L.target); sweepLights.push(L);
+    const L = new THREE.SpotLight(0xffffff, 0, 160, Math.PI / 10, 0.5, 1.0);
+    L.position.set(Math.cos(i / 3 * Math.PI * 2) * 34, 42, Math.sin(i / 3 * Math.PI * 2) * 34);
+    L.visible = false; scene.add(L); scene.add(L.target); sweepLights.push(L);
   }
+  strobe = new THREE.HemisphereLight(0xff1818, 0x120000, 0); strobe.visible = false; scene.add(strobe);
 })();
-function fireworkBurst(x, y, z) {
-  const col = FW_COLORS[(Math.random() * FW_COLORS.length) | 0];
-  let n = 0;
+function spawnSpark(x, y, z, vx, vy, vz, life, base, col, drag, glitter) {
   for (const s of fwSparks) {
-    if (s.userData.life > 0) continue;
+    const u = s.userData; if (u.life > 0) continue;
     s.visible = true; s.position.set(x, y, z); s.material.color.setHex(col); s.material.opacity = 1;
-    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = 6 + Math.random() * 11;
-    const u = s.userData;
-    u.vx = Math.sin(ph) * Math.cos(th) * sp; u.vy = Math.cos(ph) * sp; u.vz = Math.sin(ph) * Math.sin(th) * sp;
-    u.life = u.max = 0.9 + Math.random() * 0.7; u.base = 0.8 + Math.random() * 0.8;
-    if (++n >= 30) break;
+    u.vx = vx; u.vy = vy; u.vz = vz; u.life = u.max = life; u.base = base; u.drag = drag; u.glitter = glitter; u.ph = Math.random() * 6.283;
+    s.scale.set(base, base, 1); return true;
+  }
+  return false;
+}
+function fireworkBurst(x, y, z, col) {
+  const N = 58 + (Math.random() * 26 | 0);
+  for (let i = 0; i < N; i++) {                       // peony: uniform sphere, drag-decelerated
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = 9 + Math.random() * 10;
+    spawnSpark(x, y, z, Math.sin(ph) * Math.cos(th) * sp, Math.cos(ph) * sp, Math.sin(ph) * Math.sin(th) * sp,
+      1.1 + Math.random() * 1.0, 0.7 + Math.random() * 0.7, col, 0.28 + Math.random() * 0.12, false);
+  }
+  for (let i = 0; i < 20; i++) {                      // glitter twinkles that linger
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = 4 + Math.random() * 8;
+    spawnSpark(x, y, z, Math.sin(ph) * Math.cos(th) * sp, Math.cos(ph) * sp, Math.sin(ph) * Math.sin(th) * sp,
+      1.5 + Math.random() * 1.1, 0.45 + Math.random() * 0.4, 0xfff4d0, 0.5, true);
   }
   const L = fwLights[fwLightI++ % fwLights.length];
-  L.color.setHex(col); L.position.set(x, y, z); L.intensity = 7; L.visible = true; L.userData.f = 1;
+  L.color.setHex(col); L.position.set(x, y, z); L.intensity = 10; L.visible = true; L.userData.f = 1;
+}
+function launchShell(x, z) {
+  fwShells.push({ x, y: 1.5, z, vy: 27 + Math.random() * 9, fuse: 0.9 + Math.random() * 0.5, trail: 0, col: FW_COLORS[(Math.random() * FW_COLORS.length) | 0] });
+}
+function applyArenaDim(dim) {           // dim the night lighting for the light show (0..1)
+  const k = 1 - dim * 0.9;
+  hemi.intensity = 0.6 * k; sun.intensity = 0.85 * k; rim.intensity = 0.35 * k;
 }
 function updateCelebFx(dt) {
-  // sparks: gravity + fade
+  const t = performance.now() * 0.001;
+  // spark physics (gravity + air drag + fade; glitter twinkles)
   for (const s of fwSparks) {
     const u = s.userData; if (u.life <= 0) continue;
     u.life -= dt;
     if (u.life <= 0) { s.visible = false; s.material.opacity = 0; continue; }
-    u.vy -= 9 * dt;
+    u.vy -= 7 * dt;
+    const dr = Math.pow(u.drag, dt); u.vx *= dr; u.vy *= dr; u.vz *= dr;
     s.position.x += u.vx * dt; s.position.y += u.vy * dt; s.position.z += u.vz * dt;
-    const f = u.life / u.max; s.material.opacity = f;
-    const sc = u.base * (0.5 + f * 0.7); s.scale.set(sc, sc, sc);
+    const f = u.life / u.max;
+    s.material.opacity = u.glitter ? f * (0.2 + 0.8 * Math.max(0, Math.sin(t * 46 + u.ph))) : f;
+    const sc = u.base * (0.35 + f * 0.85); s.scale.set(sc, sc, sc);
   }
-  for (const L of fwLights) if (L.visible) { L.userData.f -= dt * 2.2; L.intensity = Math.max(0, L.userData.f) * 7; if (L.userData.f <= 0) L.visible = false; }
-  // show controller: schedule bursts + sweep the spotlights, then ease off
-  if (celebFx.active) {
-    celebFx.t += dt; celebFx.next -= dt;
-    if (celebFx.next <= 0 && celebFx.t < 3.0) {
-      celebFx.next = 0.16 + Math.random() * 0.34;
-      fireworkBurst((Math.random() - 0.5) * 72, 24 + Math.random() * 16, celebFx.z * 0.4 + (Math.random() - 0.5) * 56);
+  for (const L of fwLights) if (L.visible) { L.userData.f -= dt * 2.4; L.intensity = Math.max(0, L.userData.f) * 10; if (L.userData.f <= 0) L.visible = false; }
+
+  if (celebFx.mode === 'fireworks') {
+    celebFx.t += dt;
+    for (let i = fwShells.length - 1; i >= 0; i--) {  // rising shells leave a trail, then burst
+      const sh = fwShells[i]; sh.y += sh.vy * dt; sh.vy -= 13 * dt; sh.fuse -= dt; sh.trail -= dt;
+      if (sh.trail <= 0) { sh.trail = 0.02; spawnSpark(sh.x + (Math.random() - 0.5) * 0.3, sh.y, sh.z + (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 1.5, -1 - Math.random() * 2, (Math.random() - 0.5) * 1.5, 0.3 + Math.random() * 0.2, 0.35 + Math.random() * 0.25, 0xffd9a0, 0.6, false); }
+      if (sh.fuse <= 0 || sh.vy < 2) { fireworkBurst(sh.x, sh.y, sh.z, sh.col); fwShells.splice(i, 1); }
     }
+    celebFx.next -= dt;
+    if (celebFx.next <= 0 && celebFx.t < 3.2) {
+      celebFx.next = 0.3 + Math.random() * 0.4;
+      launchShell((Math.random() - 0.5) * 70, celebFx.z * 0.35 + (Math.random() - 0.5) * 50);
+      if (Math.random() < 0.5) launchShell((Math.random() - 0.5) * 70, celebFx.z * 0.35 + (Math.random() - 0.5) * 50);
+    }
+    if (celebFx.t > 4.0 && fwShells.length === 0) celebFx.mode = null;
+  } else if (celebFx.mode === 'lightshow') {
+    celebFx.t += dt;
+    celebFx.dim = Math.min(1, celebFx.dim + dt * 2.5); applyArenaDim(celebFx.dim);
+    strobe.visible = true; strobe.intensity = (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim; // red strobe
     for (let i = 0; i < sweepLights.length; i++) {
-      const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 7, 8);
-      const a = celebFx.t * 1.7 + i * 2.1;
-      L.target.position.set(Math.cos(a) * 22, 0, celebFx.z * 0.3 + Math.sin(a) * 22); L.target.updateMatrixWorld();
+      const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 8, 9);
+      const a = celebFx.t * 2.0 + i * 2.1;
+      L.target.position.set(Math.cos(a) * 20, 0, celebFx.z * 0.3 + Math.sin(a) * 20); L.target.updateMatrixWorld();
     }
-    if (celebFx.t > 3.4) celebFx.active = false;
+    if (celebFx.t > 3.6) celebFx.mode = null;
   } else {
-    for (const L of sweepLights) if (L.visible) { L.intensity = Math.max(0, L.intensity - dt * 5); if (L.intensity <= 0) L.visible = false; }
+    // restore: ease the arena back up, keep strobing while it fades, spotlights off
+    if (celebFx.dim > 0) { celebFx.dim = Math.max(0, celebFx.dim - dt * 1.8); applyArenaDim(celebFx.dim); }
+    strobe.visible = celebFx.dim > 0; strobe.intensity = celebFx.dim > 0 ? (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim : 0;
+    for (const L of sweepLights) if (L.visible) { L.intensity = Math.max(0, L.intensity - dt * 6); if (L.intensity <= 0) L.visible = false; }
   }
 }
-function startCelebrationFx(z) {
-  celebFx.active = true; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
-  for (const L of sweepLights) L.visible = true; // turn the sweeping spotlights on for the show
+function startFireworksCeleb(z, scorer) {
+  celebFx.mode = 'fireworks'; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  if (scorer) startSpecialCam('fireworks', scorer, 4.0);
+  audio.cheer(0.6);
+}
+function startLightShow(z) {
+  celebFx.mode = 'lightshow'; celebFx.t = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  for (const L of sweepLights) { L.color.setHex(0xffffff); L.intensity = 0; L.visible = true; } // white field spotlights
+  audio.cheer(0.6);
 }
 function makeBall() {
   // The ball lives in a GROUP whose local +Z is the long axis; the flight code
@@ -3169,14 +3218,20 @@ function endPlay(result, endZ) {
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
-    flashScreen(); confetti(endZ); benchReact(); startCelebrationFx(endZ); // flash + shower + benches erupt + fireworks/spotlights
+    flashScreen(); confetti(endZ); benchReact(); // flash + shower + benches erupt
     if (userHad) {
       game.scoreOff += 7; game.fireCount++;
-      celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
+      const scorer = celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
+      // Stadium-level celebration: HOME (player's) team only, and only sometimes
+      // — randomly a fireworks show or a dark-arena strobe/spotlight light show.
+      if (Math.random() < CELEB_CHANCE) {
+        game.deadTimer = 4.2; // hold the dead-ball beat so the show plays before the replay
+        if (Math.random() < 0.5) startFireworksCeleb(endZ, scorer); else startLightShow(endZ);
+      }
       if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); }
       else { showBanner('TOUCHDOWN!', '#ffd23a'); setStatus('TOUCHDOWN! 🏈'); }
     } else {
-      game.scoreDef += 7; douseFire(); showBanner('CPU TOUCHDOWN', '#5a8bff'); setStatus('CPU scores');
+      game.scoreDef += 7; douseFire(); showBanner('CPU TOUCHDOWN', '#5a8bff'); setStatus('CPU scores'); // away team: no stadium celebration
     }
     setPlayResult('TOUCHDOWN', 'gain');
     giveBallTo(!userHad, driveStartForUser(!userHad)); // other team gets the ball
@@ -3222,6 +3277,7 @@ function celebrateTD() {
     .slice(0, 3)];
   for (const o of crew) if (o && o.actions.celebrate) playOneShot(o, 'celebrate', 2.3, true);
   if (scorer) startSpecialCam('td', scorer, 2.4); // low up-angle flex/standover on the scorer
+  return scorer;
 }
 
 // ===========================================================================
@@ -4705,6 +4761,10 @@ function driveSpecialCam(sp, dt) {
     const a = sp.baseAz + sp.t * 0.45;                 // slow orbit in front of the QB
     _tp.set(o.x + Math.sin(a) * 6.2, 2.4, o.z + Math.cos(a) * 6.2);
     _tl.set(o.x, 1.7, o.z);
+  } else if (sp.kind === 'fireworks') {                // low, tilted UP so the sky + bursts fill frame above the celebrating scorer
+    const a = sp.baseAz + sp.t * 0.32;
+    _tp.set(o.x + Math.sin(a) * 7, 1.5, o.z + Math.cos(a) * 7);
+    _tl.set(o.x, 7.5, o.z);
   } else {                                             // 'td' — low, looking UP at the raised arms
     const a = sp.baseAz + sp.t * 0.6;
     _tp.set(o.x + Math.sin(a) * 4.6, 1.15, o.z + Math.cos(a) * 4.6);
@@ -4712,7 +4772,7 @@ function driveSpecialCam(sp, dt) {
   }
   if (sp.t < 0.001) { cam.pos.copy(_tp); cam.lookCur.copy(_tl); }
   else { cam.pos.lerp(_tp, Math.min(1, dt * 3)); cam.lookCur.lerp(_tl, Math.min(1, dt * 4)); }
-  const wantFov = sp.kind === 'td' ? 42 : 48;
+  const wantFov = sp.kind === 'td' ? 42 : sp.kind === 'fireworks' ? 60 : 48;
   camera.fov += (wantFov - camera.fov) * Math.min(1, dt * 3); camera.updateProjectionMatrix();
   shake.update(dt);
   camera.position.set(cam.pos.x + shake.offX, Math.max(0.8, cam.pos.y + shake.offY), cam.pos.z + shake.offZ);
