@@ -3049,7 +3049,7 @@ function cpuQB(dt) {
     ball.targetRecv = target; game.selected = game.receivers.indexOf(target);
     throwBall(THREE.MathUtils.clamp(0.2 + distXZ(px(qb), px(target)) / 50, 0.2, 0.85));
   } else if (pressured && (pastLine(qb) || pressure < 2.4)) {
-    enterRun(qb, ''); // feeling the rush with no throw — take off and scramble
+    enterRun(qb, ''); audio.say('scramble'); // feeling the rush with no throw — take off and scramble
   } else if (pressured) {
     const away = Math.sign(qb.group.position.x - (rusher ? rusher.group.position.x : 0)) || 1;
     qb.desired = { x: away, z: game.dir * 0.3 }; qb.turbo = true; // climb/escape the pocket
@@ -3258,10 +3258,10 @@ function endPlay(result, endZ) {
         game.deadTimer = 4.2; // hold the dead-ball beat so the show plays before the replay
         if (Math.random() < 0.5) startFireworksCeleb(endZ, scorer); else startLightShow(endZ);
       }
-      if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); }
-      else { showBanner('TOUCHDOWN!', '#ffd23a'); setStatus('TOUCHDOWN! 🏈'); }
+      if (game.fireCount >= 3 && !game.onFire) { game.onFire = true; setFireVisual(true); audio.fire(); showBanner('ON FIRE!', '#ff7a3a'); setStatus('3 straight TDs — ON FIRE! 🔥'); audio.say('onFire', { force: true }); }
+      else { showBanner('TOUCHDOWN!', '#ffd23a'); setStatus('TOUCHDOWN! 🏈'); audio.say('td', { force: true, swell: 0.8 }); }
     } else {
-      game.scoreDef += 7; douseFire(); showBanner('CPU TOUCHDOWN', '#5a8bff'); setStatus('CPU scores'); // away team: no stadium celebration
+      game.scoreDef += 7; douseFire(); showBanner('CPU TOUCHDOWN', '#5a8bff'); setStatus('CPU scores'); audio.say('td', { force: true, swell: 0.8 }); // away team: no stadium celebration
     }
     setPlayResult('TOUCHDOWN', 'gain');
     giveBallTo(!userHad, driveStartForUser(!userHad)); // other team gets the ball
@@ -3271,6 +3271,7 @@ function endPlay(result, endZ) {
     showBanner('TURNOVER', '#ffd23a');
     setStatus(result === 'fumble' ? 'Fumble — turnover!' : 'Intercepted!');
     setPlayResult(result === 'fumble' ? 'FUMBLE' : 'INTERCEPTED', 'loss');
+    audio.say(result === 'fumble' ? 'fumble' : 'pick', { force: true });
     giveBallTo(!userHad, endZ); // the other team takes over at the spot
   } else {
     blowWhistle();
@@ -3279,6 +3280,7 @@ function endPlay(result, endZ) {
     if (result !== 'incomplete' && game.dir * endZ <= -GOAL_Z) {
       if (userHad) { game.scoreDef += 2; douseFire(); showBanner('SAFETY', '#ff5a3a'); setStatus('Safety — 2 points for the defense'); setPlayResult('SAFETY', 'loss'); }
       else { game.scoreOff += 2; showBanner('SAFETY!', '#3fe08a'); setStatus('Safety — you get 2!'); setPlayResult('SAFETY', 'gain'); }
+      audio.say('safety', { force: true });
       giveBallTo(!userHad, driveStartForUser(!userHad)); // conceding team kicks off to the other
     } else {
       const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
@@ -3289,7 +3291,7 @@ function endPlay(result, endZ) {
           : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
       const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
       const gotFirst = game.dir > 0 ? spot >= game.firstDown : spot <= game.firstDown;
-      if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; }
+      if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; if (userHad) audio.say('firstDown'); }
       else {
         game.los = spot; game.down += 1;
         if (game.down > 4) { if (userHad) douseFire(); setStatus('Turnover on downs'); giveBallTo(!userHad, spot); game.clockStopped = true; } // turnover on downs stops the clock
@@ -3583,7 +3585,7 @@ function checkSack() {
     if (d.ragdolling) continue;
     if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
       game.carrier = game.qb; beginTackle(d, true);
-      showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit();
+      showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit(); audio.say('sack', { force: true });
       return;
     }
   }
@@ -3859,6 +3861,7 @@ function beginTackle(lead, force = false) {
     if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
     setStatus(dirty ? 'DIRTY HIT!' : gang ? 'GANG TACKLE!' : 'BIG HIT!');
+    audio.say(dirty ? 'dirtyHit' : gang ? 'gang' : 'bigHit');
   } else {
     timeScale.bulletTime(0.22, 0.4, 0.7);
     hitZoom(0.9);
@@ -3889,7 +3892,7 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
   audio.hit(0.55);
   timeScale.bulletTime(0.55, 0.18, 0.3); // a beat of slow-mo on contact
   const gang = pile.length >= 3;
-  if (gang) showBanner('GANG TACKLE!', '#ff9a3a', { power: hitPower(pile[0], closing, pile.length, big) });
+  if (gang) { showBanner('GANG TACKLE!', '#ff9a3a', { power: hitPower(pile[0], closing, pile.length, big) }); audio.say('gang'); }
   else showBanner(pile.length >= 2 ? 'WRAPPED UP!' : 'TACKLE!', '#ffd23a', { icon: 'burst', power: hitPower(pile[0], closing, pile.length, big) });
   setStatus(pile.length >= 2 ? `${pile.length}-man gang tackle!` : 'Wrapped up — bringing him down!');
   ctrlRing.visible = false; updateButtons();
@@ -4697,7 +4700,7 @@ function updatePlay(dt) {
         } else {
           const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
           controlledMove(game.qb, dt, top);
-          if (pastLine(game.qb)) enterRun(game.qb, 'Scramble! Run for it!');
+          if (pastLine(game.qb)) { enterRun(game.qb, 'Scramble! Run for it!'); audio.say('scramble'); }
         }
       } else { game.qb.speed = 0; game.qb.vel.set(0, 0, 0); }
       updateOffense(dt); updateDefense();

@@ -10,10 +10,34 @@ const SAMPLES = {
   fence:   'assets/sfx/fence.wav',
   goal:    'assets/sfx/goal.mp3',
 };
+// Announcer commentary. Synth-first: the browser's SpeechSynthesis SPEAKS a
+// random line per event. Drop real voice clips into VO_CLIPS (e.g.
+// td: ['assets/vo/td1.mp3', 'assets/vo/td2.mp3']) and they'll be used instead —
+// kept empty for now so nothing 404s.
+const VO_LINES = {
+  bigHit:    ['Big hit!', 'Oh, he laid him out!', 'What a shot!'],
+  dirtyHit:  ['Dirty hit!', "He's gonna feel that one!", 'That was uncalled for!'],
+  gang:      ['Gang tackle!', 'They swarmed him!', 'Buried him!'],
+  td:        ['Touchdown!', "He's in! Touchdown!", 'Six points!'],
+  fumble:    ['Fumble!', 'The ball is loose!', 'He coughed it up!'],
+  pick:      ['Intercepted!', 'Picked off!', 'What a pick!'],
+  safety:    ['Safety! Two points!', 'Got him in the end zone!'],
+  onFire:    ["He's on fire!", 'Unstoppable!', 'Somebody stop this guy!'],
+  firstDown: ['First down!', "Movin' the chains!"],
+  sack:      ['Sack!', 'Got the quarterback!', 'Dropped him!'],
+  scramble:  ['He takes off!', 'Out of the pocket!'],
+};
+const VO_CLIPS = { /* event: ['assets/vo/<event>1.mp3', ...] — add real clips here */ };
 export class AudioManager {
   constructor() {
     this.ctx = null; this.ready = false; this.master = null; this.noiseBuf = null;
     this.buffers = {}; this._raw = {};
+    this.vo = {};        // event -> [AudioBuffer,...] of real announcer clips
+    this._voRaw = {};    // event -> [ArrayBuffer,...] awaiting decode
+    this._voCd = 0;      // wall-clock gate so lines don't stomp each other
+    this.music = null;   // currently-playing music source/gain
+    this.muted = false;  // master mute (settings can flip this)
+    this.voEnabled = true;
     this._fetchSamples(); // start downloading immediately (decode later)
   }
 
@@ -24,6 +48,25 @@ export class AudioManager {
         .then((buf) => { this._raw[name] = buf; if (this.ctx) this._decode(name); })
         .catch(() => { /* missing sample — synth fallback stays in play */ });
     }
+    // Real announcer clips (optional). VO_CLIPS is empty by default so nothing
+    // 404s; drop files in and they override the SpeechSynthesis fallback.
+    for (const [event, urls] of Object.entries(VO_CLIPS)) {
+      (urls || []).forEach((url, i) => {
+        fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+          .then((buf) => {
+            (this._voRaw[event] || (this._voRaw[event] = []))[i] = buf;
+            if (this.ctx) this._decodeVo(event, i);
+          })
+          .catch(() => { /* missing clip — synth line stays in play */ });
+      });
+    }
+  }
+  _decodeVo(event, i) {
+    const arr = this._voRaw[event]; if (!arr || !arr[i] || !this.ctx) return;
+    const raw = arr[i]; arr[i] = null;
+    this.ctx.decodeAudioData(raw.slice(0))
+      .then((b) => { (this.vo[event] || (this.vo[event] = []))[i] = b; })
+      .catch(() => {});
   }
   _decode(name) {
     const raw = this._raw[name]; if (!raw || !this.ctx) return;
@@ -50,6 +93,8 @@ export class AudioManager {
         for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
         this.ready = true;
         for (const name of Object.keys(this._raw)) this._decode(name); // decode whatever arrived first
+        for (const event of Object.keys(this._voRaw))
+          (this._voRaw[event] || []).forEach((_, i) => this._decodeVo(event, i));
         this.startAmbience();
       } catch (e) { /* no audio — game still runs */ }
     }
@@ -182,4 +227,83 @@ export class AudioManager {
     else this.swell(1);
   }
   fire() { this._noise(0.5, { gain: 0.25, type: 'bandpass', freq: 1800, q: 0.5 }); this._tone(300, 0.5, { type: 'sawtooth', gain: 0.12, slideTo: 900 }); }
+
+  // --- announcer commentary ---
+  // Pick a punchy English voice for the play-by-play. Cached after first lookup.
+  _voice() {
+    if (this._voiceCached !== undefined) return this._voiceCached;
+    let v = null;
+    try {
+      const list = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+      const en = list.filter((x) => /en[-_]/i.test(x.lang) || /^en$/i.test(x.lang));
+      // Prefer a male/announcer-ish voice if the platform exposes one.
+      v = en.find((x) => /(daniel|google uk english male|fred|alex|aaron|arthur)/i.test(x.name))
+        || en.find((x) => /male/i.test(x.name)) || en[0] || list[0] || null;
+    } catch (e) { /* no speech synth */ }
+    // getVoices() is often empty until the list loads — only cache a real hit.
+    if (v) this._voiceCached = v;
+    return v;
+  }
+
+  /** Speak a line for a game event. Plays a real VO clip if loaded, else uses
+   *  SpeechSynthesis with a random line. `force` bypasses the cooldown for
+   *  marquee moments (TD, safety). Lifts the crowd bed under the call. */
+  say(event, { force = false, swell = 0.4 } = {}) {
+    if (!this.voEnabled || this.muted) return;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (!force && now < this._voCd) return;
+    this._voCd = now + 1100; // ~1.1s gate so calls don't trample each other
+    if (swell) this.swell(swell);
+    // Real clip path.
+    const clips = this.vo[event];
+    if (clips && clips.length) {
+      const b = clips[(Math.random() * clips.length) | 0];
+      if (b && this.ready) {
+        const src = this.ctx.createBufferSource(); src.buffer = b;
+        const g = this.ctx.createGain(); g.gain.value = 0.95;
+        src.connect(g); g.connect(this.master); src.start(this.t);
+        return;
+      }
+    }
+    // Synth fallback: speak a random scripted line.
+    const lines = VO_LINES[event];
+    if (!lines || !lines.length) return;
+    try {
+      const synth = window.speechSynthesis; if (!synth) return;
+      if (force) synth.cancel(); // marquee call cuts in over chatter
+      const u = new SpeechSynthesisUtterance(lines[(Math.random() * lines.length) | 0]);
+      const v = this._voice(); if (v) u.voice = v;
+      u.rate = 1.05; u.pitch = 0.8; u.volume = 0.9;
+      synth.speak(u);
+    } catch (e) { /* speech unavailable — silent */ }
+  }
+
+  // --- music (menu / on-fire bed) ---
+  // Loops a decoded buffer at low gain under the action. url is loaded lazily.
+  playMusic(url, { gain = 0.25, loop = true } = {}) {
+    if (!this.ready) return;
+    this.stopMusic();
+    const start = (buf) => {
+      if (!buf || this.music) return;
+      const src = this.ctx.createBufferSource(); src.buffer = buf; src.loop = loop;
+      const g = this.ctx.createGain(); g.gain.value = this.muted ? 0 : gain;
+      src.connect(g); g.connect(this.master); src.start(this.t);
+      this.music = { src, g, gain };
+    };
+    if (this._musicBuf && this._musicBuf.url === url) { start(this._musicBuf.buf); return; }
+    fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+      .then((raw) => this.ctx.decodeAudioData(raw.slice(0)))
+      .then((buf) => { this._musicBuf = { url, buf }; start(buf); })
+      .catch(() => { /* no music file — silence */ });
+  }
+  stopMusic() {
+    if (!this.music) return;
+    const t = this.t, m = this.music; this.music = null;
+    try {
+      m.g.gain.cancelScheduledValues(t);
+      m.g.gain.setValueAtTime(m.g.gain.value, t);
+      m.g.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+      m.src.stop(t + 0.45);
+    } catch (e) { /* already stopped */ }
+  }
 }
