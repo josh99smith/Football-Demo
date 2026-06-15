@@ -107,7 +107,7 @@ function makeAdTexture() {
   // out) as billboard sprites scattered randomly across rows in the bowl, in
   // front of the crowd texture — gives the stands real, varied people with depth.
   {
-    const AC = 8, AR = 5, NCELLS = 40;       // atlas grid
+    const AC = 11, AR = 8, NCELLS = 88;      // atlas grid (88 distinct fans clipped from the sheet)
     new THREE.TextureLoader().load('assets/fans.png', (atlas) => {
       const img = atlas.image;                // slice each cell into its own canvas texture (robust)
       const cw = img.width / AC, ch = img.height / AR;
@@ -120,7 +120,7 @@ function makeAdTexture() {
       }
       // Rake them up the bowl on a cone a few units INSIDE the wall so they sit
       // clearly in front of the crowd texture (bowl wall: r80@y-4 -> r96@y30).
-      const ROWS_N = 11, PER_ROW = 150;       // ~1650 fans, packed shoulder-to-shoulder
+      const ROWS_N = 14, PER_ROW = 175;       // ~2450 fans, packed shoulder-to-shoulder
       const wallR = (y) => 80 + (y + 4) / 34 * 16;
       for (let r = 0; r < ROWS_N; r++) {
         const f = r / (ROWS_N - 1);
