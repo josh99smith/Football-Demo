@@ -425,9 +425,11 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
     const m = new THREE.Mesh(new THREE.PlaneGeometry(len, H),
       new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.82 }));
     m.position.set(x, H / 2, z); m.rotation.y = ry; scene.add(m);
-    // Register the chain-link panel so the camera can hide it when it's behind it.
+    // Register the chain-link panel so the camera can hide it when it's behind it
+    // (cage panels also cull during LIVE play — e.g. backed up to your own end zone).
     m.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
     m.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
+    m.userData.cage = true;
     camOccluders.push(m);
     // Top edge trim (bright rail) + bottom rail + a kick plate.
     const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, H, z); top.rotation.y = ry; scene.add(top);
@@ -732,7 +734,7 @@ const targetArrow = (() => {
 const hitParticles = [];
 (function initParticles() {
   const geo = new THREE.SphereGeometry(0.12, 6, 5);
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 70; i++) {
     const p = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
     p.visible = false; p.userData = { vx: 0, vy: 0, vz: 0, life: 0 }; scene.add(p); hitParticles.push(p);
   }
@@ -753,25 +755,29 @@ function burst(x, y, z, color, n = 14, speed = 7) {
 // Over-the-top gore: a red geyser of droplets from the neck when the lid pops
 // off on a violent hit (Blitz: The League style). Strong upward gush + spread.
 const BLOOD_COLS = [0xd60a18, 0xb00410, 0xe8202c];
-function bloodSpray(x, y, z, n = 20) {
+function bloodSpray(x, y, z, n = 40) {
   let spawned = 0;
   for (const p of hitParticles) {
     if (p.userData.life > 0) continue;
     p.visible = true;
-    p.position.set(x + (Math.random() - 0.5) * 0.12, y, z + (Math.random() - 0.5) * 0.12);
+    p.position.set(x + (Math.random() - 0.5) * 0.16, y, z + (Math.random() - 0.5) * 0.16);
     p.material.color.setHex(BLOOD_COLS[(Math.random() * BLOOD_COLS.length) | 0]);
     p.material.opacity = 0.95;
-    const a = Math.random() * Math.PI * 2, spread = 1.0 + Math.random() * 2.4;
+    const a = Math.random() * Math.PI * 2, spread = 1.0 + Math.random() * 3.2; // wider gush
     p.userData.vx = Math.cos(a) * spread;
     p.userData.vz = Math.sin(a) * spread;
-    p.userData.vy = 5 + Math.random() * 6; // gush up out of the neck
-    p.userData.life = 0.5 + Math.random() * 0.5;
+    p.userData.vy = 5 + Math.random() * 7; // gush up out of the neck
+    p.userData.life = 0.5 + Math.random() * 0.6;
     if (++spawned >= n) break;
   }
-  // Leave lasting stains on the turf where the blood lands (cleared each quarter).
+  // Leave lasting stains on the turf where the blood lands (cleared each quarter):
+  // a main pool + several scattered splatters of varied shape/size.
   addBloodStain(x, z);
-  if (Math.random() < 0.8) addBloodStain(x + (Math.random() - 0.5) * 4.5, z + (Math.random() - 0.5) * 4.5);
-  if (Math.random() < 0.5) addBloodStain(x + (Math.random() - 0.5) * 7, z + (Math.random() - 0.5) * 7);
+  const splats = 3 + (Math.random() * 3 | 0); // 3..5 extra
+  for (let i = 0; i < splats; i++) {
+    const r = 2 + Math.random() * 8;          // out to ~10yd
+    addBloodStain(x + (Math.random() - 0.5) * r * 2, z + (Math.random() - 0.5) * r * 2);
+  }
 }
 // Persistent blood stains on the grass — flat splat decals that accumulate and
 // stay until the quarter ends (clearBloodStains in advanceQuarter).
@@ -792,21 +798,23 @@ function makeBloodTexture() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 const bloodStains = [];
+const bloodTextures = [];       // several distinct splat shapes for variety
 let bloodStainI = 0;
 (function initBloodStains() {
-  const tex = makeBloodTexture();
-  for (let i = 0; i < 48; i++) {
+  for (let i = 0; i < 6; i++) bloodTextures.push(makeBloodTexture()); // 6 unique splats
+  for (let i = 0; i < 64; i++) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0 }));
+      new THREE.MeshBasicMaterial({ map: bloodTextures[0], transparent: true, depthWrite: false, opacity: 0 }));
     m.position.y = 0.04; m.visible = false; m.renderOrder = 1; scene.add(m); bloodStains.push(m);
   }
 })();
 function addBloodStain(x, z) {
   const m = bloodStains[bloodStainI++ % bloodStains.length];
+  m.material.map = bloodTextures[(Math.random() * bloodTextures.length) | 0]; m.material.needsUpdate = true; // varied splat
   m.position.set(THREE.MathUtils.clamp(x, -HALF_W + 1, HALF_W - 1), 0.04, THREE.MathUtils.clamp(z, -HALF_L + 1, HALF_L - 1));
   m.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2); // lay flat, random spin
-  const s = 1.6 + Math.random() * 1.8; m.scale.set(s, s, 1);
-  m.material.opacity = 0.8 + Math.random() * 0.15; m.visible = true;
+  const s = 1.3 + Math.random() * 3.0; m.scale.set(s, s, 1);    // wider size variety
+  m.material.opacity = 0.75 + Math.random() * 0.2; m.visible = true;
 }
 function clearBloodStains() { for (const m of bloodStains) { m.visible = false; m.material.opacity = 0; } }
 // Touchdown confetti: a full-pool, multi-color shower that rains down.
@@ -2748,6 +2756,7 @@ function startReplay() {
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
+  for (const ch of game.all) restoreHelmet(ch); // put popped helmets back on for the replay
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
   document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
@@ -3244,18 +3253,26 @@ function endPlay(result, endZ) {
     giveBallTo(!userHad, endZ); // the other team takes over at the spot
   } else {
     blowWhistle();
-    const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
-    if (result === 'incomplete') setPlayResult('INCOMPLETE');
-    else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); }
-    setStatus(result === 'incomplete' ? 'Incomplete'
-      : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
-        : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
-    const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
-    const gotFirst = game.dir > 0 ? spot >= game.firstDown : spot <= game.firstDown;
-    if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; }
-    else {
-      game.los = spot; game.down += 1;
-      if (game.down > 4) { if (userHad) douseFire(); setStatus('Turnover on downs'); giveBallTo(!userHad, spot); }
+    // SAFETY: the ball carrier is down in their OWN end zone -> 2 pts to the
+    // defense, and the conceding team free-kicks (the other team takes over).
+    if (result !== 'incomplete' && game.dir * endZ <= -GOAL_Z) {
+      if (userHad) { game.scoreDef += 2; douseFire(); showBanner('SAFETY', '#ff5a3a'); setStatus('Safety — 2 points for the defense'); setPlayResult('SAFETY', 'loss'); }
+      else { game.scoreOff += 2; showBanner('SAFETY!', '#3fe08a'); setStatus('Safety — you get 2!'); setPlayResult('SAFETY', 'gain'); }
+      giveBallTo(!userHad, driveStartForUser(!userHad)); // conceding team kicks off to the other
+    } else {
+      const gained = result === 'incomplete' ? 0 : game.dir * (endZ - game.los);
+      if (result === 'incomplete') setPlayResult('INCOMPLETE');
+      else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); }
+      setStatus(result === 'incomplete' ? 'Incomplete'
+        : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
+          : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
+      const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
+      const gotFirst = game.dir > 0 ? spot >= game.firstDown : spot <= game.firstDown;
+      if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; }
+      else {
+        game.los = spot; game.down += 1;
+        if (game.down > 4) { if (userHad) douseFire(); setStatus('Turnover on downs'); giveBallTo(!userHad, spot); }
+      }
     }
   }
   updateHUD();
@@ -4787,14 +4804,17 @@ function driveSpecialCam(sp, dt) {
 const _occF = new THREE.Vector3(), _occP = new THREE.Vector3();
 let _occHidden = false; // are any occluders currently hidden? (so we restore once)
 function cullOccluders() {
-  if (game.state !== STATE.REPLAY) {
-    if (_occHidden) { for (const o of camOccluders) o.visible = true; _occHidden = false; }
-    return;
-  }
+  // During a REPLAY, any wall/cage panel the camera is behind may block the shot.
+  // During LIVE play, only the chain-link CAGE panels cull (so backing up to your
+  // own end zone doesn't shoot the play through the fence) — the graffiti walls
+  // stay put. A panel hides only when the camera is OUTSIDE it AND it's in the
+  // view direction (genuinely between the camera and the field).
+  const replay = game.state === STATE.REPLAY;
   const cp = camera.position;
   camera.getWorldDirection(_occF); // camera forward
   _occHidden = false;
   for (const o of camOccluders) {
+    if (!replay && !o.userData.cage) { o.visible = true; continue; } // walls only cull in replay
     const s = o.userData.cullSide, at = o.userData.cullAt;
     const behind = (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
                    (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1);
