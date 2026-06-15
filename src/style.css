@@ -515,6 +515,17 @@ html, body {
 #impact.strong.on { animation: impactPunch 0.62s ease-out; }
 @keyframes impactPunch { 0% { opacity: 0; } 18% { opacity: 1; } 100% { opacity: 0; } }
 
+/* Slow-mo hit grade: a sustained red tint + heavy black vignette for a darker,
+   grungier vibe during bullet-time. Opacity is set per-frame from the
+   bullet-time depth (TimeScale.grade). The center stays clear so the action
+   reads; the edges crush to dark red / black. Layers: red wash + vignette. */
+#slowmo {
+  position: fixed; inset: 0; z-index: 27; opacity: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, rgba(70, 0, 0, 0) 34%, rgba(64, 0, 0, 0.5) 74%, rgba(0, 0, 0, 0.9) 100%),
+    linear-gradient(rgba(130, 12, 12, 0.2), rgba(110, 8, 8, 0.2));
+}
+
 /* ---------- Instant replay ---------- */
 /* In replay mode, drop ALL the gameplay HUD/controls — only the replay overlay
    (letterbox + REPLAY tag + CONTINUE) shows. */

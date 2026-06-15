@@ -2495,18 +2495,17 @@ class ScreenShake {
 // Hit-stop (a brief freeze) + bullet-time slow-mo that eases smoothly back to
 // full speed. The sim multiplies its dt by `update()`'s return each frame.
 class TimeScale {
-  constructor() { this.freezeT = 0; this.slowT = 0; this.slowAmt = 1; this.btHold = 0; this.btEase = 0; this.btEaseDur = 1; this.btScale = 1; }
+  constructor() { this.freezeT = 0; this.slowT = 0; this.slowAmt = 1; this.btHold = 0; this.btEase = 0; this.btEaseDur = 1; this.btScale = 1; this.grade = 0; }
   freeze(s) { this.freezeT = Math.max(this.freezeT, s); }
   slow(scale, s) { this.slowAmt = scale; this.slowT = Math.max(this.slowT, s); }
   bulletTime(scale = 0.16, hold = 0.5, ease = 0.8) {
     this.btScale = scale; this.btHold = hold; this.btEase = ease; this.btEaseDur = ease;
   }
   update(realDt) {
-    if (this.freezeT > 0) { this.freezeT -= realDt; return 0; }
-    let v = 1;
+    if (this.freezeT > 0) { this.freezeT -= realDt; this.grade = 1; return 0; }
+    let v = 1, bt = 1; // bt = bullet-time factor this frame (1 = none)
     if (this.slowT > 0) { this.slowT -= realDt; v = Math.min(v, this.slowAmt); }
     if (this.btHold > 0 || this.btEase > 0) {
-      let bt;
       if (this.btHold > 0) { this.btHold -= realDt; bt = this.btScale; }
       else {
         this.btEase -= realDt;
@@ -2516,6 +2515,9 @@ class TimeScale {
       }
       v = Math.min(v, bt);
     }
+    // Slow-mo HIT grade (red tint + vignette) tracks the bullet-time depth only —
+    // not the score slow() — so it reads as a brutal hit, fading as speed returns.
+    this.grade = THREE.MathUtils.clamp((1 - bt) / 0.92, 0, 1);
     return v;
   }
 }
@@ -2569,6 +2571,7 @@ function impactFlash(strong = false) {
   impactEl.classList.toggle('strong', strong);
   impactEl.classList.remove('on'); void impactEl.offsetWidth; impactEl.classList.add('on');
 }
+const slowmoEl = document.getElementById('slowmo'); // red-tint + vignette grade during slow-mo hits
 const flashEl = document.getElementById('flash');
 function flashScreen() {
   if (!flashEl) return;
@@ -5340,6 +5343,7 @@ function animate() {
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
   const dt = realDt * timeScale.update(realDt);
+  if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
