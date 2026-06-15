@@ -2752,7 +2752,14 @@ function tearInHalf(ch, hx, hz, power) {
     const dst = half.bones;
     for (let i = 0; i < dst.length && i < src.length; i++) { dst[i].position.copy(src[i].position); dst[i].quaternion.copy(src[i].quaternion); }
     collapseHalf(half); // pose copy doesn't touch scale, but re-assert the collapse
-    half.g.position.copy(ch.group.position); half.g.quaternion.copy(ch.group.quaternion); half.g.visible = true;
+    // Anchor on the field directly under the body, then measure where the lowest
+    // bone sits so the chunk RESTS on the turf (fixed offsets sank it through).
+    half.g.position.set(ch.group.position.x, 0, ch.group.position.z);
+    half.g.quaternion.copy(ch.group.quaternion); half.g.visible = true;
+    half.g.updateMatrixWorld(true);
+    let lo = Infinity;
+    for (const b of half.bones) { const y = b.matrixWorld.elements[13]; if (Number.isFinite(y) && y < lo) lo = y; }
+    half.restY = Number.isFinite(lo) ? (0.12 - lo) : 0; // group Y at which the lowest joint rests just above the turf
   }
   ch.model.visible = false; ch.torn = true; // swap the whole body for the two chunks
   // Blood geyser from the waist — same particle logic as the head pop.
@@ -2760,8 +2767,8 @@ function tearInHalf(ch, hx, hz, power) {
   audio.bigHit();
   // Launch: the top half flies up and back tumbling; the pelvis/legs drop & topple.
   const l = Math.hypot(hx, hz) || 1, sp = 2.4 + (power || 80) / 24;
-  tornPieces.push({ g: T.top.g, restY: -1.0, vx: (hx / l) * sp + (Math.random() - 0.5) * 1.4, vy: 5.5 + Math.random() * 2.5, vz: (hz / l) * sp + (Math.random() - 0.5) * 1.4, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 5 + Math.random() * 6, rest: false });
-  tornPieces.push({ g: T.bottom.g, restY: -0.15, vx: (hx / l) * sp * 0.5 + (Math.random() - 0.5), vy: 3 + Math.random() * 1.5, vz: (hz / l) * sp * 0.5 + (Math.random() - 0.5), ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 3 + Math.random() * 3, rest: false });
+  tornPieces.push({ g: T.top.g, restY: T.top.restY, vx: (hx / l) * sp + (Math.random() - 0.5) * 1.4, vy: 5.5 + Math.random() * 2.5, vz: (hz / l) * sp + (Math.random() - 0.5) * 1.4, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 5 + Math.random() * 6, rest: false });
+  tornPieces.push({ g: T.bottom.g, restY: T.bottom.restY, vx: (hx / l) * sp * 0.5 + (Math.random() - 0.5), vy: 3 + Math.random() * 1.5, vz: (hz / l) * sp * 0.5 + (Math.random() - 0.5), ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 3 + Math.random() * 3, rest: false });
   // Log the tear so the instant replay can re-enact it (same as helmet pops).
   if (game.state !== STATE.REPLAY) {
     const ev = game.replay.evPool.pop() || {};
@@ -4230,7 +4237,7 @@ function beginTackle(lead, force = false) {
     audio.bigHit();
     // Gore: most often the helmet pops off; rarely the whole body is RIPPED IN
     // HALF at the waist (head stays with the top). The two are mutually exclusive.
-    const tear = (big || gang) && Math.random() < 0.12;
+    const tear = (big || gang) && Math.random() < 0.4;
     if (tear) tearInHalf(carrier, hitX, hitZ, power);
     else if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
