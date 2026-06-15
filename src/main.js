@@ -3490,7 +3490,8 @@ function beginTackle(lead, force = false) {
     audio.bigHit();
     // DIRTY hit: knock the runner's helmet clean off (tumbling ballistic prop),
     // and the tackler showboats a standover over the downed runner.
-    if (dirty) popHelmet(carrier, hitX, hitZ, power);
+    // TESTING: pop on any big/gang hit (not just dirty) to see it more often.
+    if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
     if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
