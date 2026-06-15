@@ -44,7 +44,7 @@ function gradientCanvas(stops, w, h) {
 let adBoardTex = null;            // scrolling LED advert ring (animated each frame)
 const crowdFlashes = [];          // pool of camera-flash sprites in the stands
 const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by the GLB towers once loaded)
-let towerTemplate = null, wallTemplate = null; // imported stadium props
+let towerTemplate = null, wallTemplate = null, cartTemplate = null; // imported stadium props
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
 // one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
 const camOccluders = []; // each: mesh with userData {cullSide:'px'|'nx'|'pz'|'nz', cullAt:number}
@@ -195,6 +195,22 @@ function placeStadiumProps() {
     for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + SIDELINE, z, -Math.PI / 2); place(-HALF_W - SIDELINE, z, Math.PI / 2); }
     const nx = Math.ceil((HALF_W * 2) / wW); // end lines
     for (let i = 0; i < nx; i++) { const x = -HALF_W + wW * (i + 0.5); place(x, HALF_L + SIDELINE, Math.PI); place(x, -HALF_L - SIDELINE, 0); }
+  }
+  // Blitz Cola coolers along each sideline (toward the outer edge of the bench
+  // lane, long branded side facing the field).
+  if (cartTemplate) {
+    // Let the branding self-illuminate a bit so the cooler reads on the dark
+    // night sideline (clones share these materials).
+    cartTemplate.traverse((o) => { if (o.isMesh && o.material && o.material.map) { o.material.emissiveMap = o.material.map; o.material.emissive = new THREE.Color(0xffffff); o.material.emissiveIntensity = 0.4; o.material.needsUpdate = true; } });
+    const f = boxOf(cartTemplate), S = 1.3 / f.size.y;      // ~1.3yd tall (reads from the broadcast cam)
+    const lane = HALF_W + SIDELINE * 0.78;                   // outer part of the bench lane
+    for (const side of [-1, 1]) for (const z of [-34, -10, 16, 38]) {
+      const c = cartTemplate.clone(true); c.scale.setScalar(S);
+      c.position.set(side * lane, -f.min.y * S, z);
+      c.rotation.y = side < 0 ? -Math.PI / 2 : Math.PI / 2;  // long branded face toward the field
+      c.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; } });
+      scene.add(c);
+    }
   }
 }
 
@@ -923,6 +939,7 @@ async function loadAssets() {
   // Imported stadium props (corner light towers + perimeter graffiti walls).
   try { towerTemplate = (await loadGLB('assets/lighttower.glb')).scene; } catch (e) { console.warn('light tower missing', e); }
   try { wallTemplate = (await loadGLB('assets/wall.glb')).scene; } catch (e) { console.warn('wall missing', e); }
+  try { cartTemplate = (await loadGLB('assets/cart.glb')).scene; } catch (e) { console.warn('cart missing', e); }
   placeStadiumProps();
   // The new merged Meshy pack (idle/walk variety, celebrations, parkour, scoop,
   // diving catch). Stripped to animation-only; same rig, so it drives our model
