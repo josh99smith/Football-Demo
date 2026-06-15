@@ -958,8 +958,9 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let backLClip, backRClip; // backpedal locomotion (left/right drift)
-// Variety + new-move clips from the merged Meshy pack (assets/animations2.glb).
+// Variety + new-move clips from the merged Meshy packs (animations2/3.glb).
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
+let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
@@ -1003,11 +1004,15 @@ async function loadAssets() {
   // diving catch). Stripped to animation-only; same rig, so it drives our model
   // by bone name. Added on top of the original clips (kept for sprint/juke/
   // tackle/backpedals/get-ups it doesn't include).
-  let anim2 = null;
+  let anim2 = null, anim3 = null;
   try { anim2 = await loadGLB('assets/animations2.glb'); } catch (e) { console.warn('animations2 missing', e); }
+  // animations3.glb: dances (hip-hop / boom / cheer) + anger (stomp / tantrum)
+  // for the end-of-game dance party, same rig, animation-only.
+  try { anim3 = await loadGLB('assets/animations3.glb'); } catch (e) { console.warn('animations3 missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   if (anim2) for (const c of anim2.animations) if (!byName[c.name]) byName[c.name] = c; // additive: don't override existing
+  if (anim3) for (const c of anim3.animations) if (!byName[c.name]) byName[c.name] = c; // additive: dances + anger
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
   // (Hips position) that translates the body during the clip and then snaps
   // back to the spawn spot ("teleport"). We drive position from the game, so
@@ -1078,6 +1083,12 @@ async function loadAssets() {
   // Touchdown celebrations (one per scorer, picked at character build). These
   // are dynamic (jumps) so keep their vertical motion -> inPlaceY.
   celebClips = ['Cheer_with_Both_Hands', 'Jumping_Punch', 'Show_Both_Arm_Muscles', 'Proud_Strut']
+    .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  // End-of-game finale: real looping dances for the winners and angry / tantrum
+  // clips for the losers (vertical kept so stomps land + the tantrum sits).
+  danceClips = ['Hip_Hop_Dance', 'Hip_Hop_Dance_2', 'Hip_Hop_Dance_3', 'Boom_Dance', 'Cheer_with_Both_Hands']
+    .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  sulkClips = ['Angry_To_Tantrum_Sit', 'Angry_Stomp', 'Angry_Ground_Stomp']
     .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
   // Diving catch, loose-ball scoop, hurdle vault, cage wall-jump — all leave the
   // ground, so keep root vertical motion (inPlaceY) + groundClamp at runtime.
@@ -1176,6 +1187,10 @@ function makeCharacter(team) {
   if (cageVaultClip) actions.cagevault = oneShot(cageVaultClip);
   if (celebClips.length) actions.celebrate = oneShot(celebClips[(Math.random() * celebClips.length) | 0]); // this player's TD dance
   if (getUpClips.length) actions.getup = oneShot(getUpClips[(Math.random() * getUpClips.length) | 0]); // pop up after a knockdown
+  // End-of-game finale: a looping dance (winner) and a looping anger clip (loser),
+  // each picked per player for variety.
+  if (danceClips.length) actions.dance = mk(danceClips[(Math.random() * danceClips.length) | 0]);
+  if (sulkClips.length) actions.sulk = mk(sulkClips[(Math.random() * sulkClips.length) | 0]);
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
@@ -3456,7 +3471,7 @@ function startFinale() {
     c.group.position.set(cx + Math.cos(a) * 3.6, 0, cz + Math.sin(a) * 3.6);
     c.heading = Math.atan2(cx - c.group.position.x, cz - c.group.position.z);
     c.vel.set(0, 0, 0); c.speed = 0; c.sulk = false; c.dancing = true; restoreHelmet(c);
-    if (c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
+    if (!c.actions.dance && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true); // fallback if no dance clip
   });
   // Losers slump in a line off to the side, turned away, heads hung.
   losers.forEach((c, i) => {
@@ -3465,7 +3480,8 @@ function startFinale() {
       0, THREE.MathUtils.clamp(cz + 16, -HALF_L + 3, HALF_L - 3));
     c.heading = Math.atan2(c.group.position.x - cx, c.group.position.z - cz); // facing away from the party
     c.vel.set(0, 0, 0); c.speed = 0; c.dancing = false; c.sulk = true; c.sulkPh = Math.random() * 6.283;
-    setClip(c, 'idle'); restoreHelmet(c);
+    if (!c.actions.sulk) setClip(c, 'idle'); // procedural sulk pose layers on idle; real clip drives itself
+    restoreHelmet(c);
   });
   cam.special = null; game.celebrating = false;
   game.finale = { active: true, t: 0, winners, losers, center, confT: 0, userWon };
@@ -3477,9 +3493,9 @@ function startFinale() {
 function updateFinale(dt) {
   const f = game.finale; if (!f || !f.active) return;
   f.t += dt;
-  for (const c of f.winners) { // keep them dancing — re-fire the celebrate as it ends
+  for (const c of f.winners) { // dance clip loops on its own; only re-fire the one-shot fallback
     if (c.ragdolling) continue;
-    if (c.oneShotT <= 0 && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
+    if (!c.actions.dance && c.oneShotT <= 0 && c.actions.celebrate) playOneShot(c, 'celebrate', 1.5 + Math.random() * 0.8, true);
     c.speed = 0; c.vel.set(0, 0, 0);
   }
   for (const c of f.losers) { c.speed = 0; c.vel.set(0, 0, 0); }
@@ -4610,6 +4626,10 @@ function groundClamp(ch) {
 }
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
+  // End-of-game finale: winners loop a real dance, losers loop an anger/tantrum
+  // clip. (Falls through to idle + the procedural sulk pose if the clips are missing.)
+  if (ch.dancing && ch.actions.dance) { setClip(ch, 'dance'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
+  if (ch.sulk && ch.actions.sulk) { setClip(ch, 'sulk'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
   const inBattle = game.state === STATE.BATTLE && (ch === game.carrier || ch === game.battle.tackler);
   if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
