@@ -1745,7 +1745,20 @@ const turboBtn = document.getElementById('turbo-btn');
 (function pwa() {
   const nav = typeof navigator !== 'undefined' ? navigator : null;
   if (nav && nav.serviceWorker) {
-    window.addEventListener('load', () => nav.serviceWorker.register('sw.js').catch(() => {}));
+    window.addEventListener('load', async () => {
+      try {
+        const hadController = !!nav.serviceWorker.controller; // was an old SW already controlling?
+        const reg = await nav.serviceWorker.register('sw.js');
+        reg.update();
+        // When an UPDATED worker takes control, reload once so the player gets the
+        // fresh code instead of stale cached JS (skip on the first-ever install).
+        let reloaded = false;
+        nav.serviceWorker.addEventListener('controllerchange', () => {
+          if (reloaded || !hadController) return;
+          reloaded = true; window.location.reload();
+        });
+      } catch (e) { /* offline / unsupported */ }
+    });
   }
   const pop = document.getElementById('install');
   if (!pop || !nav) return;
@@ -2785,7 +2798,7 @@ function giveBallTo(userBall, losZ) {
 }
 function endPlay(result, endZ) {
   game.state = STATE.DEAD; game.deadTimer = 1.1;
-  selRing.visible = false; ctrlRing.visible = false; updateButtons();
+  hideFieldChrome(); updateButtons(); // never let a reticle/turbo ring outlive the play
   const userHad = game.userOnOffense;
   if (result === 'TD') {
     audio.touchdown(); timeScale.slow(0.45, 0.5); shake.add(0.3);
