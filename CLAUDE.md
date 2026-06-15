@@ -17,4 +17,9 @@
 - `node --check src/main.js src/ragdoll.js`
 - Headless init harness in `/tmp/h` (expects "COMPLETED WITHOUT THROW"; the
   `*.scale.setScalar` line is the stub, not a real error).
-- Live WebGL render via the playwright shooter for visual changes.
+- Live WebGL render via the playwright shooter for visual changes. Launch
+  chromium with `--no-sandbox --disable-dev-shm-usage --use-gl=swiftshader
+  --enable-unsafe-swiftshader` (the `--disable-dev-shm-usage` flag is required —
+  without it chromium fails to launch once `/dev/shm` fills). Use a short
+  per-click timeout (`{timeout:350}`) so missed clicks don't stall 30s. Software
+  rendering runs at only ~2 fps, so it's for VISUAL checks, not FPS/clock timing.
