@@ -1254,6 +1254,8 @@ const game = {
   returnActive: false, returner: null, // interception runback (defense carries)
   fumbleLost: false,                    // a hit popped the ball loose to the defense
   looseTimer: 0,                        // live-fumble scramble countdown
+  looseCrowdT: 0,                       // how long 3+ players have crowded the loose ball
+  scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
   replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
@@ -4020,9 +4022,9 @@ function startFumble(carrier, hitX, hitZ) {
   const cp = carrier.group.position;
   ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.fromFence = false; ball.grabCd = 0.55; // let it bounce before anyone can fall on it
   ball.mesh.position.set(cp.x, 1.2, cp.z);
-  const ang = Math.atan2(hitX, hitZ) + (Math.random() - 0.5) * 1.2, sp = 5 + Math.random() * 5;
-  ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 5.5 + Math.random() * 3.5;
-  ball.g = 24; ball.spin = 0; ball.spinRate = 10;
+  const ang = Math.atan2(hitX, hitZ) + (Math.random() - 0.5) * 1.4, sp = 10 + Math.random() * 9; // bounces well clear of the pile
+  ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 6 + Math.random() * 4;
+  ball.g = 24; ball.spin = 0; ball.spinRate = 10; game.looseCrowdT = 0;
   setFumbleGlow(true);
   game.controlled = nearestTeamToBall(game.teamA); // scramble with your team
   ctrlRing.visible = true; selRing.visible = false;
@@ -4041,7 +4043,7 @@ function updateLoose(dt, turboOn, actionEdge) {
   if (p.y <= gy) {
     p.y = gy;
     if (ball.vy < 0) { ball.vy = -ball.vy * 0.6; if (ball.vy < 1.0) ball.vy = 0; } // bouncier
-    ball.vx *= 0.8; ball.vz *= 0.8;
+    ball.vx *= 0.86; ball.vz *= 0.86;
     // Erratic squirt off the point of the ball — a fumble takes crazy hops.
     if (Math.abs(ball.vy) > 0.8 || Math.hypot(ball.vx, ball.vz) > 1.2) {
       const a = Math.random() * Math.PI * 2, k = 1.5 + Math.random() * 4.5;
@@ -4049,16 +4051,23 @@ function updateLoose(dt, turboOn, actionEdge) {
       if (ball.vy < 1.5) ball.vy += Math.random() * 3; // occasional pop up
     }
   }
-  ball.vx *= (1 - dt * 0.5); ball.vz *= (1 - dt * 0.5); // rolls a while
+  ball.vx *= (1 - dt * 0.35); ball.vz *= (1 - dt * 0.35); // rolls a good while (gets clear of the pile)
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
   cageBounce(p, 0.6); // a loose ball ricochets off the cage and stays live
-  // Everyone scrambles to the ball; you drive your nearest man.
+  // Only the nearest few from each team chase the ball (no 14-man pile), and they
+  // spread around it via separation; everyone else holds. Keeps it from being mayhem.
+  const byBall = (a, b) => dist2(px(a), p) - dist2(px(b), p);
+  const nearA = game.teamA.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
+  const nearB = game.teamB.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
+  const chasers = new Set([...nearA, ...nearB]);
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
     if (ch.ragdolling || ch === game.controlled) continue;
-    ch.desired = seek(px(ch), p.x, p.z); ch.turbo = true;
+    if (chasers.has(ch)) {
+      ch.desired = addSteer(seek(px(ch), p.x, p.z), separation(ch, game.all, 2.2), 0.5); ch.turbo = true;
+    } else { ch.desired = { x: 0, z: 0 }; ch.turbo = false; } // the rest hold, don't pile on
   }
   if (game.controlled) {
     const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1);
@@ -4093,8 +4102,60 @@ function updateLoose(dt, turboOn, actionEdge) {
       ball.grabCd = 0.4; rec.recoverT = 0; shake.add(0.12);
     }
   }
+  // Pile-up scrum: if 3+ players crowd a settled ball and nobody's fallen on it,
+  // a mash duel decides possession.
+  if (game.scrum.cd <= 0 && ball.grabCd <= 0 && p.y < 1.0 && hsp < 4) {
+    let near = 0;
+    for (const ch of game.all) if (!ch.ragdolling && Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z) < 2.6) near++;
+    game.looseCrowdT = near >= 3 ? game.looseCrowdT + dt : 0;
+    if (game.looseCrowdT > 0.8) { startScrum(p); return; }
+  } else game.looseCrowdT = 0;
   game.looseTimer -= dt;
   if (game.looseTimer <= 0) recoverDead(p.z);
+}
+const SCRUM_TIME = 2.6, SCRUM_TAP = 0.085, SCRUM_CPU = 0.26;
+// A pile fighting for a loose ball: mash to drag possession to YOUR team (teamA).
+function startScrum(p) {
+  const s = game.scrum;
+  game.state = STATE.BATTLE; s.active = true; s.val = 0.5; s.timer = SCRUM_TIME; s.x = p.x; s.z = p.z; s.flash = 0;
+  s.crew = game.all.filter((c) => !c.ragdolling && Math.hypot(c.group.position.x - p.x, c.group.position.z - p.z) < 4.5).slice(0, 8);
+  for (const c of s.crew) { c.vel.set(0, 0, 0); c.speed = 0; }
+  ball.vx = ball.vy = ball.vz = 0; ball.mesh.position.set(p.x, 0.4, p.z); // pinned in the pile
+  ctrlRing.visible = false; hitZoom(SCRUM_TIME + 0.4);
+  battlePrompt.textContent = 'FIGHT FOR THE BALL!';
+  battleEl.classList.remove('hidden');
+  setStatus('Mash to win the loose ball!'); updateButtons();
+  audio.bigHit(); shake.add(0.2);
+}
+function updateScrum(dt) {
+  const s = game.scrum;
+  s.timer -= dt;
+  if (input.battleMash > 0) { s.val += input.battleMash * SCRUM_TAP; input.battleMash = 0; }
+  s.val = THREE.MathUtils.clamp(s.val - SCRUM_CPU * dt, 0, 1); // CPU drags toward its team
+  // Jostle the pile in a tight ring around the ball; a small heave with the meter.
+  const heave = (s.val - 0.5) * 1.4, t = performance.now() * 0.018;
+  s.crew.forEach((c, i) => {
+    if (c.ragdolling) return;
+    const a = (i / Math.max(1, s.crew.length)) * Math.PI * 2;
+    const r = 0.9 + Math.sin(t + i) * 0.12;
+    c.group.position.x = s.x + Math.cos(a) * r; c.group.position.z = s.z + Math.sin(a) * r;
+    c.heading = Math.atan2(s.x - c.group.position.x, s.z - c.group.position.z); c.speed = 4; // churn
+  });
+  ball.mesh.position.set(s.x, 0.4 + Math.abs(Math.sin(t * 1.7)) * 0.12, s.z + heave * 0.1);
+  if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4;
+  battleFill.style.width = `${Math.round(s.val * 100)}%`;
+  battleDiv.style.left = `${Math.round(s.val * 100)}%`;
+  if (s.val >= 1) return endScrum(true);
+  if (s.val <= 0) return endScrum(false);
+  if (s.timer <= 0) endScrum(s.val >= 0.5);
+}
+function endScrum(userWon) {
+  const s = game.scrum; s.active = false; s.cd = 2.0; game.looseCrowdT = 0;
+  battleEl.classList.add('hidden');
+  const team = userWon ? game.teamA : game.teamB;
+  let rec = null, rd = Infinity;
+  for (const c of team) { if (c.ragdolling) continue; const d = dist2(px(c), { x: s.x, z: s.z }); if (d < rd) { rd = d; rec = c; } }
+  ball.mode = 'loose'; recoverFumble(rec || team[0]); // winner falls on it
 }
 function recoverFumble(ch) {
   setFumbleGlow(false);
@@ -4681,8 +4742,13 @@ function updatePlay(dt) {
     updateLoose(dt, turboOn, actionEdge); // scramble for the bouncing ball
   } else if (game.state === STATE.BATTLE) {
     if (actionEdge) input.battleMash++;
-    for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
-    updateBattle(dt);
+    if (game.scrum.active) {
+      for (const ch of game.all) if (!ch.ragdolling && !game.scrum.crew.includes(ch)) { ch.speed = 0; ch.vel.set(0, 0, 0); }
+      updateScrum(dt);
+    } else {
+      for (const ch of game.all) if (!ch.ragdolling && ch !== game.carrier && ch !== game.battle.tackler) { ch.speed = 0; ch.vel.set(0, 0, 0); }
+      updateBattle(dt);
+    }
   } else if (game.state === STATE.TACKLE && game.drag.active) {
     updateDrag(dt); // wrap-and-drag-down struggle before the pile collapses
   } else if (game.state === STATE.TACKLE) {
@@ -4740,6 +4806,7 @@ function updatePlay(dt) {
   updateFlames(dt);
   tickJumbo(dt); // rotate jumbotron between the scoreboard and ads
   if (game.battle.cd > 0) game.battle.cd -= dt;
+  if (game.scrum.cd > 0) game.scrum.cd -= dt;
   if (game.state === STATE.DEAD) {
     // Whistle beat: everyone still up brakes to a stop (run -> walk -> idle),
     // then they jog back into formation (RESET) for the next play.
