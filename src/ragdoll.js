@@ -321,7 +321,7 @@ export class TackleRagdoll {
         seg.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
         continue;
       }
-      const minY = seg.r * 0.85;
+      const minY = seg.r; // keep the capsule fully on the turf (no sinking)
       let cx = t.x, cy = t.y, cz = t.z, hit = false;
       if (cy < minY) { cy = minY; if (v.y < 0) v.y = 0; hit = true; }
       else if (cy > 8) { cy = 8; if (v.y > 0) v.y = 0; hit = true; } // ceiling: no body floats above the field

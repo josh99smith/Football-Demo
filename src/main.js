@@ -581,33 +581,42 @@ function hideFieldChrome() {
   carrierSwirl.visible = false; turboArc.visible = false;
   for (const ch of game.all) if (ch.nameTag) ch.nameTag.visible = false;
 }
+// Single per-frame authority for ALL on-field selection chrome: every ring's
+// visibility + position is DERIVED from the current game state here, every frame,
+// so nothing can ever strand on the turf (the scattered .visible toggles no longer
+// matter — this overrides them). Not called during REPLAY (see hideFieldChrome).
 function updateReticles() {
   const t = performance.now() * 0.001;
-  // Blue concentric reticle on the controlled player, pulsing outward. Self-hide
-  // when there's no valid moment/player so it never strands on the turf.
-  const ctlOk = game.controlled && !game.controlled.ragdolling &&
-    (reticleLive() || (game.state === STATE.PRESNAP && !game.userOnOffense));
-  if (ctrlRing.visible && !ctlOk) ctrlRing.visible = false;
-  if (ctrlRing.visible) {
-    const p = game.controlled.group.position; ctrlRing.position.set(p.x, 0.035, p.z);
+  const live = reticleLive();
+  const ctl = game.controlled, c = game.carrier;
+  // Gold ring on the targeted receiver: offense, pre-throw, on a real receiver.
+  const rcv = game.receivers ? game.receivers[game.selected] : null;
+  const selOn = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && rcv && rcv.group && !rcv.ragdolling;
+  selRing.visible = !!selOn;
+  if (selOn) selRing.position.set(rcv.group.position.x, 0.03, rcv.group.position.z);
+  // Blue concentric reticle on the controlled player (live play, or pre-snap D).
+  const ctlOn = ctl && ctl.group && !ctl.ragdolling && (live || (game.state === STATE.PRESNAP && !game.userOnOffense));
+  ctrlRing.visible = !!ctlOn;
+  if (ctlOn) {
+    const p = ctl.group.position; ctrlRing.position.set(p.x, 0.035, p.z);
     const rings = ctrlRing.userData.rings;
     for (let i = 0; i < rings.length; i++) {
       const ph = (t * 1.5 - i * 0.5) % 1; rings[i].material.opacity = 0.35 + 0.5 * (1 - (ph < 0 ? ph + 1 : ph));
     }
   }
   // Red feathered swirl on the ball carrier during live play.
-  const c = game.carrier, swirlOn = c && !c.ragdolling && reticleLive();
-  carrierSwirl.visible = swirlOn;
+  const swirlOn = c && c.group && !c.ragdolling && live;
+  carrierSwirl.visible = !!swirlOn;
   if (swirlOn) {
     const p = c.group.position; carrierSwirl.position.set(p.x, 0.05, p.z);
     carrierSwirl.material.rotation = t * 0.7;
     const pul = 1 + Math.sin(t * 6) * 0.04; carrierSwirl.scale.set(pul, pul, 1);
   }
-  // Turbo gauge ring under the controlled player.
-  const cc = game.controlled, arcOn = cc && !cc.ragdolling && reticleLive();
-  turboArc.visible = arcOn;
+  // Turbo gauge ring under the controlled player during live play.
+  const arcOn = ctl && ctl.group && !ctl.ragdolling && live;
+  turboArc.visible = !!arcOn;
   if (arcOn) {
-    const p = cc.group.position; turboArc.position.set(p.x, 0.04, p.z);
+    const p = ctl.group.position; turboArc.position.set(p.x, 0.04, p.z);
     drawTurboArc(game.onFire ? 1 : game.turboMeter, game.turboLock, game.onFire);
   }
 }
@@ -3498,16 +3507,18 @@ function collapseDrag() {
   // The pile gives way: carrier + the nearest grabbers ragdoll and tumble down.
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, 3.4, 0x0002,
     pickVariant(false, d.grabbers.length, 6, d.hx, d.hz));
-  const bits = [0x0004, 0x0008, 0x0010, 0x0020];
+  const bits = [0x0004, 0x0008, 0x0010];
   const size = d.grabbers.length, heavy = size >= 3;
-  const ragMax = Math.min(size, heavy ? 3 : 2); // bigger gang -> more bodies tumble in the pile
+  // Cap how many bodies actually ragdoll (carrier + up to 2 tacklers) so a crowded
+  // pile can't shove bodies through the turf; extra grabbers just release.
+  const ragMax = RAGDOLL_MAX - 1;
   let ragged = 0;
   for (const t of d.grabbers) {
     t.grabbing = false;
     if (ragged < ragMax && !t.ragdolling) {
       const toC = new THREE.Vector3(cp.x - t.group.position.x, 0, cp.z - t.group.position.z);
       if (toC.lengthSq() < 1e-4) toC.copy(hitDir); else toC.normalize();
-      spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), toC, 3.0 + (heavy ? 0.6 : 0), bits[ragged] ?? 0x0004, 'sideSwipe');
+      spawnRagdoll(t, new THREE.Vector3(t.vel.x, 0, t.vel.z), toC, 3.0, bits[ragged] ?? 0x0004, 'sideSwipe');
       ragged++;
     }
   }
@@ -3914,7 +3925,8 @@ function updateAnimation(ch, dt) {
   // Keep dynamic poses out of the turf: one-shots clamp in their own branch
   // above, and the leaning gang-tackle grab clamps here. Plain locomotion just
   // sits at the calibrated height — clear any leftover lift from a finished move.
-  if (grabbing) groundClamp(ch);
+  const draggedCarrier = game.drag.active && ch === game.carrier && !ch.ragdolling; // the man being wrapped/dragged
+  if (grabbing || draggedCarrier) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
 }
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
@@ -4217,10 +4229,7 @@ function updatePlay(dt) {
   // is part of the replay). Only PRESNAP / RESET / REPLAY itself are skipped.
   if (game.state !== STATE.PRESNAP && game.state !== STATE.RESET && game.state !== STATE.REPLAY) recordFrame();
 
-  if (selRing.visible && game.receivers[game.selected]) {
-    const p = game.receivers[game.selected].group.position; selRing.position.set(p.x, 0.03, p.z);
-  }
-  updateReticles(dt);
+  updateReticles(); // single authority for all on-field rings (visibility + position)
   updateNameTags();
   // Target arrow bobs over the selected receiver while you're picking a throw.
   const showArrow = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
