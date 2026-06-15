@@ -120,18 +120,18 @@ function makeAdTexture() {
       }
       // Rake them up the bowl on a cone a few units INSIDE the wall so they sit
       // clearly in front of the crowd texture (bowl wall: r80@y-4 -> r96@y30).
-      const ROWS_N = 7, PER_ROW = 74;         // ~520 fans in tiers around the bowl
+      const ROWS_N = 11, PER_ROW = 150;       // ~1650 fans, packed shoulder-to-shoulder
       const wallR = (y) => 80 + (y + 4) / 34 * 16;
       for (let r = 0; r < ROWS_N; r++) {
         const f = r / (ROWS_N - 1);
-        const yb = 2 + f * 23;                // 2 .. 25 up the tiers
+        const yb = 1.5 + f * 24;              // 1.5 .. 25.5 up the tiers (denser rows)
         for (let k = 0; k < PER_ROW; k++) {
-          const a = (k / PER_ROW) * Math.PI * 2 + r * 0.04 + (Math.random() - 0.5) * 0.05;
-          const y = yb + (Math.random() - 0.5) * 1.2;
-          const rr = wallR(y) - 4.5 - Math.random() * 1.5; // tuck inside the wall
+          const a = (k / PER_ROW) * Math.PI * 2 + r * 0.5 * (Math.PI * 2 / PER_ROW) + (Math.random() - 0.5) * 0.018; // stagger rows, tight spacing
+          const y = yb + (Math.random() - 0.5) * 0.7;
+          const rr = wallR(y) - 4.2 - Math.random() * 1.2; // tuck inside the wall
           const s = new THREE.Sprite(mats[(Math.random() * NCELLS) | 0]);
           s.center.set(0.5, 0);               // anchor at the feet
-          const h = 3.0 + Math.random() * 0.9; // person height
+          const h = 2.5 + Math.random() * 0.7; // a touch smaller so more pack in
           s.scale.set(h * 0.45, h, 1);
           s.position.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
           scene.add(s);
