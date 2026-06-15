@@ -73,13 +73,20 @@ function makeAdTexture() {
   }
   const starGeo = new THREE.BufferGeometry(); starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3));
   scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.7, sizeAttenuation: true, fog: false, transparent: true, opacity: 0.9 })));
-  // Crowd: a noisy speckle texture wrapped on a slightly flared bowl wall.
+  // Crowd: real rows of diverse people wrapped around the flared bowl wall (a
+  // photographed crowd grid, tiled). A noisy speckle texture is the pre-load
+  // fallback so the bowl is never bare while the image streams in.
   const cc = document.createElement('canvas'); cc.width = 256; cc.height = 128;
   const cg = cc.getContext('2d'); cg.fillStyle = '#0b1420'; cg.fillRect(0, 0, 256, 128);
   for (let i = 0; i < 3000; i++) { cg.fillStyle = `hsl(${Math.random() * 360},${25 + Math.random() * 45}%,${28 + Math.random() * 48}%)`; cg.fillRect(Math.random() * 256, Math.random() * 128, 2, 2); }
   const crowdTex = new THREE.CanvasTexture(cc); crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping; crowdTex.repeat.set(26, 3); crowdTex.colorSpace = THREE.SRGBColorSpace;
-  const stands = new THREE.Mesh(new THREE.CylinderGeometry(96, 80, 34, 56, 1, true),
-    new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 }));
+  const standsMat = new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 });
+  new THREE.TextureLoader().load('assets/crowd.jpg', (tx) => {
+    tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.repeat.set(9, 2); tx.colorSpace = THREE.SRGBColorSpace;
+    tx.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    standsMat.map = tx; standsMat.needsUpdate = true;
+  });
+  const stands = new THREE.Mesh(new THREE.CylinderGeometry(96, 80, 34, 56, 1, true), standsMat);
   stands.position.y = 13; scene.add(stands);
   // Concrete stadium wall under the stands (real brick texture, loaded async).
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a5460, side: THREE.BackSide, roughness: 0.95 });
