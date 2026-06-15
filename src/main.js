@@ -780,7 +780,10 @@ function bloodSpray(x, y, z, n = 40) {
     if (++spawned >= n) break;
   }
   // Leave lasting stains on the turf where the blood lands (cleared each quarter):
-  // a main pool + several scattered splatters of varied shape/size.
+  // a main pool + several scattered splatters of varied shape/size. Skipped during
+  // a replay re-enactment so loops don't pile up duplicate stains (the live ones
+  // from the play are already on the field).
+  if (game.state === STATE.REPLAY) return;
   addBloodStain(x, z);
   const splats = 3 + (Math.random() * 3 | 0); // 3..5 extra
   for (let i = 0; i < splats; i++) {
@@ -1281,7 +1284,7 @@ const game = {
   looseCrowdT: 0,                       // how long 3+ players have crowded the loose ball
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
-  replay: { frames: [], fx: [], pool: [], fxPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + free-lists of recycled buffers) + looping multi-angle cam
+  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
@@ -2682,6 +2685,14 @@ function popHelmet(ch, hx, hz, power) {
   if (ch.headBone) ch.headBone.getWorldPosition(_bloodPos);
   bloodSpray(_bloodPos.x, _bloodPos.y - 0.15, _bloodPos.z);
   audio.fence(0.3); // chin-strap pop / clatter
+  // Log the pop so the instant replay can re-enact it (helmet flies + blood) at
+  // the same frame. (Not while a replay is itself re-firing the pop.)
+  if (game.state !== STATE.REPLAY) {
+    const ev = game.replay.evPool.pop() || {};
+    ev.fi = game.replay.frames.length; ev.pIdx = game.all.indexOf(ch);
+    ev.hx = hx; ev.hz = hz; ev.power = power || 70; ev.fired = false;
+    game.replay.events.push(ev);
+  }
 }
 function updateFlyingHelmets(dt) {
   if (!flyingHelmets.length) return;
@@ -2851,7 +2862,13 @@ function recordFrame() {
   // Reuse a buffer instead of churning a fresh ~10KB Float32Array every frame:
   // pull from the free-list freed by the last play, or recycle the oldest frame
   // once the ring is full (roster size is fixed, so the length matches).
-  let buf = f.length >= REPLAY_MAX ? f.shift() : game.replay.pool.pop();
+  let buf;
+  if (f.length >= REPLAY_MAX) {
+    buf = f.shift();
+    // The ring dropped frame 0 — shift every pop event's frame index to match.
+    const ev = game.replay.events;
+    for (let i = ev.length - 1; i >= 0; i--) { if (--ev[i].fi < 0) { game.replay.evPool.push(ev[i]); ev.splice(i, 1); } }
+  } else buf = game.replay.pool.pop();
   if (!buf || buf.length !== need) buf = new Float32Array(need);
   let o = 0;
   const b = ball.mesh; const bp = b.position, bq = b.quaternion;
@@ -2901,7 +2918,8 @@ function startReplay(highlight = false) {
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
-  for (const ch of game.all) restoreHelmet(ch); // put popped helmets back on for the replay
+  for (const ch of game.all) restoreHelmet(ch); // helmets back on; the replay re-pops them at the recorded frame
+  for (const ev of r.events) ev.fired = false;  // arm the pop events for this replay pass
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   if (replayEl) replayEl.classList.remove('hidden');
   document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
@@ -2950,6 +2968,8 @@ function updateReplay(dt) {
     if (r.fade >= 1) { // fully black — switch angle and restart the play from the top
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.loops++;
       r.i = 0; r.seg = 0; r.snap = true; r.phase = 'fadein'; r.rate = 0.85; setReplayLabel(); // later loops run full-speed from the top
+      for (const ch of game.all) restoreHelmet(ch); // re-seat helmets so they pop again this loop
+      for (const ev of r.events) ev.fired = false;
     }
   } else { // fadein: replay runs from the start while we fade back up from black
     r.i += r.rate; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
@@ -2957,6 +2977,10 @@ function updateReplay(dt) {
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
   if (rpFadeEl) rpFadeEl.style.opacity = r.fade.toFixed(3);
+  // Re-enact each helmet pop (flying helmet + blood geyser) as playback reaches it.
+  for (const ev of r.events) {
+    if (!ev.fired && r.i >= ev.fi) { ev.fired = true; const ch = game.all[ev.pIdx]; if (ch) popHelmet(ch, ev.hx, ev.hz, ev.power); }
+  }
   driveReplayFlames(dt, r.i); // ON FIRE / turbo flames follow the replayed bodies
 }
 function endReplay() {
@@ -2974,7 +2998,8 @@ function recycleReplayBuffers() {
   const r = game.replay;
   for (const b of r.frames) r.pool.push(b);
   for (const x of r.fx) r.fxPool.push(x);
-  r.frames.length = 0; r.fx.length = 0;
+  for (const e of r.events) r.evPool.push(e);
+  r.frames.length = 0; r.fx.length = 0; r.events.length = 0;
   if (r.pool.length > REPLAY_MAX) r.pool.length = REPLAY_MAX;
   if (r.fxPool.length > REPLAY_MAX) r.fxPool.length = REPLAY_MAX;
 }
@@ -4924,7 +4949,7 @@ function updatePlay(dt) {
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
-  if (game.state === STATE.REPLAY) { if (actionEdge) endReplay(); else updateReplay(dt); return; }
+  if (game.state === STATE.REPLAY) { if (actionEdge) endReplay(); else { updateReplay(dt); updateParticles(dt); } return; } // particles run so the replayed blood geyser animates
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
