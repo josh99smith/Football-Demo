@@ -767,7 +767,47 @@ function bloodSpray(x, y, z, n = 20) {
     p.userData.life = 0.5 + Math.random() * 0.5;
     if (++spawned >= n) break;
   }
+  // Leave lasting stains on the turf where the blood lands (cleared each quarter).
+  addBloodStain(x, z);
+  if (Math.random() < 0.8) addBloodStain(x + (Math.random() - 0.5) * 4.5, z + (Math.random() - 0.5) * 4.5);
+  if (Math.random() < 0.5) addBloodStain(x + (Math.random() - 0.5) * 7, z + (Math.random() - 0.5) * 7);
 }
+// Persistent blood stains on the grass — flat splat decals that accumulate and
+// stay until the quarter ends (clearBloodStains in advanceQuarter).
+function makeBloodTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'); g.clearRect(0, 0, 128, 128);
+  const cx = 64, cy = 64;
+  for (let i = 0; i < 7; i++) { // overlapping central lobes
+    const a = Math.random() * Math.PI * 2, r = Math.random() * 20;
+    g.fillStyle = `rgba(${96 + Math.random() * 50 | 0},${6 + Math.random() * 12 | 0},${8 + Math.random() * 10 | 0},0.9)`;
+    g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 13 + Math.random() * 15, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < 24; i++) { // scattered droplets/splatter
+    const a = Math.random() * Math.PI * 2, r = 22 + Math.random() * 38;
+    g.fillStyle = `rgba(${110 + Math.random() * 50 | 0},${6 + Math.random() * 14 | 0},${10 + Math.random() * 12 | 0},${0.55 + Math.random() * 0.4})`;
+    g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.5 + Math.random() * 6, 0, Math.PI * 2); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const bloodStains = [];
+let bloodStainI = 0;
+(function initBloodStains() {
+  const tex = makeBloodTexture();
+  for (let i = 0; i < 48; i++) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0 }));
+    m.position.y = 0.04; m.visible = false; m.renderOrder = 1; scene.add(m); bloodStains.push(m);
+  }
+})();
+function addBloodStain(x, z) {
+  const m = bloodStains[bloodStainI++ % bloodStains.length];
+  m.position.set(THREE.MathUtils.clamp(x, -HALF_W + 1, HALF_W - 1), 0.04, THREE.MathUtils.clamp(z, -HALF_L + 1, HALF_L - 1));
+  m.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2); // lay flat, random spin
+  const s = 1.6 + Math.random() * 1.8; m.scale.set(s, s, 1);
+  m.material.opacity = 0.8 + Math.random() * 0.15; m.visible = true;
+}
+function clearBloodStains() { for (const m of bloodStains) { m.visible = false; m.material.opacity = 0; } }
 // Touchdown confetti: a full-pool, multi-color shower that rains down.
 function confetti(z) {
   const x = game.carrier ? game.carrier.group.position.x : 0;
@@ -2398,6 +2438,7 @@ function tickClock(dt) {
 }
 function advanceQuarter() {
   game.quarter += 1;
+  clearBloodStains(); // fresh turf each quarter
   if (game.quarter > 4) { endGame(); return; }
   game.gameClock = QUARTER_LEN;
   audio.whistle();
