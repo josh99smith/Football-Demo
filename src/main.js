@@ -681,6 +681,25 @@ function burst(x, y, z, color, n = 14, speed = 7) {
     if (++spawned >= n) break;
   }
 }
+// Over-the-top gore: a red geyser of droplets from the neck when the lid pops
+// off on a violent hit (Blitz: The League style). Strong upward gush + spread.
+const BLOOD_COLS = [0xd60a18, 0xb00410, 0xe8202c];
+function bloodSpray(x, y, z, n = 20) {
+  let spawned = 0;
+  for (const p of hitParticles) {
+    if (p.userData.life > 0) continue;
+    p.visible = true;
+    p.position.set(x + (Math.random() - 0.5) * 0.12, y, z + (Math.random() - 0.5) * 0.12);
+    p.material.color.setHex(BLOOD_COLS[(Math.random() * BLOOD_COLS.length) | 0]);
+    p.material.opacity = 0.95;
+    const a = Math.random() * Math.PI * 2, spread = 1.0 + Math.random() * 2.4;
+    p.userData.vx = Math.cos(a) * spread;
+    p.userData.vz = Math.sin(a) * spread;
+    p.userData.vy = 5 + Math.random() * 6; // gush up out of the neck
+    p.userData.life = 0.5 + Math.random() * 0.5;
+    if (++spawned >= n) break;
+  }
+}
 // Touchdown confetti: a full-pool, multi-color shower that rains down.
 function confetti(z) {
   const x = game.carrier ? game.carrier.group.position.x : 0;
@@ -2216,7 +2235,7 @@ const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 // --- Popped helmets (a DIRTY HIT knocks the runner's lid off) ---------------
 // A lightweight ballistic prop (gravity + bounce + tumble), not a Rapier body.
 const flyingHelmets = [];
-const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion();
+const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion(), _bloodPos = new THREE.Vector3();
 function popHelmet(ch, hx, hz, power) {
   const h = ch.helmet;
   if (!h || !h.userData.rest || h.userData.flying) return;
@@ -2231,6 +2250,10 @@ function popHelmet(ch, hx, hz, power) {
     ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5,
     spin: 13 + Math.random() * 10, rest: false,
   });
+  // Blood geyser out of the neck where the head/helmet was.
+  _bloodPos.set(ch.group.position.x, 1.6, ch.group.position.z);
+  if (ch.headBone) ch.headBone.getWorldPosition(_bloodPos);
+  bloodSpray(_bloodPos.x, _bloodPos.y - 0.15, _bloodPos.z);
   audio.fence(0.3); // chin-strap pop / clatter
 }
 function updateFlyingHelmets(dt) {
@@ -3616,6 +3639,7 @@ function collapseDrag() {
   // The pile gives way: carrier + the nearest grabbers ragdoll and tumble down.
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, 3.4, 0x0002,
     pickVariant(false, d.grabbers.length, 6, d.hx, d.hz));
+  popHelmet(carrier, d.hx, d.hz, hitPower(d.grabbers[0], d.closing, d.grabbers.length, d.big)); // TESTING: lid off on the pile collapse too
   const bits = [0x0004, 0x0008, 0x0010];
   const size = d.grabbers.length, heavy = size >= 3;
   // Cap how many bodies actually ragdoll (carrier + up to 2 tacklers) so a crowded
