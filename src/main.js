@@ -1077,6 +1077,7 @@ function makeCharacter(team) {
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
     route: null, wp: 0, cutTimer: 0, jukeTimer: 0, jukeCd: 0, oneShotT: 0, spinT: 0, recoverT: 0, cageJumpCd: 0, engaged: false,
     tauntT: 0, tauntCd: 0, diveT: 0, diveCd: 0, // showboat window/cooldown + diving-tackle window/cooldown
+    fatigue: 1, // 1 = fresh, drains with exertion -> less top speed / break power
     backped: false,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
@@ -1418,6 +1419,19 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
 const TURBO_MULT = 1.4; // full NFL Blitz turbo
+// Fatigue: players tire as they exert, bleeding top speed (and break power) over
+// a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
+const FAT_MIN = 0.45;
+const fatigueSpeed = (ch) => 0.7 + 0.3 * THREE.MathUtils.clamp((ch.fatigue - FAT_MIN) / (1 - FAT_MIN), 0, 1); // 0.7 (gassed) .. 1.0 (fresh)
+function updateFatigue(ch, dt) {
+  const stam = ch.rt ? ch.rt.stamina : 0.7;          // 0..1
+  const exert = ch.speed / (ch.baseSpeed || 8);      // fraction of base top speed (turbo pushes >1)
+  if (exert > 0.58) {                                // sprinting/turbo drains (quadratically — turbo costs most)
+    ch.fatigue = Math.max(FAT_MIN, ch.fatigue - 0.18 * (1.5 - stam) * exert * exert * dt);
+  } else {                                           // jogging / idle recovers (faster with stamina)
+    ch.fatigue = Math.min(1, ch.fatigue + (0.1 + stam * 0.12) * dt);
+  }
+}
 const px = (p) => p.group ? p.group.position : p;
 function seek(from, tx, tz) {
   const dx = tx - from.x, dz = tz - from.z, d = Math.hypot(dx, dz) || 1;
@@ -1642,7 +1656,7 @@ function updateOffense(dt) {
 // ===========================================================================
 function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
-  let speed = ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed;
+  let speed = (ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed) * fatigueSpeed(ch);
   if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
   if (ch.engaged) speed *= 0.4; // a pass rusher walled off by a blocker is slowed
   let tvx = 0, tvz = 0;
@@ -2255,7 +2269,7 @@ function groundPlayers() {
   for (const ch of game.all) {
     if (ch.ragdoll && ch.ragdoll.active) ch.ragdoll.dispose();
     restoreHelmet(ch); // snap a popped-off helmet back onto the head
-    ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0;
+    ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0; ch.fatigue = 1; // fresh legs each play
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
     if (!Number.isFinite(p.z)) p.z = Number.isFinite(h.z) ? h.z : 0;
@@ -3261,7 +3275,7 @@ function tryBreak(carrier, pile) {
   if (game.playClock - game.lastBreak < 0.55) return false;
   const speed = Math.hypot(carrier.vel.x, carrier.vel.z);
   let p = input.turbo ? 0.52 : 0.34;
-  const power = carrier.strength * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1);
+  const power = carrier.strength * carrier.fatigue * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1); // a gassed runner trucks fewer tacklers
   let gangStr = 0;
   for (const t of pile) gangStr += 0.5 + (t.rt ? t.rt.tackle : 0.6); // wrap-up scales with TACKLING
   p *= THREE.MathUtils.clamp(power / (gangStr * 0.95), 0.3, 1.25);
@@ -3790,6 +3804,7 @@ function brakeAmt(v, tv, baseA, moving) {
   return baseA * (braking ? (moving ? 1.35 : 2.0) : 1);
 }
 function controlledMove(ch, dt, topSpeed) {
+  topSpeed *= fatigueSpeed(ch); // tired players can't hit top speed
   const kb = kbVec();
   let ix = THREE.MathUtils.clamp(input.x + kb.x, -1, 1);
   let iy = THREE.MathUtils.clamp(input.y + kb.y, -1, 1);
@@ -4342,6 +4357,7 @@ function updatePlay(dt) {
       ch.vel.set(0, 0, 0); ch.speed = 0;
     }
     clampToField(ch);
+    if (liveBall) updateFatigue(ch, dt); // tire with exertion while the ball's live
   }
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
