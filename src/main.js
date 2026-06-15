@@ -2790,6 +2790,14 @@ function tearInHalf(ch, hx, hz, power) {
     }
   }
   ch.model.visible = false; ch.torn = true; // swap the whole body for the two chunks
+  // The carrier just got obliterated — pop the ball loose so it doesn't stick to
+  // the now-hidden, undriven hand bone. (In a replay the ball follows the record.)
+  if (game.state !== STATE.REPLAY && (ball.holder === ch || game.carrier === ch)) {
+    ball.mode = 'dead'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.g = 24;
+    ball.mesh.position.set(ch.group.position.x, 1.2, ch.group.position.z);
+    ball.vx = _tearHD.x * 3 + bvx * 0.4; ball.vz = _tearHD.z * 3 + bvz * 0.4; ball.vy = 4.5;
+    ball.spin = 0; ball.spinRate = 12;
+  }
   bloodSpray(ch.group.position.x, 1.0, ch.group.position.z, 64); // geyser from the waist
   audio.bigHit();
   // Log the tear so the instant replay can re-enact it (same as helmet pops).
