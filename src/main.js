@@ -5464,7 +5464,16 @@ function updateAmbience(dt) {
   }
 }
 const clock = new THREE.Clock();
+const fpsEl = document.getElementById('fps');
+let _fpsT = (typeof performance !== 'undefined' ? performance.now() : 0), _fpsN = 0;
+function updateFps() {
+  if (!fpsEl) return;
+  _fpsN++;
+  const now = performance.now(), el = now - _fpsT;
+  if (el >= 500) { fpsEl.textContent = Math.round(_fpsN * 1000 / el) + ' FPS'; _fpsT = now; _fpsN = 0; }
+}
 function animate() {
+  updateFps(); // true frame rate (independent of the sim dt cap)
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.

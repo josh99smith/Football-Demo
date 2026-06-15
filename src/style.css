@@ -306,6 +306,23 @@ html, body {
   pointer-events: none;
   white-space: nowrap;
 }
+/* FPS counter — top-left, mirrors the build badge. */
+#fps {
+  position: fixed;
+  top: max(5px, env(safe-area-inset-top));
+  left: max(7px, env(safe-area-inset-left));
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: rgba(120, 255, 170, 0.7);
+  background: rgba(0, 0, 0, 0.32);
+  padding: 2px 7px;
+  border-radius: 7px;
+  z-index: 25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+body.replay-mode #fps { display: none !important; }
 
 /* ---------- 1-on-1 break-tackle battle ---------- */
 #battle {
