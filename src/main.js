@@ -2400,7 +2400,6 @@ function finalizeReset() {
   game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
   if (game.userOnOffense) {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
-    startSpecialCam('hero', game.qb, 2.6); // cinematic pre-play hero shot on the star
   } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
   setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
