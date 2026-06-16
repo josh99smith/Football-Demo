@@ -1356,7 +1356,29 @@ const sweepLights = [];         // spotlights (white) for the light show
 let fwLightI = 0;
 let strobe = null;              // red strobe (light show)
 const CELEB_CHANCE = 0.5;       // odds a home TD triggers a stadium celebration
-const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0, grand: false };
+const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0, grand: false, lightsOn: false };
+// Toggle ALL celebration lights together so the scene's light COUNT is constant
+// during any celebration (otherwise per-burst point-light toggles change the
+// count every frame, forcing a shader recompile cascade — the first-celebration
+// frame-rate dip). The single celeb light config is pre-warmed at load.
+function setCelebLights(on) {
+  if (celebFx.lightsOn === on) return;
+  celebFx.lightsOn = on;
+  for (const L of sweepLights) { L.visible = on; if (!on) L.intensity = 0; }
+  if (strobe) { strobe.visible = on; if (!on) strobe.intensity = 0; }
+  for (const L of fwLights) { L.visible = on; L.intensity = 0; if (L.userData) L.userData.f = 0; }
+}
+// Compile the celebration light config's shaders during the load screen, so the
+// first celebration doesn't stall the frame rate recompiling them in-game.
+function prewarmCelebShaders() {
+  if (!renderer || !scene || !camera) return;
+  try {
+    renderer.compile(scene, camera);   // gameplay light config
+    setCelebLights(true);
+    renderer.compile(scene, camera);   // celebration light config (all celeb lights on)
+    setCelebLights(false);
+  } catch (e) { /* best-effort warm-up */ }
+}
 (function initCelebFx() {
   const tex = makeGlowTexture();
   for (let i = 0; i < 640; i++) {
@@ -1393,7 +1415,7 @@ function fireworkBurst(x, y, z, col) {
       1.5 + Math.random() * 1.1, 0.45 + Math.random() * 0.4, 0xfff4d0, 0.5, true);
   }
   const L = fwLights[fwLightI++ % fwLights.length];
-  L.color.setHex(col); L.position.set(x, y, z); L.intensity = 10; L.visible = true; L.userData.f = 1;
+  L.color.setHex(col); L.position.set(x, y, z); L.intensity = 10; L.userData.f = 1; // visible toggled as a group (setCelebLights)
 }
 function launchShell(x, z) {
   fwShells.push({ x, y: 1.5, z, vy: 27 + Math.random() * 9, fuse: 0.9 + Math.random() * 0.5, trail: 0, col: FW_COLORS[(Math.random() * FW_COLORS.length) | 0] });
@@ -1416,7 +1438,7 @@ function updateCelebFx(dt) {
     s.material.opacity = u.glitter ? f * (0.2 + 0.8 * Math.max(0, Math.sin(t * 46 + u.ph))) : f;
     const sc = u.base * (0.35 + f * 0.85); s.scale.set(sc, sc, sc);
   }
-  for (const L of fwLights) if (L.visible) { L.userData.f -= dt * 2.4; L.intensity = Math.max(0, L.userData.f) * 10; if (L.userData.f <= 0) L.visible = false; }
+  for (const L of fwLights) { if (L.userData.f > 0) { L.userData.f -= dt * 2.4; L.intensity = Math.max(0, L.userData.f) * 10; } else L.intensity = 0; } // pulse intensity, never toggle visibility (constant light count)
 
   if (celebFx.mode === 'fireworks') {
     celebFx.t += dt;
@@ -1454,7 +1476,7 @@ function updateCelebFx(dt) {
   } else if (celebFx.mode === 'lightshow') {
     celebFx.t += dt;
     celebFx.dim = Math.min(1, celebFx.dim + dt * 2.5); applyArenaDim(celebFx.dim);
-    strobe.visible = true; strobe.intensity = (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim; // red strobe
+    strobe.intensity = (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim; // red strobe (visibility managed by setCelebLights)
     for (let i = 0; i < sweepLights.length; i++) {
       const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 8, 9);
       const a = celebFx.t * 2.0 + i * 2.1;
@@ -1462,20 +1484,30 @@ function updateCelebFx(dt) {
     }
     if (celebFx.t > 3.6) celebFx.mode = null;
   } else {
-    // restore: ease the arena back up, keep strobing while it fades, spotlights off
+    // restore: ease the arena back up and fade the strobe + spotlights out
     if (celebFx.dim > 0) { celebFx.dim = Math.max(0, celebFx.dim - dt * 1.8); applyArenaDim(celebFx.dim); }
-    strobe.visible = celebFx.dim > 0; strobe.intensity = celebFx.dim > 0 ? (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim : 0;
-    for (const L of sweepLights) if (L.visible) { L.intensity = Math.max(0, L.intensity - dt * 6); if (L.intensity <= 0) L.visible = false; }
+    strobe.intensity = celebFx.dim > 0 ? (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim : 0;
+    for (const L of sweepLights) L.intensity = Math.max(0, L.intensity - dt * 6);
+    // Celebration fully over → drop ALL celeb lights together (back to the
+    // gameplay light count — that program is already compiled, so no stall).
+    if (celebFx.lightsOn && celebFx.dim <= 0 && fwShells.length === 0) {
+      let lit = false;
+      for (const L of sweepLights) if (L.intensity > 0.01) lit = true;
+      for (const L of fwLights) if (L.userData.f > 0) lit = true;
+      if (!lit) setCelebLights(false);
+    }
   }
 }
 function startFireworksCeleb(z, scorer) {
   celebFx.mode = 'fireworks'; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
+  setCelebLights(true); // all celeb lights on as a group (constant light count)
   if (scorer) startSpecialCam('fireworks', scorer, 4.0);
   audio.cheer(0.6);
 }
 function startLightShow(z) {
   celebFx.mode = 'lightshow'; celebFx.t = 0; celebFx.z = Number.isFinite(z) ? z : 0;
-  for (const L of sweepLights) { L.color.setHex(0xffffff); L.intensity = 0; L.visible = true; } // white field spotlights
+  setCelebLights(true);
+  for (const L of sweepLights) { L.color.setHex(0xffffff); L.intensity = 0; } // white field spotlights
   audio.cheer(0.6);
 }
 // Rising shells trail then burst — shared by the fireworks celeb and the party.
@@ -1489,7 +1521,8 @@ function stepShells(dt) {
 function startCelebParty(z, grand = false) {
   celebFx.mode = 'party'; celebFx.t = 0; celebFx.next = 0; celebFx.z = Number.isFinite(z) ? z : 0;
   celebFx.grand = grand; // grand = end-of-game barrage (way more fireworks)
-  for (const L of sweepLights) { L.intensity = 0; L.visible = true; }
+  setCelebLights(true);
+  for (const L of sweepLights) L.intensity = 0;
   audio.cheer(1);
 }
 function stopCelebParty() {
@@ -5539,6 +5572,7 @@ loadAssets().then(() => {
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   newPlay();
+  prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   animate();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
