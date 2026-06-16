@@ -2101,6 +2101,7 @@ function updateDefense() {
   const carrierIsRunning = !!carrier && (carrier.role !== 'QB' || pastLine(carrier));
   const inAir = ball.mode === 'flying';
   for (const d of game.defense) {
+    d.blocking = false; // set true again by updateBlocks only while actually locked in a block
     if (d.ragdolling || d === game.controlled) continue; // knocked down, or the player drives him
     if (d.blockedBy) { d.desired = { x: 0, z: 0 }; d.engaged = true; d.pursuit = false; continue; } // stuck in a block (updateBlocks holds him)
     d.engaged = false; d.pursuit = false;
@@ -2252,7 +2253,7 @@ function updateBlocks(dt) {
   }
 }
 function clearEngagements() {
-  for (const ch of game.all) { ch.engaging = null; ch.blockedBy = null; ch.engageT = 0; ch.shedCd = 0; }
+  for (const ch of game.all) { ch.engaging = null; ch.blockedBy = null; ch.engageT = 0; ch.shedCd = 0; ch.blocking = false; }
 }
 function keepReceiverInbounds(o) {
   const p = px(o);
