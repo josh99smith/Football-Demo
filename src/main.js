@@ -182,6 +182,41 @@ function makeAdTexture() {
 // Drop the imported stadium props into the scene once their GLBs have loaded:
 // the corner LIGHT TOWERS (replacing the procedural pole+bank visuals, keeping
 // the spotlights) and a ring of graffiti WALLS just outside the cage, facing in.
+// Fill each corner grandstand with a tiered block of cut-out fans (same atlas +
+// per-cell InstancedMesh technique as the main bowl crowd), rows rising toward
+// the back, every fan facing the field center.
+function fillCornerStandFans(stands, Wf, Df, Hf) {
+  const AC = 11, AR = 8, NCELLS = 88, NR = 7, NC = 14; // atlas grid + rows/cols per corner
+  new THREE.TextureLoader().load('assets/fans.png', (atlas) => {
+    const img = atlas.image, cw = img.width / AC, chh = img.height / AR;
+    const byCell = Array.from({ length: NCELLS }, () => []);
+    for (const st of stands) {
+      for (let r = 0; r < NR; r++) {
+        const t = NR > 1 ? r / (NR - 1) : 0;
+        for (let c = 0; c < NC; c++) {
+          const u = NC > 1 ? c / (NC - 1) - 0.5 : 0;
+          const h = 2.4 + Math.random() * 0.6;
+          const px = st.front.x - st.fd.x * (t * Df * 0.78) + st.rd.x * (u * Wf * 0.82) + (Math.random() - 0.5) * 0.4;
+          const pz = st.front.z - st.fd.z * (t * Df * 0.78) + st.rd.z * (u * Wf * 0.82) + (Math.random() - 0.5) * 0.4;
+          const y = 1.2 + t * (Hf * 0.62) + (Math.random() - 0.5) * 0.3;
+          byCell[(Math.random() * NCELLS) | 0].push({ x: px, y, z: pz, w: h * 0.45, h });
+        }
+      }
+    }
+    const baseGeo = new THREE.PlaneGeometry(1, 1);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+    for (let cell = 0; cell < NCELLS; cell++) {
+      const list = byCell[cell]; if (!list.length) continue;
+      const cv = document.createElement('canvas'); cv.width = cw; cv.height = chh;
+      cv.getContext('2d').drawImage(img, (cell % AC) * cw, Math.floor(cell / AC) * chh, cw, chh, 0, 0, cw, chh);
+      const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, fog: true });
+      const im = new THREE.InstancedMesh(baseGeo, mat, list.length); im.frustumCulled = false;
+      list.forEach((pl, i) => { q.setFromAxisAngle(UP, Math.atan2(-pl.x, -pl.z)); pos.set(pl.x, pl.y + pl.h * 0.5, pl.z); scl.set(pl.w, pl.h, 1); im.setMatrixAt(i, m.compose(pos, q, scl)); });
+      im.instanceMatrix.needsUpdate = true; scene.add(im);
+    }
+  });
+}
 function placeStadiumProps() {
   const boxOf = (o) => { const b = new THREE.Box3().setFromObject(o); return { size: b.getSize(new THREE.Vector3()), min: b.min }; };
   if (towerTemplate) {
@@ -196,23 +231,7 @@ function placeStadiumProps() {
       scene.add(t);
     }
   }
-  if (stadcornerTemplate) {
-    // Stadium redesign: a ring of tiered grandstand sections around the field
-    // (replaces the graffiti walls), each facing inward. Hideable like the walls
-    // so the camera never shoots through one. Sparse — the crowd fills behind.
-    const f = boxOf(stadcornerTemplate), S = 13 / f.size.y, yBase = -f.min.y * S;
-    const place = (x, z, ry) => {
-      const g = stadcornerTemplate.clone(true); g.scale.setScalar(S);
-      g.position.set(x, yBase, z); g.rotation.y = ry;
-      g.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; } });
-      g.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
-      g.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
-      camOccluders.push(g); scene.add(g);
-    };
-    const RX = HALF_W + SIDELINE + 2, RZ = HALF_L + SIDELINE + 2;
-    for (const z of [-45, -15, 15, 45]) { place(RX, z, -Math.PI / 2); place(-RX, z, Math.PI / 2); } // sidelines
-    for (const x of [-14, 14]) { place(x, RZ, Math.PI); place(x, -RZ, 0); }                          // end lines
-  } else if (wallTemplate) {
+  if (wallTemplate) { // perimeter graffiti walls (restored)
     const f = boxOf(wallTemplate), S = 9 / f.size.y, wW = f.size.x * S; // ~9yd tall segments
     const place = (x, z, ry) => {
       const w = wallTemplate.clone(true); w.scale.setScalar(S); w.position.set(x, -f.min.y * S, z); w.rotation.y = ry; scene.add(w);
@@ -224,6 +243,27 @@ function placeStadiumProps() {
     for (let i = 0; i < nz; i++) { const z = -HALF_L + wW * (i + 0.5); place(HALF_W + SIDELINE, z, -Math.PI / 2); place(-HALF_W - SIDELINE, z, Math.PI / 2); }
     const nx = Math.ceil((HALF_W * 2) / wW); // end lines
     for (let i = 0; i < nx; i++) { const x = -HALF_W + wW * (i + 0.5); place(x, HALF_L + SIDELINE, Math.PI); place(x, -HALF_L - SIDELINE, 0); }
+  }
+  if (stadcornerTemplate) {
+    // A tiered grandstand section in each of the 4 CORNERS, angled to face the
+    // field, with a block of fans filling the seats (see fillCornerStandFans).
+    const f = boxOf(stadcornerTemplate), S = 16 / f.size.y, yBase = -f.min.y * S;
+    const Wf = f.size.x * S, Df = f.size.z * S, Hf = f.size.y * S;
+    const CX = HALF_W + SIDELINE + 7, CZ = HALF_L + SIDELINE + 7;
+    const stands = [];
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const x = sx * CX, z = sz * CZ, ry = Math.atan2(-x, -z); // face the field center
+      const g = stadcornerTemplate.clone(true); g.scale.setScalar(S);
+      g.position.set(x, yBase, z); g.rotation.y = ry;
+      g.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; } });
+      g.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
+      g.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
+      camOccluders.push(g); scene.add(g);
+      const fd = new THREE.Vector3(-x, 0, -z).normalize();   // toward the field
+      const rd = new THREE.Vector3(fd.z, 0, -fd.x);          // across the seats
+      stands.push({ front: new THREE.Vector3(x, 0, z).addScaledVector(fd, Df * 0.5), fd, rd });
+    }
+    fillCornerStandFans(stands, Wf, Df, Hf);
   }
   // Blitz Cola coolers along each sideline (toward the outer edge of the bench
   // lane, long branded side facing the field).
