@@ -3727,30 +3727,46 @@ function pursuitPoint(chaser, target) {
   t = Math.min(t, 0.7);
   return { x: tp.x + target.vel.x * t, z: tp.z + target.vel.z * t };
 }
-function beginReturn(interceptor) {
+function beginReturn(returner, kind = 'pick') {
   game.state = STATE.RETURN;
-  game.returnActive = true; game.returner = interceptor;
-  game.carrier = interceptor;          // so the ball follows him + TACKLE settle works
-  ball.mode = 'carried'; ball.holder = interceptor;
-  game.controlled = nearestOffender(interceptor.group.position) || game.qb;
+  game.returnActive = true; game.returner = returner;
+  game.carrier = returner;          // so the ball follows him + TACKLE settle works
+  ball.mode = 'carried'; ball.holder = returner;
+  setFumbleGlow(false);
+  // A turnover always goes to the DEFENSE; whether the USER controls the returner
+  // or a chaser depends on whose drive it was. !userOnOffense => the user's team
+  // (on defense) recovered, so the user runs it back; otherwise the user chases.
+  const userReturning = !game.userOnOffense;
+  if (userReturning) {
+    game.controlled = returner;
+    showBanner(kind === 'fumble' ? 'SCOOP & SCORE!' : 'PICKED OFF!', '#3fe08a'); audio.cheer(0.5);
+    setStatus(kind === 'fumble' ? 'Your ball — take it back!' : 'Your pick — run it back!');
+  } else {
+    game.controlled = nearestOffender(returner.group.position) || game.qb;
+    showBanner(kind === 'fumble' ? 'FUMBLE!' : 'INTERCEPTED!', '#ff5a3a');
+    setStatus(kind === 'fumble' ? 'They recovered — chase him down!' : 'Intercepted — chase him down!');
+  }
   ctrlRing.visible = true; selRing.visible = false;
-  showBanner('INTERCEPTED!', '#ff5a3a');
-  setStatus('Intercepted — chase him down!');
   updateButtons();
 }
 function updateReturn(dt, turboOn, fireMul) {
   const r = game.returner;
   if (!r) { game.returnActive = false; endPlay('incomplete', game.los); return; }
   const rp = r.group.position;
-  // Returner heads for his end zone (-Z), cutting back from the nearest chaser.
-  let steer = seek(px(r), THREE.MathUtils.clamp(rp.x * 0.4, -14, 14), OWN_GOAL_Z - 3);
-  const chaser = nearestOffender(rp);
-  if (chaser) {
-    const ax = rp.x - chaser.group.position.x, al = Math.abs(ax) || 1;
-    steer = addSteer(steer, { x: ax / al, z: 0 }, 0.55); // juke laterally away
+  const userReturning = game.controlled === r;
+  const retGoalZ = game.dir > 0 ? OWN_GOAL_Z : GOAL_Z; // the returner attacks the offense's OWN end
+  // Returner AI heads for that end, cutting back from the nearest chaser (only when
+  // the CPU is returning — when the user recovered, the user drives him).
+  if (!userReturning) {
+    let steer = seek(px(r), THREE.MathUtils.clamp(rp.x * 0.4, -14, 14), retGoalZ + game.dir * 3);
+    const chaser = nearestOffender(rp);
+    if (chaser) {
+      const ax = rp.x - chaser.group.position.x, al = Math.abs(ax) || 1;
+      steer = addSteer(steer, { x: ax / al, z: 0 }, 0.55); // juke laterally away
+    }
+    r.desired = addSteer(steer, separation(r, game.defense, 2.5), 0.2); r.turbo = true;
   }
-  r.desired = addSteer(steer, separation(r, game.defense, 2.5), 0.2); r.turbo = true;
-  // The offense pursues with cut-off angles; the player drives the controlled man.
+  // The offense (chasers) pursue with cut-off angles; the player drives the controlled man.
   for (const o of game.offense) {
     if (o === game.controlled || o.ragdolling) continue;
     const ip = pursuitPoint(o, r);
@@ -3758,15 +3774,16 @@ function updateReturn(dt, turboOn, fireMul) {
   }
   // The returner's teammates trail to escort (and stay out of the way).
   for (const d of game.defense) {
-    if (d === r || d.ragdolling) continue;
-    d.desired = seek(px(d), rp.x, rp.z + 3); d.turbo = false;
+    if (d === r || d === game.controlled || d.ragdolling) continue;
+    d.desired = seek(px(d), rp.x, rp.z + game.dir * 3); d.turbo = false;
   }
   const top = game.controlled.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
   controlledMove(game.controlled, dt, top);
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
-  aiCarrierMoves(r, game.offense, -game.dir, dt); // returner hurdles chasers / kicks off the fence
-  // Outcomes: house call, out of bounds, or run down.
-  if (rp.z <= OWN_GOAL_Z) { endReturn('defTD', rp.z); return; } // returner reaches the house (cage keeps him inbounds otherwise)
+  if (!userReturning) aiCarrierMoves(r, game.offense, -game.dir, dt); // CPU returner hurdles chasers / kicks off the fence
+  // Outcomes: house call (returner reaches the offense's own goal), or run down.
+  const scored = game.dir > 0 ? rp.z <= OWN_GOAL_Z : rp.z >= GOAL_Z;
+  if (scored) { endReturn('returnTD', rp.z); return; }
   for (const o of game.offense) {
     if (o.ragdolling) continue;
     if (Math.hypot(o.group.position.x - rp.x, o.group.position.z - rp.z) <= TACKLE_R) { tackleReturner(o); return; }
@@ -3793,22 +3810,28 @@ function tackleReturner(tackler) {
   setStatus('Return stopped!');
 }
 function endReturn(result, spotZ) {
+  const userReturned = !game.userOnOffense; // the user's team (on defense) recovered & ran it back
   game.returnActive = false; game.returner = null;
   game.state = STATE.DEAD; game.deadTimer = 1.1;
-  game.clockStopped = true; // a pick-six (score) or turnover stops the clock
+  game.clockStopped = true; // a return TD or turnover stops the clock
   ball.mode = 'rest';
   selRing.visible = false; ctrlRing.visible = false; updateButtons();
-  douseFire(); // the player threw the pick — fire out
-  // A live return only happens on a USER possession (the CPU defense picks it
-  // off and runs it back; you chase). So the interceptor here is the CPU.
-  if (result === 'defTD') {
-    game.scoreDef += 7; audio.touchdown();
-    showBanner('PICK SIX!', '#5a8bff'); setStatus('Returned for a touchdown!');
-    shake.add(0.3); timeScale.slow(0.5, 0.4);
-    giveBallTo(true, driveStartForUser(true)); // you get the ball back at your 20
+  if (result === 'returnTD') {
+    audio.touchdown(); shake.add(0.3); timeScale.slow(0.5, 0.4);
+    if (userReturned) {
+      game.scoreOff += 7; flashScreen(); confetti(spotZ); benchReact(); game.deadTimer = 2.4;
+      showBanner('TOUCHDOWN!', '#3fe08a'); setStatus('Took it to the house!'); audio.say('td', { force: true, swell: 0.8 });
+      giveBallTo(false, driveStartForUser(false)); // CPU receives after the score
+    } else {
+      game.scoreDef += 7; douseFire();
+      showBanner('DEFENSIVE TD', '#5a8bff'); setStatus('Returned for a touchdown!'); audio.say('td', { force: true, swell: 0.8 });
+      giveBallTo(true, driveStartForUser(true)); // you get the ball back at your 20
+    }
   } else {
-    blowWhistle(); showBanner('TURNOVER', '#ffd23a'); setStatus('Picked off — CPU ball');
-    giveBallTo(false, spotZ); // the CPU keeps it where the return ended
+    blowWhistle();
+    if (userReturned) { showBanner('TAKEAWAY!', '#3fe08a'); setStatus('Your ball!'); }
+    else { douseFire(); showBanner('TURNOVER', '#ffd23a'); setStatus('CPU ball'); }
+    giveBallTo(userReturned, spotZ); // the recovering team keeps it where the return ended
   }
   updateHUD();
 }
@@ -4243,10 +4266,7 @@ function updateBall(dt) {
       p.set(tx, ty, tz);
       if (ball.intercept) {
         ball.mode = 'carried'; ball.holder = c;
-        // On YOUR drive the CPU picks it and runs it back (you chase). On a CPU
-        // drive your pick is a clean takeaway — you get the ball next snap.
-        if (game.userOnOffense) beginReturn(c);
-        else endPlay('intercept', c.group.position.z);
+        beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
       } else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); }
     }
   }
@@ -4965,13 +4985,9 @@ function recoverFumble(ch) {
   triggerArmAction(ch, 'pick', 0.5, ball.mesh.position); // procedural dive-on-the-ball
   audio.catch(); shake.add(0.25);
   const spotZ = ch.group.position.z;
-  if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense keeps it
-  else if (ball.fromFence) {
-    // Defense came up with an overthrow that caromed off the fence = INTERCEPTION.
-    showBanner('INTERCEPTED!', '#ff5a3a'); audio.cheer(0.5);
-    if (game.userOnOffense) beginReturn(ch);            // CPU runs the pick back; you chase
-    else endPlay('intercept', spotZ);                   // your pick — you get it next snap
-  } else { showBanner('TURNOVER!', '#5a8bff'); audio.cheer(0.5); endPlay('fumble', spotZ); } // a real fumble
+  if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense recovers its own fumble — dead at the spot, keeps it
+  else if (ball.fromFence) beginReturn(ch, 'pick');     // overthrow caromed off the fence = pick; live runback
+  else beginReturn(ch, 'fumble');                       // defense scooped a live fumble = returnable runback
 }
 function recoverDead(spotZ) {
   setFumbleGlow(false); ball.mode = 'rest';
@@ -5691,7 +5707,13 @@ function updatePlay(dt) {
       checkRunOutcome();
     }
   } else if (game.state === STATE.RETURN) {
-    if (actionEdge) returnDive();
+    if (game.controlled === game.returner) {
+      // You're running it back: the action/Q/E buttons are ball-carrier moves.
+      if (actionEdge) carrierContext(game.returner).run(game.returner);
+      if (spinEdge) doSpin(game.returner);
+      if (diveEdge) doStiffArm(game.returner);
+      if (game.state === STATE.RETURN) refreshRunAction(game.returner);
+    } else if (actionEdge) returnDive(); // chasing: dive to bring the returner down
     if (game.state === STATE.RETURN) updateReturn(dt, turboOn, fireMul);
   } else if (game.state === STATE.LOOSE) {
     updateLoose(dt, turboOn, actionEdge); // scramble for the bouncing ball
