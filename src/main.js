@@ -446,51 +446,53 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
   const railMat = new THREE.MeshStandardMaterial({ color: 0x2b3138, metalness: 0.65, roughness: 0.5 });
   const trimMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.7, roughness: 0.35, emissive: 0x20262c, emissiveIntensity: 0.4 });
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a4149, metalness: 0.72, roughness: 0.42 });
-  const linkPanel = (len) => {
-    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.max(1, Math.round(len / 3)), 3);
-    return new THREE.Mesh(new THREE.PlaneGeometry(len, H), new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.85 }));
+  const linkPanel = (len, h = H) => {
+    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.max(1, Math.round(len / 3)), Math.max(1, Math.round(h / 2.5)));
+    return new THREE.Mesh(new THREE.PlaneGeometry(len, h), new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.85 }));
   };
   const coilXf = []; // concertina loop transforms, batched into one InstancedMesh
   const _zAx = new THREE.Vector3(0, 0, 1), _runDir = new THREE.Vector3(), _qq = new THREE.Quaternion();
-  // A single hinged gate leaf that fills a gap in the run and swings open.
-  function buildGate(cx, cz, ry, leafLen) {
+  // A single hinged gate leaf that fills a gap in the run (kept shut).
+  function buildGate(cx, cz, ry, leafLen, hh) {
     const root = new THREE.Group(); root.position.set(cx, 0, cz); root.rotation.y = ry; scene.add(root);
     const pivot = new THREE.Group(); pivot.position.set(-leafLen / 2, 0, 0); root.add(pivot); // hinge at the gap edge
-    const panel = linkPanel(leafLen); panel.position.set(leafLen / 2, H / 2, 0); pivot.add(panel);
-    const post = (lx) => { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, H, 8), frameMat); p.position.set(lx, H / 2, 0); pivot.add(p); };
+    const panel = linkPanel(leafLen, hh); panel.position.set(leafLen / 2, hh / 2, 0); pivot.add(panel);
+    const post = (lx) => { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, hh, 8), frameMat); p.position.set(lx, hh / 2, 0); pivot.add(p); };
     post(0); post(leafLen);
     const rail = (ly) => { const r = new THREE.Mesh(new THREE.BoxGeometry(leafLen, 0.18, 0.18), frameMat); r.position.set(leafLen / 2, ly, 0); pivot.add(r); };
-    rail(H - 0.12); rail(0.18);
+    rail(hh - 0.12); rail(0.18);
     cageGates.push({ pivot, open: 0 });
   }
-  function buildRun(len, x, z, ry, gateLen) {
+  function buildRun(len, x, z, ry, gateLen, hh = H) {
     const dx = Math.cos(ry), dz = -Math.sin(ry); // along-run unit
     const cs = (px, pz) => { return { side: Math.abs(px) > Math.abs(pz) ? (px > 0 ? 'px' : 'nx') : (pz > 0 ? 'pz' : 'nz'), at: Math.abs(px) > Math.abs(pz) ? Math.abs(px) : Math.abs(pz) }; };
     // chain-link, skipping the centered gate gap
     const segs = gateLen > 0 ? [[-len / 2, -gateLen / 2], [gateLen / 2, len / 2]] : [[-len / 2, len / 2]];
     for (const [a, b] of segs) {
       const sl = b - a; if (sl <= 0.1) continue; const mid = (a + b) / 2;
-      const m = linkPanel(sl); m.position.set(x + dx * mid, H / 2, z + dz * mid); m.rotation.y = ry; scene.add(m);
+      const m = linkPanel(sl, hh); m.position.set(x + dx * mid, hh / 2, z + dz * mid); m.rotation.y = ry; scene.add(m);
       const c = cs(x, z); m.userData.cage = true; m.userData.cullSide = c.side; m.userData.cullAt = c.at; camOccluders.push(m);
     }
     // rails + kick plate (continuous over the gate too)
-    const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, H, z); top.rotation.y = ry; scene.add(top);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, hh, z); top.rotation.y = ry; scene.add(top);
     const bot = new THREE.Mesh(new THREE.BoxGeometry(len, 0.22, 0.22), railMat); bot.position.set(x, 0.15, z); bot.rotation.y = ry; scene.add(bot);
     const kick = new THREE.Mesh(new THREE.BoxGeometry(len, 0.7, 0.12), railMat); kick.position.set(x, 0.45, z); kick.rotation.y = ry; scene.add(kick);
     const n = Math.max(2, Math.round(len / 10));
-    for (let i = 0; i <= n; i++) { const along = -len / 2 + (len / n) * i; const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, H, 8), railMat); post.position.set(x + dx * along, H / 2, z + dz * along); scene.add(post); }
+    for (let i = 0; i <= n; i++) { const along = -len / 2 + (len / n) * i; const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, hh, 8), railMat); post.position.set(x + dx * along, hh / 2, z + dz * along); scene.add(post); }
     // barbed-wire strands just above the top rail
-    for (const dy of [0.16, 0.32]) { const s = new THREE.Mesh(new THREE.BoxGeometry(len, 0.05, 0.05), railMat); s.position.set(x, H + dy, z); s.rotation.y = ry; scene.add(s); }
+    for (const dy of [0.16, 0.32]) { const s = new THREE.Mesh(new THREE.BoxGeometry(len, 0.05, 0.05), railMat); s.position.set(x, hh + dy, z); s.rotation.y = ry; scene.add(s); }
     // concertina (razor) coil loops running the top
     _runDir.set(dx, 0, dz); _qq.setFromUnitVectors(_zAx, _runDir);
     const stepC = 0.6, nl = Math.floor(len / stepC);
-    for (let i = 0; i <= nl; i++) { const along = -len / 2 + stepC * i; coilXf.push({ x: x + dx * along, y: H + 0.72, z: z + dz * along, q: _qq.clone() }); }
-    if (gateLen > 0) buildGate(x, z, ry, gateLen); // players/coaches/staff gate
+    for (let i = 0; i <= nl; i++) { const along = -len / 2 + stepC * i; coilXf.push({ x: x + dx * along, y: hh + 0.72, z: z + dz * along, q: _qq.clone() }); }
+    if (gateLen > 0) buildGate(x, z, ry, gateLen, hh); // players/coaches/staff gate
   }
-  buildRun(FIELD_L + 3, CAGE_X, 0, Math.PI / 2, 5);   // +x sideline — players/coaches gate
-  buildRun(FIELD_L + 3, -CAGE_X, 0, Math.PI / 2, 5);  // -x sideline — players/coaches gate
-  buildRun(FIELD_W + 3, 0, CAGE_Z, 0, 0);             // +z end line
-  buildRun(FIELD_W + 3, 0, -CAGE_Z, 0, 5);            // -z end line — staff gate
+  // Perfect rectangle: sidelines span the full length, end lines the full width,
+  // so corners meet cleanly (no overrun). End lines are lower (behind goalposts).
+  buildRun(2 * CAGE_Z, CAGE_X, 0, Math.PI / 2, 5);    // +x sideline — players/coaches gate
+  buildRun(2 * CAGE_Z, -CAGE_X, 0, Math.PI / 2, 5);   // -x sideline — players/coaches gate
+  buildRun(2 * CAGE_X, 0, CAGE_Z, 0, 0, 3.5);         // +z end line (low)
+  buildRun(2 * CAGE_X, 0, -CAGE_Z, 0, 5, 3.5);        // -z end line (low) — staff gate
   // Concertina coil: one InstancedMesh for all loops.
   if (coilXf.length) {
     const coilGeo = new THREE.TorusGeometry(0.42, 0.05, 5, 8);
@@ -507,13 +509,10 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
     p.position.set(xx, 0.55, zz); scene.add(p);
   }
 }
-// Cage gates swing OPEN between plays (players/coaches/staff move) and shut for live action.
-function updateCageGates(dt) {
-  if (!cageGates.length) return;
-  const s = game.state;
-  const live = s === STATE.LIVE || s === STATE.AIR || s === STATE.RUN || s === STATE.RETURN || s === STATE.TACKLE || s === STATE.BATTLE || s === STATE.LOOSE;
-  const target = live ? 0 : 1;
-  for (const g of cageGates) { g.open += (target - g.open) * Math.min(1, dt * 2.6); g.pivot.rotation.y = -g.open * 1.25; }
+// Cage gates stay SHUT (closed for play). Kept as a function in case we animate
+// them later; for now it just holds them closed.
+function updateCageGates() {
+  for (const g of cageGates) { g.open = 0; g.pivot.rotation.y = 0; }
 }
 function drawJumbo(quarter, clock, scoreLine, downLine) {
   if (jumboMode === 'ad') return;            // an ad is on the board — don't overwrite it
@@ -4201,14 +4200,28 @@ function tryReception() {
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away (no direct pick — only off the fence)
 }
+const LUNGE_R = 2.7; // a pursuer who's closed within this DIVES to make the tackle
 function checkRunOutcome() {
   if (!game.carrier) return; // a botched pitch/fumble can clear the carrier mid-frame
   const c = game.carrier.group.position;
   if (reachedGoal(c.z)) { endPlay('TD', c.z); return; }
   // No out of bounds — the cage keeps the carrier in (clampToField).
+  let lunger = null, lungeD = Infinity;
   for (const db of game.defense) {
     if (db.ragdolling) continue;
-    if (Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z) <= TACKLE_R) { beginTackle(db); return; }
+    const d = Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z);
+    if (d <= TACKLE_R) { beginTackle(db); return; }       // hard contact
+    if (db.pursuit && d <= LUNGE_R && d < lungeD) { lungeD = d; lunger = db; } // chaser within dive range
+  }
+  // Shoestring/diving tackle: a pursuer who caught up but can't get fully even
+  // lunges the last yard or two so an open-field run from behind can be brought
+  // down (instead of the defender hanging just out of reach forever).
+  if (lunger) {
+    const dx = c.x - lunger.group.position.x, dz = c.z - lunger.group.position.z, l = Math.hypot(dx, dz) || 1;
+    lunger.heading = Math.atan2(dx, dz);
+    lunger.vel.x += dx / l * 6; lunger.vel.z += dz / l * 6; // lunge into the carrier
+    playOneShot(lunger, lunger.actions.divecatch ? 'divecatch' : 'tackle', 0.45, true);
+    beginTackle(lunger);
   }
 }
 // SACK: a rusher (or your driven defender) who reaches the QB in the pocket
