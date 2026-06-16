@@ -961,17 +961,25 @@ class FlameEmitter {
     }
     this.i = 0;
   }
-  spawn(x, y, z, color) {
+  spawn(x, y, z, color, low) {
     const idx = this.i++ % this.sprites.length, s = this.sprites[idx], p = this.parts[idx];
-    s.position.set(x + (Math.random() - 0.5) * 0.5, y + Math.random() * 0.3, z + (Math.random() - 0.5) * 0.5);
-    p.life = 0; p.max = 0.45 + Math.random() * 0.4;
-    p.vx = (Math.random() - 0.5) * 0.7; p.vy = 1.8 + Math.random() * 1.8; p.vz = (Math.random() - 0.5) * 0.7;
-    p.base = 0.55 + Math.random() * 0.5;
+    p.life = 0;
+    if (low) { // turbo: short, ground-hugging jets that kick out from the feet
+      s.position.set(x + (Math.random() - 0.5) * 0.7, y + Math.random() * 0.12, z + (Math.random() - 0.5) * 0.7);
+      p.max = 0.3 + Math.random() * 0.25;
+      p.vx = (Math.random() - 0.5) * 1.1; p.vy = 0.5 + Math.random() * 0.9; p.vz = (Math.random() - 0.5) * 1.1;
+      p.base = 0.32 + Math.random() * 0.32;
+    } else {  // ON FIRE: a tall flame rising off the body
+      s.position.set(x + (Math.random() - 0.5) * 0.5, y + Math.random() * 0.3, z + (Math.random() - 0.5) * 0.5);
+      p.max = 0.45 + Math.random() * 0.4;
+      p.vx = (Math.random() - 0.5) * 0.7; p.vy = 1.8 + Math.random() * 1.8; p.vz = (Math.random() - 0.5) * 0.7;
+      p.base = 0.55 + Math.random() * 0.5;
+    }
     s.material.color.copy(color); s.material.opacity = 0.9; s.visible = true;
   }
   // color=null -> stop spawning (existing flames age out so it tapers smoothly).
-  update(dt, x, y, z, color, rate = 70) {
-    if (color) { this.acc += rate * dt; while (this.acc >= 1) { this.acc -= 1; this.spawn(x, y, z, color); } }
+  update(dt, x, y, z, color, rate = 70, low = false) {
+    if (color) { this.acc += rate * dt; while (this.acc >= 1) { this.acc -= 1; this.spawn(x, y, z, color, low); } }
     else this.acc = 0;
     for (let k = 0; k < this.sprites.length; k++) {
       const s = this.sprites[k], p = this.parts[k];
@@ -1007,8 +1015,11 @@ function computeFlame() {
 function emitFlames(dt, player, pCol, ballCol) {
   if (!ballFlame) return;
   // Turbo (blue) is dampened — a lighter wisp than the ON FIRE (orange) blaze.
-  if (player) { const p = player.group.position; playerFlame.update(dt, p.x, p.y + 0.55, p.z, pCol === 2 ? FLAME_BLUE : FLAME_ORANGE, pCol === 2 ? 42 : 85); }
-  else playerFlame.update(dt, 0, 0, 0, null);
+  if (player) {
+    const p = player.group.position;
+    if (pCol === 2) playerFlame.update(dt, p.x, p.y + 0.06, p.z, FLAME_BLUE, 52, true); // TURBO: low jets at the feet only
+    else playerFlame.update(dt, p.x, p.y + 0.55, p.z, FLAME_ORANGE, 85, false);          // ON FIRE: flame off the whole body
+  } else playerFlame.update(dt, 0, 0, 0, null);
   if (ballCol) { const bp = ball.mesh.position; ballFlame.update(dt, bp.x, bp.y, bp.z, ballCol === 2 ? FLAME_BLUE : FLAME_ORANGE, ballCol === 2 ? 32 : 60); }
   else ballFlame.update(dt, 0, 0, 0, null);
 }
