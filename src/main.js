@@ -53,6 +53,7 @@ const procGoalposts = []; // the procedural goalposts (swapped for the GLB once 
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
 // one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
 const camOccluders = []; // each: mesh with userData {cullSide:'px'|'nx'|'pz'|'nz', cullAt:number}
+const cageGates = []; // openable cage gates: { pivot, open } — swing between plays
 function makeAdTexture() {
   const c = document.createElement('canvas'); c.width = 1024; c.height = 64;
   const g = c.getContext('2d'); g.fillStyle = '#070b12'; g.fillRect(0, 0, 1024, 64);
@@ -428,58 +429,91 @@ let jumboCtx = null, jumboTex = null, jumboLast = '';
 
 // --- Cage: tall, grungy chain-link boundary the ball bounces off (no OOB) ---
 {
-  // Weathered chain-link: dark steel diamonds with rust speckle and grime.
-  const linkTex = canvasTex(128, 128, (g, w, h) => {
-    g.clearRect(0, 0, w, h);
-    for (let pass = 0; pass < 2; pass++) {
-      g.lineWidth = pass ? 4 : 2.4;
-      g.strokeStyle = pass ? 'rgba(28,34,40,0.55)' : 'rgba(150,165,180,0.55)'; // shadow + steel
-      for (let i = -h; i < w; i += 14) {
-        g.beginPath(); g.moveTo(i, 0); g.lineTo(i + h, h); g.stroke();
-        g.beginPath(); g.moveTo(i, h); g.lineTo(i + h, 0); g.stroke();
-      }
-    }
-    for (let i = 0; i < 240; i++) { // rust + grime speckle
-      g.fillStyle = `rgba(${120 + Math.random() * 80},${50 + Math.random() * 40},${20 + Math.random() * 30},${0.1 + Math.random() * 0.4})`;
-      g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
-    }
-    for (let i = 0; i < 6; i++) { g.fillStyle = `rgba(10,14,18,${0.06 + Math.random() * 0.12})`; g.fillRect(Math.random() * w, Math.random() * h, 30 + Math.random() * 40, 30 + Math.random() * 40); }
+  // Hi-res weathered chain-link: rounded twisted-wire diamonds (shadow + steel +
+  // highlight passes) with rust + grime, tiling seamlessly (step divides 512).
+  const linkTex = canvasTex(512, 512, (g, w, h) => {
+    g.clearRect(0, 0, w, h); g.lineCap = 'round';
+    const step = 32;
+    const diag = (down) => { for (let i = -h; i < w + h; i += step) { g.beginPath(); if (down) { g.moveTo(i, 0); g.lineTo(i + h, h); } else { g.moveTo(i, h); g.lineTo(i + h, 0); } g.stroke(); } };
+    g.lineWidth = 7; g.strokeStyle = 'rgba(14,18,23,0.5)'; diag(true); diag(false);   // shadow
+    g.lineWidth = 4.5; g.strokeStyle = 'rgba(120,134,150,0.72)'; diag(true); diag(false); // steel body
+    g.lineWidth = 1.6; g.strokeStyle = 'rgba(206,216,228,0.85)'; diag(true); diag(false); // highlight
+    for (let i = 0; i < 800; i++) { g.fillStyle = `rgba(${120 + Math.random() * 90 | 0},${48 + Math.random() * 45 | 0},${18 + Math.random() * 30 | 0},${0.08 + Math.random() * 0.32})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); } // rust
+    for (let i = 0; i < 10; i++) { g.fillStyle = `rgba(8,12,16,${0.05 + Math.random() * 0.12})`; g.fillRect(Math.random() * w, Math.random() * h, 60 + Math.random() * 90, 60 + Math.random() * 90); } // grime
   });
   linkTex.wrapS = linkTex.wrapT = THREE.RepeatWrapping;
   const H = 7.5;
   const railMat = new THREE.MeshStandardMaterial({ color: 0x2b3138, metalness: 0.65, roughness: 0.5 });
   const trimMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.7, roughness: 0.35, emissive: 0x20262c, emissiveIntensity: 0.4 });
-  const wallMesh = (len, x, z, ry) => {
-    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.round(len / 3), 3);
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, H),
-      new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.82 }));
-    m.position.set(x, H / 2, z); m.rotation.y = ry; scene.add(m);
-    // Register the chain-link panel so the camera can hide it when it's behind it
-    // (cage panels also cull during LIVE play — e.g. backed up to your own end zone).
-    m.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
-    m.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
-    m.userData.cage = true;
-    camOccluders.push(m);
-    // Top edge trim (bright rail) + bottom rail + a kick plate.
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a4149, metalness: 0.72, roughness: 0.42 });
+  const linkPanel = (len) => {
+    const t = linkTex.clone(); t.needsUpdate = true; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(Math.max(1, Math.round(len / 3)), 3);
+    return new THREE.Mesh(new THREE.PlaneGeometry(len, H), new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.85 }));
+  };
+  const coilXf = []; // concertina loop transforms, batched into one InstancedMesh
+  const _zAx = new THREE.Vector3(0, 0, 1), _runDir = new THREE.Vector3(), _qq = new THREE.Quaternion();
+  // A single hinged gate leaf that fills a gap in the run and swings open.
+  function buildGate(cx, cz, ry, leafLen) {
+    const root = new THREE.Group(); root.position.set(cx, 0, cz); root.rotation.y = ry; scene.add(root);
+    const pivot = new THREE.Group(); pivot.position.set(-leafLen / 2, 0, 0); root.add(pivot); // hinge at the gap edge
+    const panel = linkPanel(leafLen); panel.position.set(leafLen / 2, H / 2, 0); pivot.add(panel);
+    const post = (lx) => { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, H, 8), frameMat); p.position.set(lx, H / 2, 0); pivot.add(p); };
+    post(0); post(leafLen);
+    const rail = (ly) => { const r = new THREE.Mesh(new THREE.BoxGeometry(leafLen, 0.18, 0.18), frameMat); r.position.set(leafLen / 2, ly, 0); pivot.add(r); };
+    rail(H - 0.12); rail(0.18);
+    cageGates.push({ pivot, open: 0 });
+  }
+  function buildRun(len, x, z, ry, gateLen) {
+    const dx = Math.cos(ry), dz = -Math.sin(ry); // along-run unit
+    const cs = (px, pz) => { return { side: Math.abs(px) > Math.abs(pz) ? (px > 0 ? 'px' : 'nx') : (pz > 0 ? 'pz' : 'nz'), at: Math.abs(px) > Math.abs(pz) ? Math.abs(px) : Math.abs(pz) }; };
+    // chain-link, skipping the centered gate gap
+    const segs = gateLen > 0 ? [[-len / 2, -gateLen / 2], [gateLen / 2, len / 2]] : [[-len / 2, len / 2]];
+    for (const [a, b] of segs) {
+      const sl = b - a; if (sl <= 0.1) continue; const mid = (a + b) / 2;
+      const m = linkPanel(sl); m.position.set(x + dx * mid, H / 2, z + dz * mid); m.rotation.y = ry; scene.add(m);
+      const c = cs(x, z); m.userData.cage = true; m.userData.cullSide = c.side; m.userData.cullAt = c.at; camOccluders.push(m);
+    }
+    // rails + kick plate (continuous over the gate too)
     const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.3, 0.3), trimMat); top.position.set(x, H, z); top.rotation.y = ry; scene.add(top);
     const bot = new THREE.Mesh(new THREE.BoxGeometry(len, 0.22, 0.22), railMat); bot.position.set(x, 0.15, z); bot.rotation.y = ry; scene.add(bot);
     const kick = new THREE.Mesh(new THREE.BoxGeometry(len, 0.7, 0.12), railMat); kick.position.set(x, 0.45, z); kick.rotation.y = ry; scene.add(kick);
-    // Posts along the run.
     const n = Math.max(2, Math.round(len / 10));
-    for (let i = 0; i <= n; i++) {
-      const along = -len / 2 + (len / n) * i;
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, H, 8), railMat);
-      post.position.set(x + Math.cos(ry) * along, H / 2, z - Math.sin(ry) * along); scene.add(post);
-    }
-  };
-  wallMesh(FIELD_L + 3, CAGE_X, 0, Math.PI / 2); wallMesh(FIELD_L + 3, -CAGE_X, 0, Math.PI / 2); // sidelines
-  wallMesh(FIELD_W + 3, 0, CAGE_Z, 0); wallMesh(FIELD_W + 3, 0, -CAGE_Z, 0);                     // end lines
+    for (let i = 0; i <= n; i++) { const along = -len / 2 + (len / n) * i; const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, H, 8), railMat); post.position.set(x + dx * along, H / 2, z + dz * along); scene.add(post); }
+    // barbed-wire strands just above the top rail
+    for (const dy of [0.16, 0.32]) { const s = new THREE.Mesh(new THREE.BoxGeometry(len, 0.05, 0.05), railMat); s.position.set(x, H + dy, z); s.rotation.y = ry; scene.add(s); }
+    // concertina (razor) coil loops running the top
+    _runDir.set(dx, 0, dz); _qq.setFromUnitVectors(_zAx, _runDir);
+    const stepC = 0.6, nl = Math.floor(len / stepC);
+    for (let i = 0; i <= nl; i++) { const along = -len / 2 + stepC * i; coilXf.push({ x: x + dx * along, y: H + 0.72, z: z + dz * along, q: _qq.clone() }); }
+    if (gateLen > 0) buildGate(x, z, ry, gateLen); // players/coaches/staff gate
+  }
+  buildRun(FIELD_L + 3, CAGE_X, 0, Math.PI / 2, 5);   // +x sideline — players/coaches gate
+  buildRun(FIELD_L + 3, -CAGE_X, 0, Math.PI / 2, 5);  // -x sideline — players/coaches gate
+  buildRun(FIELD_W + 3, 0, CAGE_Z, 0, 0);             // +z end line
+  buildRun(FIELD_W + 3, 0, -CAGE_Z, 0, 5);            // -z end line — staff gate
+  // Concertina coil: one InstancedMesh for all loops.
+  if (coilXf.length) {
+    const coilGeo = new THREE.TorusGeometry(0.42, 0.05, 5, 8);
+    const coilMat = new THREE.MeshStandardMaterial({ color: 0xc2cad2, metalness: 0.85, roughness: 0.3 });
+    const im = new THREE.InstancedMesh(coilGeo, coilMat, coilXf.length); im.frustumCulled = false;
+    const m4 = new THREE.Matrix4(), sc = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
+    coilXf.forEach((c, i) => { p.set(c.x, c.y, c.z); im.setMatrixAt(i, m4.compose(p, c.q, sc)); });
+    im.instanceMatrix.needsUpdate = true; scene.add(im);
+  }
   // Pylons at the four corners of each end zone.
   const pylMat = new THREE.MeshStandardMaterial({ color: 0xff7a1a, emissive: 0xff5a00, emissiveIntensity: 0.8 });
   for (const zz of [GOAL_Z, HALF_L, OWN_GOAL_Z, -HALF_L]) for (const xx of [-HALF_W + 0.3, HALF_W - 0.3]) {
     const p = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 8), pylMat);
     p.position.set(xx, 0.55, zz); scene.add(p);
   }
+}
+// Cage gates swing OPEN between plays (players/coaches/staff move) and shut for live action.
+function updateCageGates(dt) {
+  if (!cageGates.length) return;
+  const s = game.state;
+  const live = s === STATE.LIVE || s === STATE.AIR || s === STATE.RUN || s === STATE.RETURN || s === STATE.TACKLE || s === STATE.BATTLE || s === STATE.LOOSE;
+  const target = live ? 0 : 1;
+  for (const g of cageGates) { g.open += (target - g.open) * Math.min(1, dt * 2.6); g.pivot.rotation.y = -g.open * 1.25; }
 }
 function drawJumbo(quarter, clock, scoreLine, downLine) {
   if (jumboMode === 'ad') return;            // an ad is on the board — don't overwrite it
@@ -5698,6 +5732,7 @@ function animate() {
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
+  updateCageGates(realDt); // cage gates swing open between plays
 
   // Advance ragdoll physics by THIS frame's (slow-mo-scaled) dt — substepped,
   // every frame — so the bodies move smoothly in slow motion instead of in
