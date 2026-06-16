@@ -1284,6 +1284,7 @@ const game = {
   looseCrowdT: 0,                       // how long 3+ players have crowded the loose ball
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
+  cut: { phase: null, t: 0, mid: null },// broadcast fade dip that hides the reset snap
   replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
@@ -2575,6 +2576,25 @@ function impactFlash(strong = false) {
   impactEl.classList.remove('on'); void impactEl.offsetWidth; impactEl.classList.add('on');
 }
 const slowmoEl = document.getElementById('slowmo'); // red-tint + vignette grade during slow-mo hits
+// Broadcast cut: a quick fade-to-dark then back, with the reset (heads back on,
+// ragdolls standing, lineup) run at the dark peak so none of the snap is seen.
+const cutEl = document.getElementById('cut');
+const CUT_OUT = 0.18, CUT_IN = 0.42;
+function startCut(mid) {
+  const c = game.cut; if (c.phase) return; // already cutting — the stored mid runs once at the dark peak
+  c.phase = 'out'; c.t = 0; c.mid = mid || null;
+}
+function updateCut(dt) {
+  const c = game.cut; if (!c.phase || !cutEl) return;
+  c.t += dt;
+  if (c.phase === 'out') {
+    cutEl.style.opacity = Math.min(1, c.t / CUT_OUT).toFixed(3);
+    if (c.t >= CUT_OUT) { if (c.mid) c.mid(); c.mid = null; c.phase = 'in'; c.t = 0; cutEl.style.opacity = '1'; }
+  } else {
+    cutEl.style.opacity = Math.max(0, 1 - c.t / CUT_IN).toFixed(3);
+    if (c.t >= CUT_IN) { c.phase = null; cutEl.style.opacity = '0'; }
+  }
+}
 const flashEl = document.getElementById('flash');
 function flashScreen() {
   if (!flashEl) return;
@@ -2620,6 +2640,7 @@ function endGame() {
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
+  game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
   game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
@@ -2851,6 +2872,7 @@ function preparePlay(teleport) {
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
+    restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
     ch.resetDelay = teleport ? 0 : Math.random() * 0.8;        // staggered starts
@@ -5243,9 +5265,9 @@ function updatePlay(dt) {
     if (game.deadTimer <= 0) {
       game.celebrating = false;
       // Cut to the broadcast replay now (after the live celebration); if there
-      // wasn't enough footage, just line up for the next play.
-      if (game.pendingReplay) { game.pendingReplay = false; if (!startReplay()) beginReset(); }
-      else beginReset();
+      // wasn't enough footage, dip-cut to the next play (hides the reset snap).
+      if (game.pendingReplay) { game.pendingReplay = false; if (!startReplay()) startCut(beginReset); }
+      else startCut(beginReset);
     }
   } else if (game.state === STATE.RESET) {
     updateReset(dt);
@@ -5479,6 +5501,7 @@ function animate() {
   // tackles) while the camera/shake run on real time and stay snappy.
   const dt = realDt * timeScale.update(realDt);
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
+  updateCut(realDt); // broadcast dip between plays (runs the reset at the dark peak)
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)

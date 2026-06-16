@@ -324,6 +324,12 @@ html, body {
 }
 body.replay-mode #fps { display: none !important; }
 
+/* Broadcast cut: a quick dark dip between plays (opacity driven per-frame). */
+#cut {
+  position: fixed; inset: 0; z-index: 30; opacity: 0; pointer-events: none;
+  background: #05070a;
+}
+
 /* ---------- 1-on-1 break-tackle battle ---------- */
 #battle {
   position: fixed;
