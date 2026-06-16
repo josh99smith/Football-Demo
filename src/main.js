@@ -1951,6 +1951,14 @@ function seek(from, tx, tz) {
 function pursueP(fromPos, target, predict = 0.18) {
   return seek(fromPos, px(target).x + target.vel.x * predict, px(target).z + target.vel.z * predict);
 }
+// Like seek but EASES IN: full magnitude beyond `slow`, ramping to ~0 at the
+// target so the agent settles on its spot instead of overshooting + jittering.
+function arrive(from, tx, tz, slow) {
+  const dx = tx - from.x, dz = tz - from.z, d = Math.hypot(dx, dz);
+  if (d < 1e-3) return { x: 0, z: 0 };
+  const m = Math.min(1, d / slow);
+  return { x: dx / d * m, z: dz / d * m };
+}
 function separation(self, others, radius) {
   let sx = 0, sz = 0, n = 0;
   const sp = px(self);
@@ -2037,7 +2045,8 @@ function updateDefense() {
       else {
         const anchor = d.zonePoint || d.home;
         const threat = nearestOffenseTo(anchor, 9);
-        steer = threat ? seek(dp, px(threat).x, px(threat).z) : seek(dp, anchor.x, anchor.z);
+        const tp = threat ? px(threat) : anchor;
+        steer = arrive(dp, tp.x, tp.z, 2.6); // settle on the zone spot / threat instead of jittering
         d.turbo = threat != null && dist2(dp, px(threat)) > 5 * 5;
       }
     } else { // man cover
@@ -2046,11 +2055,15 @@ function updateDefense() {
       } else if (inAir) {
         const a = game.receivers[d.covers]; steer = pursueP(dp, a, 0.2); d.turbo = true;
       } else {
+        // Mirror the receiver with goal-side leverage, EASING into the spot so a
+        // matched DB rides smoothly alongside him and settles when he's static —
+        // no more full-speed micro-twitch. He only sprints when actually beaten.
         const a = game.receivers[d.covers];
         const ap = px(a);
-        const lead = pursueP(dp, a, 0.2);
-        const cushion = seek(dp, ap.x, ap.z + game.dir * 1.4); // goal-side leverage
-        steer = addSteer(lead, cushion, 0.6);
+        const tx = ap.x + a.vel.x * 0.16;
+        const tz = ap.z + a.vel.z * 0.16 + game.dir * 1.3; // goal-side cushion
+        const gap = distXZ(dp, ap);
+        steer = arrive(dp, tx, tz, gap > 3 ? 1.4 : 2.6); // tighter ramp when trailing, softer when matched
         d.turbo = dist2(dp, ap) > 4.5 * 4.5; // glued unless beaten
       }
     }
@@ -2175,7 +2188,11 @@ function applySteer(ch, dt) {
   if (ch.pursuit && ch.turbo && ch.rt) speed *= 1 + 0.26 * Math.max(0, ch.rt.speed - 0.5);
   if (ch.engaged) speed *= 0.4; // a pass rusher walled off by a blocker is slowed
   let tvx = 0, tvz = 0;
-  if (len > 1e-3) { tvx = dx / len * speed; tvz = dz / len * speed; }
+  // Honor a SUB-UNIT desired as an arrival speed scale: seek() returns a unit
+  // vector (full speed), but coverage uses arrive() which shrinks toward 0 near
+  // the spot so a settled DB eases to a stop instead of full-speed micro-
+  // correcting (the twitch).
+  if (len > 1e-3) { const mag = Math.min(1, len); tvx = dx / len * speed * mag; tvz = dz / len * speed * mag; }
   const k = 1 - Math.pow(0.0009, dt); // acceleration smoothing
   ch.vel.x += (tvx - ch.vel.x) * k;
   ch.vel.z += (tvz - ch.vel.z) * k;
@@ -3983,12 +4000,19 @@ function updateBall(dt) {
       _spinQ.setFromAxisAngle(_zAxis, ball.spin);
       ball.mesh.quaternion.copy(_ballQ).multiply(_spinQ);
     }
-    // Anticipation: the targeted receiver throws his hands up as the ball drops
-    // in (so the catch isn't a late snap right as he secures it).
-    const _rcv = ball.targetRecv;
-    if (_rcv && !_rcv.ragdolling && ball.vy < 0 && p.y < 5) {
-      const rd = Math.hypot(_rcv.group.position.x - p.x, _rcv.group.position.z - p.z);
-      if (rd < 4 && _rcv.armPoseT <= 0.12) triggerArmAction(_rcv, 'reach', 0.5, p);
+    // BATTLE FOR THE BALL: as it drops in, both the targeted receiver AND the
+    // nearest defender throw their hands up and play it — they face the ball and
+    // reach for the high point (the catch then resolves by ratings in
+    // tryReception, so the contest you see matches the odds).
+    if (ball.vy < 0 && p.y < 5.5) {
+      const _rcv = ball.targetRecv;
+      if (_rcv && !_rcv.ragdolling) {
+        const rd = Math.hypot(_rcv.group.position.x - p.x, _rcv.group.position.z - p.z);
+        if (rd < 4.5 && _rcv.armPoseT <= 0.12) { _rcv.heading = Math.atan2(p.x - _rcv.group.position.x, p.z - _rcv.group.position.z); _rcv.holdHeading = true; triggerArmAction(_rcv, 'reach', 0.5, p); }
+      }
+      let cd = null, cdD = Infinity; // the contesting defender
+      for (const db of game.defense) { if (db.ragdolling) continue; const d = Math.hypot(db.group.position.x - p.x, db.group.position.z - p.z); if (d < cdD) { cdD = d; cd = db; } }
+      if (cd && cdD < 4.5 && cd.armPoseT <= 0.12) { cd.heading = Math.atan2(p.x - cd.group.position.x, p.z - cd.group.position.z); cd.holdHeading = true; triggerArmAction(cd, 'reach', 0.5, p); }
     }
     // Catchable once it has descended into reach. Resolve only when it actually
     // hits the turf (so an overthrow flies to the back/side wall and bounces),
