@@ -1400,6 +1400,7 @@ function makeCharacter(team) {
     // speed/turbo); prevHeading feeds the turn rate; breathPh desyncs idle breathing;
     // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
     bank: 0, lean: 0, prevHeading: 0, breathPh: Math.random() * 6.283, headYaw: 0,
+    blocking: false, blockFace: 0, blockW: 0, // procedural engaged-block pose
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -2106,15 +2107,16 @@ function updateDefense() {
       steer = seek(dp, ip.x, ip.z);
       d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
       d.pursuit = true;
-      // A blocker in his PATH screens this pursuer (slows him — opens a lane).
+      // A blocker in his lane screens this pursuer (slows him — opens a lane).
+      // Lenient on a run: a blocker near and ahead of him counts as a block.
       const blk = nearestBlockerTo(dp);
-      d.engaged = blockerScreens(dp, blk, px(carrier));
+      d.engaged = blockerScreens(dp, blk, px(carrier), 2.4, -0.15);
     } else if (d.job === 'rush') {
       // Pass rush: bear down on the QB; an OL right in front walls you off.
       const qp = px(game.qb);
       steer = seek(dp, qp.x, qp.z);
       const blk = nearestBlockerTo(dp);
-      d.engaged = blockerScreens(dp, blk, qp) && !(carrier && carrier === game.qb);
+      d.engaged = blockerScreens(dp, blk, qp, 2.0, 0.25) && !(carrier && carrier === game.qb);
       d.turbo = !d.engaged && dist2(dp, qp) > 9;
     } else if (d.job === 'spy') {
       // Shadow the QB a few yards goal-side to wall off the scramble lane.
@@ -2211,19 +2213,24 @@ function updateOffense(dt) {
   for (const o of game.offense) {
     if (o === game.controlled || o === carrier || o.ragdolling) continue;
     const p = px(o);
+    o.blocking = false; // set true below only while actively engaged on a block
     const job = blockForCarrier && o.job !== 'qb' ? 'block' : o.job;
     let steer = { x: 0, z: 0 };
     if (job === 'block') {
       const protect = carrier || game.qb;
       const threat = (o.blockTarget) || nearestDefenderTo(p);
+      o.blocking = false;
       if (threat && protect) {
         const tp = px(threat), pp = px(protect);
-        // Wall the rusher: stand just goal-side of him, ON his path to the QB,
-        // and turbo to win that spot so he stays screened off.
+        // Cut off his lane to the ball: get goal-side of the defender, right in his
+        // path to the carrier and close, so contact happens and the body-collision
+        // walls him off. Hustle (turbo) to the block until locked on, and face him.
         const dx = pp.x - tp.x, dz = pp.z - tp.z, dl = Math.hypot(dx, dz) || 1;
-        const bx = tp.x + (dx / dl) * 0.95, bz = tp.z + (dz / dl) * 0.95;
+        const bx = tp.x + (dx / dl) * 0.7, bz = tp.z + (dz / dl) * 0.7;
         steer = seek(p, bx, bz);
-        o.turbo = distXZ(p, tp) > 2.4;
+        const dToThreat = distXZ(p, tp);
+        o.turbo = dToThreat > 1.2;
+        if (dToThreat < 2.0) { o.blocking = true; o.blockFace = Math.atan2(tp.x - p.x, tp.z - p.z); } // engaged: shove him (procedural pose)
       }
     } else if (job === 'route') {
       const cover = nearestDefenderTo(p);
@@ -2322,16 +2329,17 @@ function resolveBodies() {
     }
   }
 }
-// Does a blocker screen this defender from his target — i.e. is he both close AND
-// roughly between the defender and where he wants to go? (A lineman beside the
-// rusher shouldn't wall him off; only one in his path should.)
-function blockerScreens(dp, blk, target) {
+// Does a blocker screen this defender from his target — close enough AND on the
+// target side of him (not behind)? `rad`/`dotMin` tune how forgiving: pass rush is
+// strict (a lineman beside the rusher shouldn't wall him); run pursuit is lenient
+// (a downfield blocker rarely lines up perfectly on a moving carrier's lane).
+function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
   if (!blk) return false;
   const bp = px(blk);
-  if (distXZ(bp, dp) > 2.0) return false;
+  if (distXZ(bp, dp) > rad) return false;
   const tx = target.x - dp.x, tz = target.z - dp.z, tl = Math.hypot(tx, tz) || 1;
   const bx = bp.x - dp.x, bz = bp.z - dp.z, bl = Math.hypot(bx, bz) || 1;
-  return (tx / tl) * (bx / bl) + (tz / tl) * (bz / bl) > 0.25; // blocker lies along the path
+  return (tx / tl) * (bx / bl) + (tz / tl) * (bz / bl) > dotMin; // blocker lies toward the target
 }
 
 // ===========================================================================
@@ -3130,7 +3138,7 @@ function preparePlay(teleport) {
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
-    ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; // clear overlay blends (hidden by the cut)
+    ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
@@ -4344,6 +4352,7 @@ function tryBreak(carrier, pile) {
 
 // --- 1-on-1 break-tackle battle (mash to break free) -----------------------
 const BATTLE_TIME = 2.6;     // seconds before it resolves on whoever leads
+const BATTLE_SOLO_R = 2.6;   // a hit is a 1-on-1 (battle) if no other defender is this close
 const BATTLE_TAP = 0.095;    // meter toward break per mash
 const BATTLE_CPU = 0.24;     // meter drift/s toward the tackle
 const battleEl = document.getElementById('battle');
@@ -4461,10 +4470,15 @@ function beginTackle(lead, force = false) {
     return;
   }
 
-  // 1-on-1 break-tackle BATTLE: any LONE tackler on the ball carrier kicks off
-  // a mash duel — your chance to break the tackle. (Only when YOU carry the
-  // ball; on defense your tackle just sticks.) A swarm can't be broken this way.
-  if (!force && game.userOnOffense && gangSize === 1 && game.battle.cd <= 0) {
+  // 1-on-1 break-tackle BATTLE: a lone tackler on the ball carrier kicks off a
+  // mash duel — your chance to break free. (Only when YOU carry the ball; on
+  // defense your tackle just sticks.) It's a true 1-on-1 if no OTHER defender is
+  // right on top of you (within BATTLE_SOLO_R) — decoupled from the wide swarm
+  // radius so a hit in space starts a battle even with help a few yards out. A
+  // genuine swarm (someone already in your lap) can't be broken this way.
+  const helpers = game.defense.reduce((n, d) =>
+    n + (d !== lead && !d.ragdolling && distXZ(px(d), cp) <= BATTLE_SOLO_R ? 1 : 0), 0);
+  if (!force && game.userOnOffense && helpers === 0 && game.battle.cd <= 0) {
     startBattle(lead, big);
     return;
   }
@@ -5197,6 +5211,18 @@ function applyBattleArms(ch, isTackler, w = 1) {
     if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.28 * w); ch.headBone.quaternion.multiply(_tq); } // shoulder/head down, driving in
   }
 }
+// Engaged BLOCK pose: a blocker locked onto a defender punches both hands into
+// him at chest level and leans into the shove, with a churning pump so it reads
+// as a sustained, live block (legs come from the run clip underneath).
+function applyBlockPose(ch, w = 1) {
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const pump = Math.sin(performance.now() * 0.012);
+  blendBone(ch.upperArm, ch.upperArmRest, -(1.2 + pump * 0.14), w);     // hands punch out
+  blendBone(ch.foreArm, ch.foreArmRest, -(0.45 + pump * 0.12), w);      // arms nearly extended (shove, not wrap)
+  blendBone(ch.leftArm, ch.leftArmRest, -(1.2 - pump * 0.14), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.45 - pump * 0.12), w);
+  blendLean(ch, 0.34 + pump * 0.04, 0, w);                              // drive into the block
+}
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
 // slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
 function applySulkPose(ch, w = 1) {
@@ -5276,16 +5302,19 @@ function updateAnimation(ch, dt) {
   else if (ball.mode === 'secured' && ch === ball.catcher) active = 'catch';
   else if (ch.throwAnimT > 0) active = 'throw';
   else if (ch.armPoseT > 0) active = 'arm';
+  else if (ch.blocking) active = 'block';
   else if (ch.sulk) active = 'sulk';
   ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
   ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
   ch.catchW = easeWeight(ch.catchW, active === 'catch', dt);
   ch.throwW = easeWeight(ch.throwW, active === 'throw', dt);
   ch.armW = easeWeight(ch.armW, active === 'arm', dt);
+  ch.blockW = easeWeight(ch.blockW, active === 'block', dt);
   ch.sulkW = easeWeight(ch.sulkW, active === 'sulk', dt);
   // Leans first (orient the root), then arm poses, applied lowest -> highest
   // priority so the dominant overlay wins the bones it shares with a fading one.
   if (ch.sulkW > 0.001) applySulkPose(ch, ch.sulkW); // end-game loser: head hung, shoulders slumped
+  if (ch.blockW > 0.001) applyBlockPose(ch, ch.blockW);
   if (ch.grabW > 0.001) applyGrabLean(ch, ch.grabW);
   if (ch.battleW > 0.001) applyBattleLean(ch, ch === game.battle.tackler, ch.battleW);
   if (ch.armW > 0.001) applyArmAction(ch, dt, ch.armW);
