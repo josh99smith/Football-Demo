@@ -1298,7 +1298,7 @@ function makeCharacter(team) {
   // back to rest when the ragdoll is cleared (else the lower body stays under
   // the field and the next hit snapshots a broken pose).
   let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null;
-  let headBone = null, headEnd = null;
+  let headBone = null, headEnd = null, spineBone = null;
   const restPose = [];
   model.traverse((o) => {
     if (o.isBone) {
@@ -1309,6 +1309,7 @@ function makeCharacter(team) {
       if (o.name === 'LeftForeArm') leftForeArm = o;
       if (o.name === 'Head') headBone = o;
       if (o.name === 'head_end') headEnd = o;
+      if (o.name === 'Spine01' || (!spineBone && o.name === 'Spine')) spineBone = o; // waist bend (battle/block)
       restPose.push([o, o.position.clone(), o.quaternion.clone()]);
     }
   });
@@ -1316,6 +1317,7 @@ function makeCharacter(team) {
   const foreArmRest = foreArm ? foreArm.quaternion.clone() : null;
   const leftArmRest = leftArm ? leftArm.quaternion.clone() : null;
   const leftForeArmRest = leftForeArm ? leftForeArm.quaternion.clone() : null;
+  const spineRest = spineBone ? spineBone.quaternion.clone() : null;
   const mixer = new THREE.AnimationMixer(model);
   const mk = (clip) => {
     const a = mixer.clipAction(clip);
@@ -1382,7 +1384,7 @@ function makeCharacter(team) {
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
-    upperArm, foreArm, upperArmRest, foreArmRest,
+    upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet, bones: restPose.map((e) => e[0]), // bone list for replay capture
@@ -1401,6 +1403,7 @@ function makeCharacter(team) {
     // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
     bank: 0, lean: 0, prevHeading: 0, breathPh: Math.random() * 6.283, headYaw: 0,
     blocking: false, blockFace: 0, blockW: 0, // procedural engaged-block pose
+    engaging: null, blockedBy: null, engageT: 0, shedCd: 0, // block lock-up / shed system
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -2099,6 +2102,7 @@ function updateDefense() {
   const inAir = ball.mode === 'flying';
   for (const d of game.defense) {
     if (d.ragdolling || d === game.controlled) continue; // knocked down, or the player drives him
+    if (d.blockedBy) { d.desired = { x: 0, z: 0 }; d.engaged = true; d.pursuit = false; continue; } // stuck in a block (updateBlocks holds him)
     d.engaged = false; d.pursuit = false;
     const dp = px(d);
     let steer = { x: 0, z: 0 };
@@ -2193,6 +2197,63 @@ function assignBlocks(blockForCarrier) {
     if (taken.size === blockers.length) break;
   }
 }
+// --- Block engagement: blockers and defenders LOCK UP and wrestle ------------
+// When a blocker reaches his man they engage: both are held at the point of
+// contact in the shove pose (procedural), neither advancing, until the defender
+// SHEDS the block. How long the lock holds is a strength/tackle duel (a stronger
+// rusher sheds fast; a good blocker sustains it), plus a small random shed chance
+// so it varies. On a shed the defender bursts free toward the ball; the blocker
+// gets a brief cooldown before he can re-lock.
+const ENGAGE_R = 1.5, SHED_BURST = 5.5;
+function startEngage(o, d) {
+  o.engaging = d; d.blockedBy = o;
+  const bp = 0.55 + (o.rt ? o.rt.strength : 0.6);   // blocker drive power
+  const dp = 0.5 + (d.rt ? (d.rt.tackle + d.rt.strength) * 0.5 : 0.6); // rusher shed power
+  d.engageT = THREE.MathUtils.clamp(1.3 * bp / dp, 0.5, 3.2) * (0.7 + Math.random() * 0.7);
+}
+function endEngage(o, d, shed) {
+  if (o) o.engaging = null;
+  if (!d) return;
+  d.blockedBy = null; d.shedCd = 0.45 + Math.random() * 0.5; d.engaged = false;
+  if (shed) { // rip free, burst toward the ball carrier / QB
+    const c = game.carrier || game.qb;
+    if (c) { const dx = c.group.position.x - d.group.position.x, dz = c.group.position.z - d.group.position.z, l = Math.hypot(dx, dz) || 1; d.vel.x += dx / l * SHED_BURST; d.vel.z += dz / l * SHED_BURST; }
+    triggerArmAction(d, 'swat', 0.35); // a rip/swim move as he sheds
+  }
+}
+function updateBlocks(dt) {
+  for (const d of game.defense) if (d.shedCd > 0) d.shedCd -= dt;
+  for (const o of game.offense) {
+    if (o.ragdolling || o === game.carrier || o === game.controlled) { if (o.engaging) endEngage(o, o.engaging, false); continue; }
+    // Drop a stale lock (target gone/ragdolled).
+    if (o.engaging && (o.engaging.ragdolling || o.engaging.blockedBy !== o)) { o.engaging = null; }
+    const d = o.engaging || o.blockTarget;
+    if (!d || d.ragdolling || d === game.controlled) { if (o.engaging) endEngage(o, o.engaging, false); continue; } // never freeze the human
+    if (!o.engaging) { // try to lock on
+      if (!d.blockedBy && d.shedCd <= 0 && distXZ(px(o), px(d)) < ENGAGE_R) startEngage(o, d);
+      else continue;
+    }
+    // Sustain the lock: tick the duel, maybe shed (timer out or a random rip).
+    d.engageT -= dt;
+    const shedRoll = 0.25 * dt * (0.4 + (d.rt ? d.rt.tackle : 0.6));
+    if (d.engageT <= 0 || Math.random() < shedRoll) { endEngage(o, d, true); continue; }
+    // Locked: press the two together at the contact point, face each other, churn
+    // in place (a slow wobble) — both play the shove pose; the rusher is stuck.
+    const op = o.group.position, dp = d.group.position;
+    let ax = dp.x - op.x, az = dp.z - op.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
+    const mx = (op.x + dp.x) / 2, mz = (op.z + dp.z) / 2;
+    const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.05;
+    const half = 0.45 + wob;
+    op.x = mx - ax * half; op.z = mz - az * half;
+    dp.x = mx + ax * half; dp.z = mz + az * half;
+    o.heading = Math.atan2(ax, az); d.heading = Math.atan2(-ax, -az);
+    o.vel.set(0, 0, 0); d.vel.set(0, 0, 0); o.speed = 0; d.speed = 0;
+    o.blocking = true; d.blocking = true; d.engaged = true; d.pursuit = false;
+  }
+}
+function clearEngagements() {
+  for (const ch of game.all) { ch.engaging = null; ch.blockedBy = null; ch.engageT = 0; ch.shedCd = 0; }
+}
 function keepReceiverInbounds(o) {
   const p = px(o);
   const edgeX = Math.min(HALF_W - p.x, p.x + HALF_W);
@@ -2220,6 +2281,7 @@ function updateOffense(dt) {
       const protect = carrier || game.qb;
       const threat = (o.blockTarget) || nearestDefenderTo(p);
       o.blocking = false;
+      if (o.engaging) { o.desired = { x: 0, z: 0 }; o.blocking = true; o.turbo = false; continue; } // locked in a block (updateBlocks holds him)
       if (threat && protect) {
         const tp = px(threat), pp = px(protect);
         // Cut off his lane to the ball: get goal-side of the defender, right in his
@@ -2316,10 +2378,10 @@ const BODY_R = 0.42;
 function resolveBodies() {
   const a = game.all, min = BODY_R * 2, min2 = min * min;
   for (let i = 0; i < a.length; i++) {
-    const A = a[i]; if (A.ragdolling || A.grabbing) continue;
+    const A = a[i]; if (A.ragdolling || A.grabbing || A.engaging || A.blockedBy) continue;
     const ap = A.group.position;
     for (let j = i + 1; j < a.length; j++) {
-      const B = a[j]; if (B.ragdolling || B.grabbing) continue;
+      const B = a[j]; if (B.ragdolling || B.grabbing || B.engaging || B.blockedBy) continue;
       const bp = B.group.position;
       const dx = bp.x - ap.x, dz = bp.z - ap.z, d2 = dx * dx + dz * dz;
       if (d2 >= min2 || d2 < 1e-6) continue;
@@ -5176,10 +5238,10 @@ const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
 function applyBattleLean(ch, isTackler, w = 1) {
   const now = performance.now();
   const v = game.battle.val; // carrier's break meter (high = carrier winning)
-  // The tackler drives in LOW and bent (lower pad level wins); he buries in harder
-  // as he's winning the meter. The carrier drives forward through the hit. Plus a
-  // strain shimmer and a little side sway so the lock isn't a frozen statue.
-  const push = isTackler ? (0.62 + (1 - v) * 0.22) : (0.34 + v * 0.26);
+  // A modest whole-body lean only — the dramatic fold is the WAIST bend in
+  // applyBattleArms (spine), so the legs stay planted instead of the body toppling.
+  // The tackler buries in harder as he wins; the carrier drives through the hit.
+  const push = isTackler ? (0.3 + (1 - v) * 0.12) : (0.2 + v * 0.14);
   const lean = push + Math.sin(now * 0.013 + (isTackler ? 0 : 1.5)) * 0.05;
   const sway = Math.sin(now * 0.009 + (isTackler ? 1 : 0)) * 0.05;
   blendLean(ch, lean, sway, w);
@@ -5189,9 +5251,11 @@ function applyBattleArms(ch, isTackler, w = 1) {
   const t = performance.now() * 0.001;
   const pump = Math.sin(t * 9);
   if (isTackler) {
-    // WRAP UP: upper arms come forward at chest level and the forearms curl in so
-    // the hands clamp around the carrier's back; head ducks down and turns to the
-    // side, buried into him. The pump churns the wrap so it reads as a live drive.
+    // WRAP UP: fold hard at the WAIST so the shoulder/head bury into the carrier's
+    // midsection (the signature of a real form tackle); upper arms come forward at
+    // chest level with the forearms curled in to clamp around his back; head ducks
+    // down and turns to the side. The pump churns it so it reads as a live drive.
+    blendBone(ch.spineBone, ch.spineRest, 0.8 + pump * 0.06, w); // bend at the waist, driving in
     blendBone(ch.upperArm, ch.upperArmRest, -(1.15 + pump * 0.1), w);
     blendBone(ch.foreArm, ch.foreArmRest, -(1.4 + pump * 0.15), w);   // curl to wrap
     blendBone(ch.leftArm, ch.leftArmRest, -(1.15 - pump * 0.1), w);
@@ -5202,8 +5266,10 @@ function applyBattleArms(ch, isTackler, w = 1) {
       ch.headBone.updateMatrixWorld(true);
     }
   } else {
-    // Carrier lowers his shoulder and braces THROUGH the hit: free arm punches into
-    // the tackler, off arm cradles the ball low and tight, head/chin tucked down.
+    // Carrier lowers his shoulder and braces THROUGH the hit: bends into it at the
+    // waist, free arm punches into the tackler, off arm cradles the ball low and
+    // tight, head/chin tucked down.
+    blendBone(ch.spineBone, ch.spineRest, 0.42 + pump * 0.05, w); // drive low into contact
     blendBone(ch.upperArm, ch.upperArmRest, -(1.05 + pump * 0.12), w);
     blendBone(ch.foreArm, ch.foreArmRest, -(0.6 + pump * 0.1), w);   // brace/push
     blendBone(ch.leftArm, ch.leftArmRest, -0.5, w);
@@ -5668,6 +5734,10 @@ function updatePlay(dt) {
     clampToField(ch);
     if (liveBall) updateFatigue(ch, dt); // tire with exertion while the ball's live
   }
+  // Block lock-ups: hold engaged blocker/defender pairs together in the shove and
+  // run the shed duel (must come before body-separation, which skips locked pairs).
+  if (game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN) updateBlocks(dt);
+  else clearEngagements();
   // Bodies can't pass through each other in open play (the locked pile/battle keep
   // their intentional overlaps). Run after clamping so a push can't shove anyone
   // out of the cage, then re-clamp the two who could have been nudged to the edge.
