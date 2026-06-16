@@ -1008,8 +1008,7 @@ function computeFlame() {
   else if (fireOn && hot && !hot.ragdolling) { player = hot; pCol = 1; }
   const userHasBall = game.userOnOffense && (ball.mode === 'carried' || ball.mode === 'flying');
   let ballCol = 0;
-  if (turboOn && (game.carrier === c || ball.holder === c)) ballCol = 2;
-  else if (fireOn && userHasBall) ballCol = 1;
+  if (fireOn && userHasBall) ballCol = 1; // ON FIRE flames the ball; turbo does NOT
   return { player, pCol, ballCol };
 }
 function emitFlames(dt, player, pCol, ballCol) {
@@ -1817,7 +1816,7 @@ function applyRatings(p) {
     r[RAT_KEYS[i] + 'R'] = Math.round(v); // displayable 1..99
   }
   p.rt = r;
-  p.baseSpeed = 7.3 + r.speed * 3.1;        // 7.3 .. 10.4 yd/s
+  p.baseSpeed = 6.6 + r.speed * 2.9;        // 6.6 .. 9.5 yd/s (toned-down global pace; rating spread kept)
   p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
 }
 
@@ -1940,7 +1939,7 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // ===========================================================================
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
-const TURBO_MULT = 1.4; // full NFL Blitz turbo
+const TURBO_MULT = 1.28; // turbo burst (toned down so open-field runs are catchable)
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
 const FAT_MIN = 0.45;
@@ -2038,13 +2037,13 @@ function updateDefense() {
       d.pursuit = true;
       // A blocker in the way screens this pursuer (slows him — opens a lane).
       const blk = nearestBlockerTo(dp);
-      d.engaged = !!blk && distXZ(px(blk), dp) < 1.6;
+      d.engaged = !!blk && distXZ(px(blk), dp) < 2.2;
     } else if (d.job === 'rush') {
       // Pass rush: bear down on the QB; an OL right in front walls you off.
       const qp = px(game.qb);
       steer = seek(dp, qp.x, qp.z);
       const blk = nearestBlockerTo(dp);
-      d.engaged = !!blk && distXZ(px(blk), dp) < 1.6 && !(carrier && carrier === game.qb);
+      d.engaged = !!blk && distXZ(px(blk), dp) < 2.2 && !(carrier && carrier === game.qb);
       d.turbo = !d.engaged && dist2(dp, qp) > 9;
     } else if (d.job === 'spy') {
       // Shadow the QB a few yards goal-side to wall off the scramble lane.
@@ -2148,10 +2147,12 @@ function updateOffense(dt) {
       const threat = (o.blockTarget) || nearestDefenderTo(p);
       if (threat && protect) {
         const tp = px(threat), pp = px(protect);
-        const bx = tp.x + Math.sign(pp.x - tp.x) * 1.2;
-        const bz = tp.z + Math.sign(pp.z - tp.z) * 1.2;
+        // Wall the rusher: stand just goal-side of him, ON his path to the QB,
+        // and turbo to win that spot so he stays screened off.
+        const dx = pp.x - tp.x, dz = pp.z - tp.z, dl = Math.hypot(dx, dz) || 1;
+        const bx = tp.x + (dx / dl) * 0.95, bz = tp.z + (dz / dl) * 0.95;
         steer = seek(p, bx, bz);
-        o.turbo = distXZ(p, tp) > 3.4;
+        o.turbo = distXZ(p, tp) > 2.4;
       }
     } else if (job === 'route') {
       const cover = nearestDefenderTo(p);
@@ -2196,8 +2197,8 @@ function applySteer(ch, dt) {
   if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
   // Chase-down burst: a fast defender turboing after the ball carrier in the open
   // gets a pursuit bonus scaled by SPEED, so a breakaway can be run down.
-  if (ch.pursuit && ch.turbo && ch.rt) speed *= 1 + 0.26 * Math.max(0, ch.rt.speed - 0.5);
-  if (ch.engaged) speed *= 0.4; // a pass rusher walled off by a blocker is slowed
+  if (ch.pursuit && ch.turbo && ch.rt) speed *= 1 + 0.5 * Math.max(0, ch.rt.speed - 0.4); // fast pursuers get a real closing burst
+  if (ch.engaged) speed *= 0.28; // a pass rusher walled off by a blocker is stalled hard
   let tvx = 0, tvz = 0;
   // Honor a SUB-UNIT desired as an arrival speed scale: seek() returns a unit
   // vector (full speed), but coverage uses arrive() which shrinks toward 0 near
