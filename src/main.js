@@ -3588,7 +3588,7 @@ function tackleReturner(tackler) {
   ctrlRing.visible = false; updateButtons();
   shake.kick(hitX, hitZ, big ? 0.8 : 0.4);
   burst(rp.x, 1.0, rp.z, 0xe8d9a0, big ? 16 : 10, big ? 8 : 6);
-  if (big) { timeScale.bulletTime(0.16, 0.5, 0.9); hitZoom(1.2); shake.add(0.5); audio.bigHit(); impactFlash(true); showBanner('STOPPED!', '#bfffd0', { power: hitPower(tackler, closing, 1, true) }); }
+  if (big) { timeScale.bulletTime(0.09, 0.6, 1.05); hitZoom(1.6, 1.35); shake.add(0.5); audio.bigHit(); impactFlash(true); showBanner('STOPPED!', '#bfffd0', { power: hitPower(tackler, closing, 1, true) }); }
   else { timeScale.bulletTime(0.22, 0.4, 0.7); hitZoom(0.9); shake.add(0.18); audio.hit(0.6); }
   setStatus('Return stopped!');
 }
@@ -4410,9 +4410,9 @@ function beginTackle(lead, force = false) {
     const power = hitPower(lead, closing, gangSize, big);
     // The most violent square hits (turbo + huge closing) read as a DIRTY HIT.
     const dirty = big && lead.turbo && closing > 10.5;
-    if (dirty) { timeScale.bulletTime(0.08, 0.8, 1.25); hitZoom(1.7); shake.add(0.85); impactFlash(true); }
-    else if (gang) { timeScale.bulletTime(0.1, 0.7, 1.1); hitZoom(1.5); shake.add(0.72); impactFlash(true); }
-    else { timeScale.bulletTime(0.14, 0.55, 0.95); hitZoom(1.2); shake.add(0.5); impactFlash(false); }
+    if (dirty) { timeScale.bulletTime(0.05, 0.95, 1.45); hitZoom(2.2, 1.7); shake.add(0.85); impactFlash(true); }      // deepest slow-mo, tightest punch-in
+    else if (gang) { timeScale.bulletTime(0.07, 0.85, 1.25); hitZoom(2.0, 1.45); shake.add(0.72); impactFlash(true); }
+    else { timeScale.bulletTime(0.09, 0.75, 1.15); hitZoom(1.7, 1.35); shake.add(0.5); impactFlash(false); }
     audio.bigHit();
     // Gore: most often the helmet pops off; rarely the whole body is RIPPED IN
     // HALF at the waist (head stays with the top). The two are mutually exclusive.
@@ -5448,7 +5448,7 @@ const cam = {
   fwdX: 0, fwdZ: 1,                       // eased behind-cam heading (pans, never jumps)
   pos: new THREE.Vector3(0, 7, -12),
   lookCur: new THREE.Vector3(0, 1.3, 0),
-  cine: 0, cineHold: 0,                   // contact-hit close-up amount / hold
+  cine: 0, cineHold: 0, cineZoom: 1,      // contact-hit close-up amount / hold / depth (bigger = tighter)
   back: 11, hgt: 6.8, aheadL: 11, lookH: 1.5, fovKick: 0, // eased framing + snap zoom punch
   special: null,                          // cinematic override: pre-snap hero / post-TD flex
 };
@@ -5456,7 +5456,7 @@ const _tp = new THREE.Vector3(), _tl = new THREE.Vector3(), _fp = new THREE.Vect
 const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
-function hitZoom(hold = 0.5) { cam.cineHold = Math.max(cam.cineHold, hold); }
+function hitZoom(hold = 0.5, zoom = 1) { cam.cineHold = Math.max(cam.cineHold, hold); cam.cineZoom = Math.max(cam.cineZoom, zoom); }
 // Cinematic camera override: 'hero' (low slow orbit on the star pre-snap) or
 // 'td' (low up-angle flex/standover on the scorer). Cleared when it expires or
 // the play state moves on (see updateCamera).
@@ -5588,20 +5588,23 @@ function updateCamera(dt) {
   // real FOV zoom for a clear, smooth zoom-in on the hit.
   const wantCine = cam.cineHold > 0 ? 1 : 0;
   if (cam.cineHold > 0) cam.cineHold -= dt;
+  else if (cam.cine < 0.01) cam.cineZoom = 1; // back to default depth once the close-up has fully released
   // Symmetric, gentle ease both ways → no snap/jerk into or out of the zoom.
   cam.cine = moveToward(cam.cine, wantCine, dt / (wantCine > cam.cine ? 0.28 : 0.6));
   const e = cam.cine * cam.cine * (3 - 2 * cam.cine); // smoothstep
+  const z = cam.cineZoom; // close-up depth (bigger hits punch in tighter)
   if (cam.cine > 0.001) {
     const f = (game.carrier || t).group.position;
-    _cinePos.set(f.x + 3.4, 3.6, f.z - 3.0);
+    _cinePos.set(f.x + 3.4 / z, 2.6 + 1.0 / z, f.z - 3.0 / z); // tighter offset + lower for a bigger zoom
     _cineLook.set(f.x, 1.0, f.z);
     _tp.lerp(_cinePos, e); _tl.lerp(_cineLook, e);
   }
   // FOV: a touch wider on pass plays so more of the field fits; the hit close-up
-  // zooms in from there (down to ~34°).
+  // zooms in from there (down to ~34°, tighter on the biggest hits).
   const baseFov = passPlay ? 60 : 55;
   cam.fovKick = Math.max(0, cam.fovKick - dt * 22); // snap zoom-punch, eases out
-  const wantFov = baseFov - (baseFov - 34) * e - cam.fovKick;
+  const minFov = THREE.MathUtils.clamp(34 - (z - 1) * 17, 18, 34);
+  const wantFov = baseFov - (baseFov - minFov) * e - cam.fovKick;
   if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
 
   // Eased follow — gentle while tracking the ball so the broadcast shot glides
