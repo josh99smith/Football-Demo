@@ -1396,6 +1396,10 @@ function makeCharacter(team) {
     // Procedural overlay blend weights (0..1): each eases in/out so a pose fades
     // smoothly over the locomotion clip instead of snapping on/off in one frame.
     throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, catchRaise: 0.8,
+    // Locomotion "life": eased bank (lean into turns) + forward pitch (lean with
+    // speed/turbo); prevHeading feeds the turn rate; breathPh desyncs idle breathing;
+    // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
+    bank: 0, lean: 0, prevHeading: 0, breathPh: Math.random() * 6.283, headYaw: 0,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -4954,6 +4958,48 @@ function blendLean(ch, lean, sway, w) {
   _poseTarget.copy(_qLeanY).multiply(_qLeanX);
   ch.group.quaternion.slerp(_poseTarget, w);
 }
+// Locomotion "life": the base root orientation gets a banking roll INTO turns (a
+// runner leans like a sprinter carving), a forward pitch that grows with speed
+// (and a touch more on turbo), and — when nearly still — a gentle breathing/weight
+// shift so an idle player isn't a frozen statue. Builds yaw*pitch*roll into the
+// group quaternion; the procedural leans (battle/throw/...) blend on top of this.
+const _qYaw = new THREE.Quaternion(), _qPitch = new THREE.Quaternion(), _qRoll = new THREE.Quaternion();
+const _ZAX = new THREE.Vector3(0, 0, 1), _YAX = new THREE.Vector3(0, 1, 0);
+function applyLocoLife(ch, dt, spin) {
+  let dH = ch.heading - ch.prevHeading;
+  while (dH > Math.PI) dH -= Math.PI * 2; while (dH < -Math.PI) dH += Math.PI * 2;
+  ch.prevHeading = ch.heading;
+  const angVel = dt > 1e-4 ? dH / dt : 0;
+  const spd = Math.min(ch.speed, 14);
+  const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4); // carve into the turn
+  ch.bank += (wantBank - ch.bank) * Math.min(1, dt * 8);
+  const wantPitch = THREE.MathUtils.clamp(spd * 0.018 + (ch.turbo ? 0.1 : 0), 0, 0.42); // lean with speed
+  ch.lean += (wantPitch - ch.lean) * Math.min(1, dt * 6);
+  let pitch = ch.lean, roll = ch.bank;
+  if (ch.speed < 0.6) { // breathing + slow weight shift while standing
+    const t = performance.now() * 0.001;
+    pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012;
+    roll += Math.sin(t * 0.7 + ch.breathPh) * 0.02;
+  }
+  _qYaw.setFromAxisAngle(_UP, ch.heading + spin);
+  _qPitch.setFromAxisAngle(_XAX, pitch);
+  _qRoll.setFromAxisAngle(_ZAX, roll);
+  ch.group.quaternion.copy(_qYaw).multiply(_qPitch).multiply(_qRoll);
+}
+// Head-on-a-swivel: ease the head bone to look toward a world target (the nearest
+// receiver / the ball) within a natural range, so a backpedaling DB tracks his man
+// instead of staring straight back. Yaw about the head's local up axis.
+function applyHeadTrack(ch, targetPos, w, dt) {
+  if (!ch.headBone) return;
+  const dx = targetPos.x - ch.group.position.x, dz = targetPos.z - ch.group.position.z;
+  let rel = Math.atan2(dx, dz) - ch.heading;
+  while (rel > Math.PI) rel -= Math.PI * 2; while (rel < -Math.PI) rel += Math.PI * 2;
+  const want = THREE.MathUtils.clamp(rel, -1.1, 1.1) * w; // clamp to a believable neck range
+  ch.headYaw += (want - ch.headYaw) * Math.min(1, dt * 10);
+  _tq.setFromAxisAngle(_YAX, ch.headYaw);
+  ch.headBone.quaternion.multiply(_tq);
+  ch.headBone.updateMatrixWorld(true);
+}
 // Smoothstep interpolation across [t,value] keyframes (t ascending in 0..1).
 function keyAngle(keys, t) {
   if (t <= keys[0][0]) return keys[0][1];
@@ -4982,9 +5028,12 @@ function applyThrowPose(ch, dt, w = 1) {
   // Off (left) arm: rises forward for balance during the whip, then tucks back.
   blendBone(ch.leftArm, ch.leftArmRest, keyAngle([[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]], t), w);
   blendBone(ch.leftForeArm, ch.leftForeArmRest, keyAngle([[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]], t), w);
-  // Torso drives into the throw: a brief forward lean that peaks at the whip.
+  // Torso drives into the throw: a brief forward lean that peaks at the whip, plus
+  // a hip/shoulder TWIST — wind back, then rotate through the release (the kinetic
+  // chain) — so the throw uncoils from the core instead of being all arm.
   const lean = keyAngle([[0, 0], [0.16, 0.22], [0.5, 0.08], [1, 0]], t);
-  if (lean * w > 0.001) blendLean(ch, lean, 0, w);
+  const twist = keyAngle([[0, 0], [0.12, 0.2], [0.42, -0.14], [1, 0]], t);
+  if ((Math.abs(lean) + Math.abs(twist)) * w > 0.001) blendLean(ch, lean, twist, w);
 }
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
@@ -4997,10 +5046,18 @@ function applyCatchPose(ch, ballPos, dt, w = 1) {
   const want = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
   ch.catchRaise += (want - ch.catchRaise) * Math.min(1, dt * 14);
   const raise = ch.catchRaise;
-  blendBone(ch.upperArm, ch.upperArmRest, -raise, w);
-  blendBone(ch.foreArm, ch.foreArmRest, -0.55, w);
-  blendBone(ch.leftArm, ch.leftArmRest, raise, w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55, w);
+  // Two-hand vs one-hand: how far the ball is off to a side (in the catcher's own
+  // frame) decides whether both hands meet it (centered) or he stabs with the near
+  // arm while the off arm trails (a wide reach). side > 0 = ball to his right.
+  const dx = ballPos.x - ch.group.position.x, dz = ballPos.z - ch.group.position.z;
+  const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // local lateral offset
+  const oneH = THREE.MathUtils.clamp((Math.abs(side) - 0.7) / 1.3, 0, 1); // 0 two-hand .. 1 one-hand
+  const rightReach = side >= 0 ? raise : raise * (1 - oneH * 0.85); // right arm = ch.upperArm
+  const leftReach = side < 0 ? raise : raise * (1 - oneH * 0.85);
+  blendBone(ch.upperArm, ch.upperArmRest, -rightReach, w);
+  blendBone(ch.foreArm, ch.foreArmRest, -0.55 * (side >= 0 ? 1 : 1 - oneH * 0.7), w);
+  blendBone(ch.leftArm, ch.leftArmRest, leftReach, w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55 * (side < 0 ? 1 : 1 - oneH * 0.7), w);
 }
 // Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
 // poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
@@ -5144,10 +5201,11 @@ function updateAnimation(ch, dt) {
     const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
     if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
   }
-  // Base root orientation: heading, plus any active 360 spin. Procedural leans
-  // below blend on top of this with their own eased weights.
-  ch.group.rotation.set(0, ch.heading, 0);
-  if (!inBattle && !grabbing && ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / SPIN_DUR) * Math.PI * 2; // 360 spin move
+  // Base root orientation: heading + any active 360 spin, plus locomotion "life"
+  // (bank into turns, lean with speed, idle breathing). Procedural leans below
+  // blend on top of this with their own eased weights.
+  const spin = (!inBattle && !grabbing && ch.spinT > 0) ? (1 - ch.spinT / SPIN_DUR) * Math.PI * 2 : 0;
+  applyLocoLife(ch, dt, spin);
   ch.mixer.update(dt);
   // Procedural overlays blend in/out via per-character weights, so a pose fades
   // smoothly over the locomotion clip instead of snapping on/off in one frame.
@@ -5178,6 +5236,18 @@ function updateAnimation(ch, dt) {
   if (ch.catchW > 0.001) applyCatchPose(ch, ball.mesh.position, dt, ch.catchW);
   if (ch.grabW > 0.001) applyBattleArms(ch, true, ch.grabW); // wrap him up like a tackler
   if (ch.battleW > 0.001) applyBattleArms(ch, ch === game.battle.tackler, ch.battleW);
+  // Head-on-a-swivel: a backpedaling player (a DB dropping into coverage, the QB
+  // on his drop) tracks the ball in flight or the nearest receiver instead of
+  // staring straight back. Eased, and eased back to center once he's done.
+  if (!active && ch.backped) {
+    let tp = null;
+    if (ball.mode === 'flying') tp = ball.mesh.position;
+    else if (game.receivers) { let bd = Infinity; for (const r of game.receivers) { const d = distXZ(px(r), px(ch)); if (d < bd) { bd = d; tp = r.group.position; } } }
+    if (tp) applyHeadTrack(ch, tp, 1, dt);
+    else if (Math.abs(ch.headYaw) > 0.001) applyHeadTrack(ch, px(ch), 0, dt);
+  } else if (Math.abs(ch.headYaw) > 0.001) {
+    applyHeadTrack(ch, px(ch), 0, dt); // ease the look back to center
+  }
   // Idle variety now comes from real per-player idle clips (see makeCharacter),
   // so no procedural stance offset is layered on top.
   // Keep dynamic poses out of the turf: one-shots clamp in their own branch
