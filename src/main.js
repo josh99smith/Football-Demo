@@ -5406,9 +5406,14 @@ function updateAnimation(ch, dt) {
   const along = ch.vel.x * Math.sin(ch.heading) + ch.vel.z * Math.cos(ch.heading); // + forward / - backward
   if (inBattle) want = 'run';                // churning legs in the wrestle
   else {
+    // Backpedal is ONLY for a DB dropping into coverage or the QB on his drop-back
+    // (facing one way while moving the other). Everyone else faces where they run,
+    // so they should never play it even if shoved/eased backward for a frame.
+    const coverDrop = ch.job === 'cover' || ch.job === 'zone' || ch.deep;
+    const qbDrop = ch.role === 'QB' && game.state === STATE.LIVE && !pastLine(ch);
     // Hysteresis so a hard cut doesn't flicker run<->backpedal: drop into the
     // backpedal below -0.6, but hold it until he's clearly moving forward again.
-    ch.backped = ch.speed > 0.7 && along < (ch.backped ? -0.3 : -0.6);
+    ch.backped = (coverDrop || qbDrop) && ch.speed > 0.7 && along < (ch.backped ? -0.3 : -0.6);
     if (ch.backped) want = (ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading)) >= 0 ? 'backR' : 'backL';
     else if (ch.speed > 11) want = 'sprint'; // turbo / RunFast
     else if (ch.speed > 6) want = 'run';
