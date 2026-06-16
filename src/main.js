@@ -4480,6 +4480,17 @@ function beginTackle(lead, force = false) {
     return;
   }
 
+  // Committed to bringing him down: close the gap so the pile makes real CONTACT
+  // instead of forming a yard short of the carrier. Snap each tackler onto him
+  // along his own approach line (carrier is the anchor). Runs before every
+  // takedown path (fumble / strip / drag / ragdoll) so they all start tight.
+  const CONTACT = 0.65;
+  for (const t of pile) {
+    const tp = t.group.position;
+    const dx = cp.x - tp.x, dz = cp.z - tp.z, dd = Math.hypot(dx, dz);
+    if (dd > CONTACT) { tp.x = cp.x - dx / dd * CONTACT; tp.z = cp.z - dz / dd * CONTACT; }
+  }
+
   // Random FUMBLE: a jarring hit can knock the ball loose. Bigger hits and gang
   // tackles pop it more often — and a hit while TAUNTING strips it every time
   // (that's the risk of showboating). The carrier goes down and the ball pops
