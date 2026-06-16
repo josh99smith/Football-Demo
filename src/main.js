@@ -4190,10 +4190,13 @@ function startSecure(player, isInt) {
   } else {
     audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
-    // Lunge reception: if he had to reach for it (or it's low), play the diving
-    // catch instead of the standard secure pose.
+    // Leaping reception: only a genuine high grab (ball well above the chest, must
+    // jump for it) or a real extension/dive (had to reach far) plays the leap clip.
+    // A routine chest catch just uses the procedural secure pose — otherwise the
+    // leap fired on ordinary catches and played out a jump AFTER the ball was in.
     const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
-    if (player.actions.divecatch && (reach > 1.5 || p.y < 1.2)) playOneShot(player, 'divecatch', 0.7, true);
+    const high = p.y > player.group.position.y + 1.9;
+    if (player.actions.divecatch && (reach > 1.9 || high)) playOneShot(player, 'divecatch', 0.6, true);
   }
 }
 function passBrokenUp(msg, color, swatter, swatType) {
