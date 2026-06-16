@@ -383,32 +383,16 @@ function canvasTex(w, h, draw) {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }
 {
-  // Midfield logo: a ringed crest with a bold "R".
-  const logoTex = canvasTex(256, 256, (g, w, h) => {
-    g.clearRect(0, 0, w, h);
-    g.lineWidth = 12; g.strokeStyle = 'rgba(255,255,255,0.9)';
-    g.beginPath(); g.arc(128, 128, 110, 0, Math.PI * 2); g.stroke();
-    g.fillStyle = 'rgba(210,40,40,0.92)'; g.beginPath(); g.arc(128, 128, 96, 0, Math.PI * 2); g.fill();
-    g.fillStyle = '#fff'; g.font = 'bold 150px Arial Black, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('R', 128, 138);
-  });
-  const logo = new THREE.Mesh(new THREE.PlaneGeometry(15, 15),
-    new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, depthWrite: false }));
-  logo.rotation.x = -Math.PI / 2; logo.position.set(0, 0.04, 0); logo.userData.proc = true; fieldGroup.add(logo);
-  // End-zone wordmarks.
-  const word = (text, color) => canvasTex(1024, 256, (g, w, h) => {
-    g.clearRect(0, 0, w, h); g.fillStyle = color; g.font = 'bold 170px Arial Black, sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.lineWidth = 10; g.strokeStyle = 'rgba(0,0,0,0.35)';
-    g.strokeText(text, w / 2, h / 2 + 6); g.fillText(text, w / 2, h / 2 + 6);
-  });
-  for (const dir of [-1, 1]) {
-    const ezTex = word('REAPERS', dir > 0 ? '#ffe2e2' : '#e2ecff');
-    const ez = new THREE.Mesh(new THREE.PlaneGeometry(40, 10),
-      new THREE.MeshBasicMaterial({ map: ezTex, transparent: true, depthWrite: false }));
-    ez.rotation.x = -Math.PI / 2; ez.rotation.z = dir > 0 ? 0 : Math.PI; // read toward each goal
-    ez.position.set(0, 0.04, dir * (HALF_L - 5)); ez.userData.proc = true; fieldGroup.add(ez);
-  }
+  // Reapers crest: the real team logo, on the field center and in both end zones.
+  const reapersTex = new THREE.TextureLoader().load('assets/reapers.png');
+  reapersTex.colorSpace = THREE.SRGBColorSpace; reapersTex.anisotropy = 4;
+  const crest = (w, z, rz) => { // logo art is ~1.836:1 (alpha-trimmed crest)
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w / 1.836), new THREE.MeshBasicMaterial({ map: reapersTex, transparent: true, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2; m.rotation.z = rz; m.position.set(0, 0.05, z); m.userData.proc = true; fieldGroup.add(m); return m;
+  };
+  crest(24, 0, 0);                          // midfield crest (reads toward the main camera)
+  crest(17, HALF_L - 5, Math.PI);           // far end zone (reads toward its goal)
+  crest(17, -(HALF_L - 5), 0);              // near end zone
 }
 
 // --- Jumbotron: a hanging screen behind the blue end showing live score ---
@@ -573,8 +557,30 @@ function drawAdTurf(g, w, h) {
   g.font = 'bold 30px Arial, sans-serif'; g.fillStyle = '#dfffe9'; g.fillText('THE PROS PLAY ON', w / 2, 184);
   g.font = 'bold 24px Arial, sans-serif'; g.fillStyle = '#bff0d2'; g.fillText('REAPERS  STADIUM  TURF', w / 2, 222);
 }
+// Reapers crest board: the real team logo, contain-fit on a branded gradient.
+// Preloaded (guarded so the headless init harness, which has no Image, stays safe);
+// when it finishes loading we repaint the board if the crest is the live ad, so the
+// first time it cycles in isn't a blank gradient.
+let reapersLogoImg = null, reapersLogoOk = false;
+if (typeof Image !== 'undefined') {
+  reapersLogoImg = new Image();
+  reapersLogoImg.onload = () => {
+    reapersLogoOk = true;
+    if (jumboMode === 'ad' && JUMBO_ADS[jumboAdIdx] === drawAdReapersLogo) { drawAdReapersLogo(jumboCtx, 512, 256); jumboTex.needsUpdate = true; }
+  };
+  reapersLogoImg.src = 'assets/reapers.png';
+}
+function drawAdReapersLogo(g, w, h) {
+  adBG(g, w, h, '#3a0a12', '#0c0506');
+  if (reapersLogoOk) {
+    const r = Math.min((w * 0.9) / reapersLogoImg.width, (h * 0.86) / reapersLogoImg.height);
+    const dw = reapersLogoImg.width * r, dh = reapersLogoImg.height * r;
+    g.drawImage(reapersLogoImg, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+  return true;
+}
 // Real photo ads drop in here once their files exist, e.g. imageAd('assets/ad_blitzcola.jpg').
-const JUMBO_ADS = [drawAdBlitz, drawAdReaper, drawAdTurf];
+const JUMBO_ADS = [drawAdReapersLogo, drawAdBlitz, drawAdReaper, drawAdTurf];
 function tickJumbo(dt) {
   if (!jumboCtx) return;
   jumboT -= dt;
