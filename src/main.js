@@ -1915,7 +1915,7 @@ const TEAMS = {
     ],
   },
   away: {
-    name: 'DEMONS', abbr: 'DMN', color: '#2f6bd6', logo: null,
+    name: 'DEMONS', abbr: 'DMN', color: '#2f6bd6', logo: 'assets/demons.png',
     players: [
       { name: 'HEX', pos: 'QB', r: [72, 70, 82, 88, 50] },
       { name: 'BRUTE', pos: 'OL', r: [50, 96, 82, 38, 66] },
