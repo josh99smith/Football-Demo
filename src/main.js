@@ -4418,9 +4418,9 @@ function updateBattle(dt) {
   const drive = (b.val - 0.5) * 2.2;             // yards the carrier pushes the pile
   const c = game.carrier.group.position;
   c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
-  // Locked at arm's length: bodies ~one depth apart with both players' arms shot
-  // straight forward so their hands meet/push on each other (see applyBattleArms).
-  const half = 0.6 + wob;
+  // Locked CHEST TO CHEST: the tackler is driven right up onto the carrier (a real
+  // wrap-up, not a stand-off at arm's length) — see applyBattleArms / applyBattleLean.
+  const half = 0.4 + wob;
   const tk = b.tackler.group.position;
   tk.x = c.x + sa * half; tk.z = c.z + ca * half;
 
@@ -5162,9 +5162,10 @@ const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
 function applyBattleLean(ch, isTackler, w = 1) {
   const now = performance.now();
   const v = game.battle.val; // carrier's break meter (high = carrier winning)
-  // Whoever's winning leans IN; the loser gets stood up. Plus a strain shimmer
-  // and a little side-to-side sway so the lock isn't a frozen statue.
-  const push = isTackler ? (0.5 - v * 0.32) : (0.22 + v * 0.34);
+  // The tackler drives in LOW and bent (lower pad level wins); he buries in harder
+  // as he's winning the meter. The carrier drives forward through the hit. Plus a
+  // strain shimmer and a little side sway so the lock isn't a frozen statue.
+  const push = isTackler ? (0.62 + (1 - v) * 0.22) : (0.34 + v * 0.26);
   const lean = push + Math.sin(now * 0.013 + (isTackler ? 0 : 1.5)) * 0.05;
   const sway = Math.sin(now * 0.009 + (isTackler ? 1 : 0)) * 0.05;
   blendLean(ch, lean, sway, w);
@@ -5174,22 +5175,26 @@ function applyBattleArms(ch, isTackler, w = 1) {
   const t = performance.now() * 0.001;
   const pump = Math.sin(t * 9);
   if (isTackler) {
-    // Both arms shoot STRAIGHT forward (upper arm up, forearm extended) so the
-    // hands reach across and lock onto the carrier — pushing, not wrapping back.
-    // The pump shoves them in and out so it reads as a live struggle.
-    blendBone(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12), w);
-    blendBone(ch.foreArm, ch.foreArmRest, -(0.2 + pump * 0.1), w);
-    blendBone(ch.leftArm, ch.leftArmRest, -(1.5 - pump * 0.12), w);
-    blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.2 - pump * 0.1), w);
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.35 * w); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
+    // WRAP UP: upper arms come forward at chest level and the forearms curl in so
+    // the hands clamp around the carrier's back; head ducks down and turns to the
+    // side, buried into him. The pump churns the wrap so it reads as a live drive.
+    blendBone(ch.upperArm, ch.upperArmRest, -(1.15 + pump * 0.1), w);
+    blendBone(ch.foreArm, ch.foreArmRest, -(1.4 + pump * 0.15), w);   // curl to wrap
+    blendBone(ch.leftArm, ch.leftArmRest, -(1.15 - pump * 0.1), w);
+    blendBone(ch.leftForeArm, ch.leftForeArmRest, -(1.4 - pump * 0.15), w);
+    if (ch.headBone) {
+      _tq.setFromAxisAngle(_xAxisL, 0.55 * w); ch.headBone.quaternion.multiply(_tq); // head down into the hit
+      _tq.setFromAxisAngle(_YAX, 0.5 * w); ch.headBone.quaternion.multiply(_tq);      // turned to the side
+      ch.headBone.updateMatrixWorld(true);
+    }
   } else {
-    // Carrier shoves back: right arm extended into the tackler (hands lock), left
-    // tucks/cradles the ball low.
-    blendBone(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12), w);
-    blendBone(ch.foreArm, ch.foreArmRest, -(0.18 + pump * 0.1), w);   // straight push, locking hands
-    blendBone(ch.leftArm, ch.leftArmRest, -0.45, w);
-    blendBone(ch.leftForeArm, ch.leftForeArmRest, -1.6, w);           // tuck/cradle the ball
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.12 * w); ch.headBone.quaternion.multiply(_tq); } // chin up
+    // Carrier lowers his shoulder and braces THROUGH the hit: free arm punches into
+    // the tackler, off arm cradles the ball low and tight, head/chin tucked down.
+    blendBone(ch.upperArm, ch.upperArmRest, -(1.05 + pump * 0.12), w);
+    blendBone(ch.foreArm, ch.foreArmRest, -(0.6 + pump * 0.1), w);   // brace/push
+    blendBone(ch.leftArm, ch.leftArmRest, -0.5, w);
+    blendBone(ch.leftForeArm, ch.leftForeArmRest, -1.75, w);          // tuck/cradle the ball
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.28 * w); ch.headBone.quaternion.multiply(_tq); } // shoulder/head down, driving in
   }
 }
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
