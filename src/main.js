@@ -5745,11 +5745,17 @@ function driveSpecialCam(sp, dt) {
 // replay): only the wall the camera has crossed behind disappears; the rest stay.
 function updateWallVisibility() {
   const cp = camera.position;
+  // Gameplay chase cam: pre-hide a wall as it nears it (1.5yd inside) so it never
+  // clips through the shot. Cinematic cameras (replay orbit / finale) instead only
+  // cull a wall the camera is genuinely BEYOND, so a wide broadcast shot keeps the
+  // background walls it's merely close to (the old margin hid walls it shouldn't).
+  const cine = game.state === STATE.REPLAY || (game.finale && game.finale.active);
+  const m = cine ? -0.5 : 1.5; // outside = camera past (at - m)
   for (const o of camOccluders) {
     if (o.userData.cage) { o.visible = true; continue; } // the fence always shows
     const s = o.userData.cullSide, at = o.userData.cullAt;
-    const outside = (s === 'px' && cp.x > at - 1.5) || (s === 'nx' && cp.x < -at + 1.5) ||
-                    (s === 'pz' && cp.z > at - 1.5) || (s === 'nz' && cp.z < -at + 1.5);
+    const outside = (s === 'px' && cp.x > at - m) || (s === 'nx' && cp.x < -at + m) ||
+                    (s === 'pz' && cp.z > at - m) || (s === 'nz' && cp.z < -at + m);
     o.visible = !outside;
   }
 }
