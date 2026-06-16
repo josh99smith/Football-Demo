@@ -45,6 +45,7 @@ let adBoardTex = null;            // scrolling LED advert ring (animated each fr
 const crowdFlashes = [];          // pool of camera-flash sprites in the stands
 const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by the GLB towers once loaded)
 const towerGlows = [];            // additive bloom halos at the lamp banks (fake bloom + a slow flare twinkle)
+const towerSpots = [];            // the 4 corner floodlights (dimmed during the light show for a dark arena)
 let _glowTex = null;              // shared glow texture for the lamp bloom halos (lazily built)
 let towerTemplate = null, wallTemplate = null, cartTemplate = null; // imported stadium props
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
@@ -165,6 +166,7 @@ function makeAdTexture() {
     spot.position.set(g.position.x, 31, g.position.z);
     spot.target.position.set(g.position.x * 0.12, 0, g.position.z * 0.12);
     scene.add(spot, spot.target);
+    spot.userData.base = spot.intensity; towerSpots.push(spot); // dimmed during the light show
     // Fake bloom: a big soft halo + a tight bright core at the lamp bank. Lives
     // independent of the tower MESH so it survives the GLB swap. driveTowerGlows
     // gives it a slow lens-flare twinkle.
@@ -1420,9 +1422,11 @@ function fireworkBurst(x, y, z, col) {
 function launchShell(x, z) {
   fwShells.push({ x, y: 1.5, z, vy: 27 + Math.random() * 9, fuse: 0.9 + Math.random() * 0.5, trail: 0, col: FW_COLORS[(Math.random() * FW_COLORS.length) | 0] });
 }
+const SPOT_MAX = 20; // dramatic white field spotlights (light show / party)
 function applyArenaDim(dim) {           // dim the night lighting for the light show (0..1)
-  const k = 1 - dim * 0.9;
+  const k = 1 - dim * 0.97;            // full dim crushes the arena to ~3% — nearly black, not pure 0
   hemi.intensity = 0.6 * k; sun.intensity = 0.85 * k; rim.intensity = 0.35 * k;
+  for (const s of towerSpots) s.intensity = (s.userData.base || 1.6) * k; // kill the floodlights too, else the field stays lit
 }
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
@@ -1461,7 +1465,7 @@ function updateCelebFx(dt) {
     strobe.intensity = (Math.sin(t * 26) > 0 ? 1.9 : 0.25);
     for (let i = 0; i < sweepLights.length; i++) {
       const L = sweepLights[i]; L.color.setHSL((hue + i / sweepLights.length) % 1, 1, 0.6);
-      L.intensity = Math.min(L.intensity + dt * 8, 9);
+      L.intensity = Math.min(L.intensity + dt * 16, SPOT_MAX);
       const a = celebFx.t * 2.4 + i * 2.1;
       L.target.position.set(Math.cos(a) * 18, 0, celebFx.z * 0.3 + Math.sin(a) * 18); L.target.updateMatrixWorld();
     }
@@ -1478,7 +1482,7 @@ function updateCelebFx(dt) {
     celebFx.dim = Math.min(1, celebFx.dim + dt * 2.5); applyArenaDim(celebFx.dim);
     strobe.intensity = (Math.sin(t * 52) > 0 ? 2.4 : 0) * celebFx.dim; // red strobe (visibility managed by setCelebLights)
     for (let i = 0; i < sweepLights.length; i++) {
-      const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 8, 9);
+      const L = sweepLights[i]; L.intensity = Math.min(L.intensity + dt * 16, SPOT_MAX);
       const a = celebFx.t * 2.0 + i * 2.1;
       L.target.position.set(Math.cos(a) * 20, 0, celebFx.z * 0.3 + Math.sin(a) * 20); L.target.updateMatrixWorld();
     }
