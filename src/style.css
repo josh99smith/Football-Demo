@@ -638,7 +638,8 @@ body.replay-mode #build-badge { display: none !important; }
   min-width: 116px;
 }
 #ratecard.hidden { display: none; }
-#ratecard .rc-role { font-weight: 800; font-size: 13px; color: var(--accent); letter-spacing: 1px; margin-bottom: 3px; }
+#ratecard .rc-name { font-weight: 900; font-size: 14px; color: #fff; letter-spacing: 0.5px; line-height: 1.1; }
+#ratecard .rc-role { font-weight: 800; font-size: 11px; color: var(--accent); letter-spacing: 1px; margin-bottom: 3px; }
 #ratecard .rc-row { display: flex; align-items: center; gap: 6px; }
 #ratecard .rc-row span { width: 30px; opacity: 0.8; }
 #ratecard .rc-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.16); overflow: hidden; }
@@ -812,4 +813,47 @@ body.replay-mode #build-badge { display: none !important; }
   .ps-card { padding: 8px 10px; }
   .ps-card span { font-size: 10.5px; }
   #playselect { gap: 6px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+}
+
+/* ---------- Start menu (matchup + rosters) ---------- */
+#startmenu {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: clamp(10px, 2.4vh, 22px); padding: 4vh 4vw;
+  background: radial-gradient(circle at 50% 22%, #1a0a0e, #07080c 70%);
+  color: #eef2f7; overflow: auto;
+}
+#startmenu.hidden { display: none; }
+#startmenu .sm-title {
+  font-weight: 900; letter-spacing: 3px; font-size: clamp(20px, 4.4vw, 40px);
+  color: #fff; text-shadow: 0 0 18px rgba(214,40,40,0.55), 0 3px 10px rgba(0,0,0,0.6);
+}
+#startmenu .sm-matchup { display: flex; align-items: stretch; justify-content: center; gap: clamp(8px, 2vw, 24px); width: 100%; max-width: 880px; }
+#startmenu .sm-vs { align-self: center; font-weight: 900; font-size: clamp(16px, 3vw, 28px); opacity: 0.85; }
+#startmenu .sm-team {
+  flex: 1; min-width: 0; max-width: 380px;
+  background: rgba(10, 14, 20, 0.72); border: 2px solid var(--tc, #888);
+  border-radius: 14px; padding: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.5), inset 0 0 24px rgba(0,0,0,0.4);
+}
+#startmenu .sm-thead { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+#startmenu .sm-badge { width: 40px; height: 40px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
+#startmenu .sm-badgefill { border-radius: 8px; }
+#startmenu .sm-tname { font-weight: 900; font-size: clamp(16px, 3vw, 24px); letter-spacing: 1px; color: #fff; flex: 1; }
+#startmenu .sm-tsub { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; opacity: 0.6; }
+#startmenu .sm-roster { display: flex; flex-direction: column; gap: 3px; }
+#startmenu .sm-row { display: flex; align-items: center; gap: 8px; font-size: clamp(11px, 2vw, 14px); padding: 3px 4px; border-radius: 6px; }
+#startmenu .sm-row:nth-child(odd) { background: rgba(255,255,255,0.05); }
+#startmenu .sm-pos { width: 30px; font-weight: 800; color: var(--tc, #aaa); font-size: 11px; }
+#startmenu .sm-pname { flex: 1; font-weight: 700; letter-spacing: 0.5px; color: #eef2f7; }
+#startmenu .sm-ovr { width: 26px; text-align: right; font-style: normal; font-weight: 900; font-variant-numeric: tabular-nums; color: #ffd23a; }
+#startmenu .sm-start {
+  margin-top: 6px; padding: 14px 40px; border: none; border-radius: 999px; cursor: pointer;
+  font-weight: 900; letter-spacing: 1.5px; font-size: clamp(15px, 2.6vw, 20px);
+  color: #1a0608; background: linear-gradient(180deg, #ffd23a, #f0a020);
+  box-shadow: 0 6px 20px rgba(240,160,32,0.5), 0 0 0 2px rgba(255,255,255,0.15) inset;
+}
+#startmenu .sm-start:active { transform: translateY(1px); }
+@media (max-width: 560px) {
+  #startmenu .sm-matchup { gap: 6px; }
+  #startmenu .sm-team { padding: 8px; }
 }

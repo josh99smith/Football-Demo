@@ -1883,10 +1883,12 @@ const RATINGS = {
   DL: [64, 91, 82, 46, 86], LB: [82, 84, 84, 60, 90], CB: [91, 62, 80, 82, 78], S: [86, 74, 82, 76, 84],
 };
 function applyRatings(p) {
-  const base = RATINGS[p.role] || RATINGS.WR;
+  // A player's ratings are his own fixed roster numbers (persistent identity); the
+  // old per-role table + random jitter is only a fallback if a roster is missing.
+  const base = p.ratings || RATINGS[p.role] || RATINGS.WR;
   const r = {};
   for (let i = 0; i < RAT_KEYS.length; i++) {
-    const v = THREE.MathUtils.clamp(base[i] + (p.jitter ? p.jitter[i] : 0), 1, 99);
+    const v = THREE.MathUtils.clamp(base[i] + (p.ratings ? 0 : (p.jitter ? p.jitter[i] : 0)), 1, 99);
     r[RAT_KEYS[i]] = v / 99;     // normalized 0..1
     r[RAT_KEYS[i] + 'R'] = Math.round(v); // displayable 1..99
   }
@@ -1894,18 +1896,48 @@ function applyRatings(p) {
   p.baseSpeed = 6.6 + r.speed * 2.9;        // 6.6 .. 9.5 yd/s (toned-down global pace; rating spread kept)
   p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
 }
+const ovr = (rr) => Math.round(rr.reduce((a, b) => a + b, 0) / rr.length);
+// Persistent rosters: the same names, positions and ratings every game. teamA is
+// the HOME red REAPERS (the player), teamB the AWAY blue DEMONS (the CPU). Roster
+// order maps to the formation slots: [QB, OL, OL, WR, WR, WR, RB] on offense (and
+// DL/DL/LB/CB/CB/CB/S on defense). Ratings are [speed, strength, stamina, skill, tackle].
+const TEAMS = {
+  home: {
+    name: 'REAPERS', abbr: 'RPR', color: '#c81e2a', logo: 'assets/reapers.png',
+    players: [
+      { name: 'GRIM', pos: 'QB', r: [74, 66, 84, 92, 46] },
+      { name: 'BANE', pos: 'OL', r: [52, 95, 82, 40, 64] },
+      { name: 'TOMB', pos: 'OL', r: [56, 90, 82, 44, 60] },
+      { name: 'SHADE', pos: 'WR', r: [94, 58, 76, 88, 42] },
+      { name: 'ASH', pos: 'WR', r: [90, 62, 80, 84, 46] },
+      { name: 'RAVEN', pos: 'WR', r: [92, 60, 78, 90, 44] },
+      { name: 'CRYPT', pos: 'RB', r: [88, 82, 84, 82, 58] },
+    ],
+  },
+  away: {
+    name: 'DEMONS', abbr: 'DMN', color: '#2f6bd6', logo: null,
+    players: [
+      { name: 'HEX', pos: 'QB', r: [72, 70, 82, 88, 50] },
+      { name: 'BRUTE', pos: 'OL', r: [50, 96, 82, 38, 66] },
+      { name: 'GORE', pos: 'OL', r: [54, 92, 80, 42, 62] },
+      { name: 'BLAZE', pos: 'WR', r: [95, 56, 74, 86, 40] },
+      { name: 'FANG', pos: 'WR', r: [89, 64, 80, 82, 48] },
+      { name: 'VEX', pos: 'WR', r: [91, 60, 78, 88, 46] },
+      { name: 'DREAD', pos: 'RB', r: [86, 84, 84, 80, 60] },
+    ],
+  },
+};
 
 // Two fixed 7-man rosters: teamA = the player's red team, teamB = the CPU's
 // blue team. Each play, setupPossession() assigns offense/defense ROLES to
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
-  const pool = SURNAMES.slice().sort(() => Math.random() - 0.5); // unique surnames across both squads
+  const home = TEAMS.home.players, away = TEAMS.away.players;
   for (let i = 0; i < 7; i++) {
-    const jit = () => Array.from({ length: 5 }, () => Math.round((Math.random() - 0.5) * 10)); // ±5 per attr
-    const a = makeCharacter('off'); a.jitter = jit();
-    const b = makeCharacter('def'); b.jitter = jit();
-    a.surname = pool[i] || 'PLAYER'; b.surname = pool[i + 7] || 'PLAYER';
+    const a = makeCharacter('off'); const b = makeCharacter('def');
+    a.surname = home[i].name; a.ratings = home[i].r; a.pos = home[i].pos;
+    b.surname = away[i].name; b.ratings = away[i].r; b.pos = away[i].pos;
     a.nameTag = makeNameTag(a.surname); a.group.add(a.nameTag);
     b.nameTag = makeNameTag(b.surname); b.group.add(b.nameTag);
     game.teamA.push(a); game.teamB.push(b);
@@ -2702,11 +2734,12 @@ function updateRateCard() {
   const c = game.controlled;
   if (!c || !c.rt) { if (elRateCard) elRateCard.classList.add('hidden'); rcLast = ''; return; }
   const vals = RAT_KEYS.map((k) => c.rt[k + 'R']);
-  const key = c.role + vals.join(',');
+  const key = (c.surname || '') + c.role + vals.join(',');
   if (key === rcLast) return; rcLast = key;
   let rows = '';
   for (let i = 0; i < RAT_KEYS.length; i++) rows += `<div class="rc-row"><span>${RC_LABELS[i]}</span><div class="rc-bar"><i style="width:${vals[i]}%"></i></div><b>${vals[i]}</b></div>`;
-  elRateCard.innerHTML = `<div class="rc-role">${c.role}</div>${rows}`;
+  const nm = c.surname ? `<div class="rc-name">${c.surname}</div>` : '';
+  elRateCard.innerHTML = `${nm}<div class="rc-role">${c.pos || c.role} · OVR ${ovr(vals)}</div>${rows}`;
   elRateCard.classList.remove('hidden');
 }
 const ordinal = (n) => ['1st', '2nd', '3rd', '4th'][n - 1] || n + 'th';
@@ -6076,14 +6109,46 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ---- Start menu: the matchup + both rosters, gates the kickoff ----------------
+const startMenuEl = document.getElementById('startmenu');
+function rosterCardHTML(side) {
+  const t = TEAMS[side];
+  let rows = '';
+  for (const p of t.players) rows += `<div class="sm-row"><b class="sm-pos">${p.pos}</b><span class="sm-pname">${p.name}</span><i class="sm-ovr">${ovr(p.r)}</i></div>`;
+  const badge = t.logo ? `<img class="sm-badge" src="${t.logo}" alt="" />` : `<div class="sm-badge sm-badgefill" style="background:${t.color}"></div>`;
+  return `<div class="sm-team" style="--tc:${t.color}">
+    <div class="sm-thead">${badge}<div class="sm-tname">${t.name}</div><div class="sm-tsub">${side === 'home' ? 'HOME' : 'AWAY'}</div></div>
+    <div class="sm-roster">${rows}</div></div>`;
+}
+function buildStartMenu() {
+  if (!startMenuEl) return;
+  startMenuEl.innerHTML = `
+    <div class="sm-title">REAPERS FOOTBALL</div>
+    <div class="sm-matchup">${rosterCardHTML('home')}<span class="sm-vs">VS</span>${rosterCardHTML('away')}</div>
+    <button id="sm-start" class="sm-start">START&nbsp;GAME&nbsp;▸</button>`;
+  const btn = document.getElementById('sm-start');
+  if (btn) btn.addEventListener('click', startGame, { once: true });
+}
+let gameStarted = false;
+function startGame() {
+  if (gameStarted) return; gameStarted = true;
+  audio.unlock();
+  if (startMenuEl) startMenuEl.classList.add('hidden');
+  // Label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff).
+  const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
+  if (tagOff) tagOff.textContent = TEAMS.home.abbr;
+  if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+  newPlay();
+  animate();
+}
 loadAssets().then(() => {
   spawnTeams(); spawnBench(); makeBall();
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
-  newPlay();
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
-  animate();
+  buildStartMenu();
+  if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame(); // menu gates the kickoff
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
 
 
