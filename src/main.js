@@ -47,7 +47,8 @@ const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by
 const towerGlows = [];            // additive bloom halos at the lamp banks (fake bloom + a slow flare twinkle)
 const towerSpots = [];            // the 4 corner floodlights (dimmed during the light show for a dark arena)
 let _glowTex = null;              // shared glow texture for the lamp bloom halos (lazily built)
-let towerTemplate = null, wallTemplate = null, cartTemplate = null; // imported stadium props
+let towerTemplate = null, wallTemplate = null, cartTemplate = null, goalpostTemplate = null; // imported stadium props
+const procGoalposts = []; // the procedural goalposts (swapped for the GLB once it loads)
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
 // one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
 const camOccluders = []; // each: mesh with userData {cullSide:'px'|'nx'|'pz'|'nz', cullAt:number}
@@ -223,6 +224,20 @@ function placeStadiumProps() {
       scene.add(c);
     }
   }
+  // Goalposts: swap the procedural posts for the imported model, scaled to ~11yd
+  // tall, standing on each end line and facing the field.
+  if (goalpostTemplate) {
+    for (const p of procGoalposts) if (p.parent) p.parent.remove(p);
+    const f = boxOf(goalpostTemplate), S = 11 / f.size.y;
+    for (const z of [HALF_L - 0.6, -(HALF_L - 0.6)]) {
+      const g = goalpostTemplate.clone(true);
+      g.scale.setScalar(S);
+      g.position.set(0, -f.min.y * S, z);
+      g.rotation.y = z > 0 ? Math.PI : 0; // face inward toward the field
+      g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = true; } });
+      scene.add(g);
+    }
+  }
 }
 
 const hemi = new THREE.HemisphereLight(0x44588f, 0x0c1208, 0.6); // cool night ambient
@@ -296,7 +311,9 @@ function buildField() {
   for (let y = -GOAL_Z + 1; y < GOAL_Z; y += 1)
     for (const hx of [-6, 6]) line(0.9, 0.18, hx, y);
   // Goalposts stand on the END LINE (back of each end zone), just inside the cage.
-  field.add(goalPost(HALF_L - 0.6), goalPost(-(HALF_L - 0.6)));
+  // Procedural by default; swapped for the GLB model in placeStadiumProps.
+  const gp1 = goalPost(HALF_L - 0.6), gp2 = goalPost(-(HALF_L - 0.6));
+  procGoalposts.push(gp1, gp2); field.add(gp1, gp2);
   return field;
 }
 function goalPost(z) {
@@ -1088,6 +1105,7 @@ async function loadAssets() {
   try { towerTemplate = (await loadGLB('assets/lighttower.glb')).scene; } catch (e) { console.warn('light tower missing', e); }
   try { wallTemplate = (await loadGLB('assets/wall.glb')).scene; } catch (e) { console.warn('wall missing', e); }
   try { cartTemplate = (await loadGLB('assets/cart.glb')).scene; } catch (e) { console.warn('cart missing', e); }
+  try { goalpostTemplate = (await loadGLB('assets/goalpost.glb')).scene; } catch (e) { console.warn('goalpost missing', e); }
   placeStadiumProps();
   // The new merged Meshy pack (idle/walk variety, celebrations, parkour, scoop,
   // diving catch). Stripped to animation-only; same rig, so it drives our model
