@@ -2454,34 +2454,43 @@ function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
 // ===========================================================================
 const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false };
 
+// Floating joystick: it spawns under your thumb wherever you first touch the LEFT
+// half of the screen (so you never have to find a fixed pad), and tracks from
+// there. Touches on the right (the buttons) and on any UI control are ignored.
 (function joystick() {
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
-  const maxR = 48; let id = null, cx = 0, cy = 0;
-  const start = (e) => {
-    audio.unlock();
-    const t = e.changedTouches ? e.changedTouches[0] : e;
-    const r = base.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2;
-    id = e.changedTouches ? t.identifier : 'mouse'; move(e);
-  };
-  const move = (e) => {
-    if (id === null) return;
-    let t;
-    if (e.changedTouches) { t = [...e.changedTouches].find((c) => c.identifier === id); if (!t) return; }
-    else t = e;
-    let dx = t.clientX - cx, dy = t.clientY - cy; const d = Math.hypot(dx, dy);
+  const maxR = 50; let id = null, cx = 0, cy = 0;
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge';
+  const onLeft = (x, target) => x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
+  const track = (clientX, clientY) => {
+    let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
     if (d > maxR) { dx = dx / d * maxR; dy = dy / d * maxR; }
     knob.style.transform = `translate(${dx}px,${dy}px)`;
     input.x = dx / maxR; input.y = -dy / maxR;
   };
-  const end = () => { id = null; input.x = 0; input.y = 0; knob.style.transform = 'translate(0,0)'; };
-  base.addEventListener('touchstart', (e) => { e.preventDefault(); start(e); }, { passive: false });
-  base.addEventListener('touchmove', (e) => { e.preventDefault(); move(e); }, { passive: false });
-  base.addEventListener('touchend', (e) => { e.preventDefault(); end(e); }, { passive: false });
-  base.addEventListener('touchcancel', end);
-  base.addEventListener('mousedown', start);
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', end);
+  const start = (clientX, clientY, ident) => {
+    cx = clientX; cy = clientY; id = ident;
+    base.style.left = clientX + 'px'; base.style.top = clientY + 'px'; base.classList.add('active');
+    knob.style.transform = 'translate(0,0)'; input.x = 0; input.y = 0;
+  };
+  const end = () => { id = null; input.x = 0; input.y = 0; knob.style.transform = 'translate(0,0)'; base.classList.remove('active'); };
+  window.addEventListener('touchstart', (e) => {
+    if (id !== null) return; // already steering with one finger
+    const t = e.changedTouches[0]; if (!t || !onLeft(t.clientX, e.target)) return;
+    e.preventDefault(); audio.unlock(); start(t.clientX, t.clientY, t.identifier);
+  }, { passive: false });
+  window.addEventListener('touchmove', (e) => {
+    if (id === null) return;
+    const t = [...e.changedTouches].find((c) => c.identifier === id); if (!t) return;
+    e.preventDefault(); track(t.clientX, t.clientY);
+  }, { passive: false });
+  const tend = (e) => { if (id === null) return; if (![...e.changedTouches].some((c) => c.identifier === id)) return; e.preventDefault(); end(); };
+  window.addEventListener('touchend', tend, { passive: false });
+  window.addEventListener('touchcancel', tend);
+  window.addEventListener('mousedown', (e) => { if (id !== null || !onLeft(e.clientX, e.target)) return; audio.unlock(); start(e.clientX, e.clientY, 'mouse'); });
+  window.addEventListener('mousemove', (e) => { if (id === 'mouse') track(e.clientX, e.clientY); });
+  window.addEventListener('mouseup', () => { if (id === 'mouse') end(); });
 })();
 
 const actionBtn = document.getElementById('action-btn');

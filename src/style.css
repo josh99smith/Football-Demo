@@ -236,8 +236,7 @@ html, body {
 /* ---------- Joystick ---------- */
 .joystick {
   position: fixed;
-  left: max(28px, env(safe-area-inset-left));
-  bottom: max(34px, env(safe-area-inset-bottom));
+  left: 0; top: 0; /* JS positions it under the thumb */
   width: 140px; height: 140px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.08);
@@ -245,7 +244,11 @@ html, body {
   backdrop-filter: blur(4px);
   z-index: 20;
   touch-action: none;
+  transform: translate(-50%, -50%); /* center the pad on the touch point */
+  opacity: 0; pointer-events: none; /* floating: shown only while steering */
+  transition: opacity 0.12s ease;
 }
+.joystick.active { opacity: 1; }
 .joystick-knob {
   position: absolute;
   left: 50%; top: 50%;
@@ -805,7 +808,7 @@ body.replay-mode #build-badge { display: none !important; }
 }
 /* Tight landscape (short phones): pull controls in and trim chrome. */
 @media (orientation: landscape) and (max-height: 430px) {
-  .joystick { width: 116px; height: 116px; bottom: max(16px, env(safe-area-inset-bottom)); }
+  .joystick { width: 116px; height: 116px; }
   .joystick-knob { width: 52px; height: 52px; margin: -26px 0 0 -26px; }
   .action-btn { width: 84px; height: 84px; bottom: max(22px, env(safe-area-inset-bottom)); }
   .mini-btn.turbo { bottom: max(20px, calc(env(safe-area-inset-bottom) + 4px)); }
