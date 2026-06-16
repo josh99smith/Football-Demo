@@ -765,7 +765,7 @@ function burst(x, y, z, color, n = 14, speed = 7) {
 }
 // Over-the-top gore: a red geyser of droplets from the neck when the lid pops
 // off on a violent hit (Blitz: The League style). Strong upward gush + spread.
-const BLOOD_COLS = [0xd60a18, 0xb00410, 0xe8202c];
+const BLOOD_COLS = [0x8e0712, 0x6a040d, 0xa50f1a]; // darker, deeper crimson droplets
 function bloodSpray(x, y, z, n = 40) {
   let spawned = 0;
   for (const p of hitParticles) {
@@ -792,6 +792,7 @@ function bloodSpray(x, y, z, n = 40) {
     const r = 2 + Math.random() * 8;          // out to ~10yd
     addBloodStain(x + (Math.random() - 0.5) * r * 2, z + (Math.random() - 0.5) * r * 2);
   }
+  addFenceBlood(x, y, z); // splatter the nearest fence too (if close enough)
 }
 // Persistent blood stains on the grass — flat splat decals that accumulate and
 // stay until the quarter ends (clearBloodStains in advanceQuarter).
@@ -799,15 +800,21 @@ function makeBloodTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const g = c.getContext('2d'); g.clearRect(0, 0, 128, 128);
   const cx = 64, cy = 64;
-  for (let i = 0; i < 7; i++) { // overlapping central lobes
-    const a = Math.random() * Math.PI * 2, r = Math.random() * 20;
-    g.fillStyle = `rgba(${96 + Math.random() * 50 | 0},${6 + Math.random() * 12 | 0},${8 + Math.random() * 10 | 0},0.9)`;
-    g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 13 + Math.random() * 15, 0, Math.PI * 2); g.fill();
+  // Central pool: each lobe is radially SHADED (rich dark core -> deep red ->
+  // soft dark rim) so the splat reads with depth instead of a flat blob.
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.random() * 20, R = 13 + Math.random() * 16;
+    const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
+    const grd = g.createRadialGradient(px, py, 1, px, py, R);
+    grd.addColorStop(0, `rgba(${72 + Math.random() * 28 | 0},${4 + Math.random() * 7 | 0},${6 + Math.random() * 7 | 0},0.96)`);
+    grd.addColorStop(0.7, `rgba(${46 + Math.random() * 22 | 0},${2 + Math.random() * 5 | 0},${4 + Math.random() * 5 | 0},0.86)`);
+    grd.addColorStop(1, 'rgba(24,0,2,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(px, py, R, 0, Math.PI * 2); g.fill();
   }
-  for (let i = 0; i < 24; i++) { // scattered droplets/splatter
+  for (let i = 0; i < 26; i++) { // scattered droplets/splatter (darker)
     const a = Math.random() * Math.PI * 2, r = 22 + Math.random() * 38;
-    g.fillStyle = `rgba(${110 + Math.random() * 50 | 0},${6 + Math.random() * 14 | 0},${10 + Math.random() * 12 | 0},${0.55 + Math.random() * 0.4})`;
-    g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.5 + Math.random() * 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = `rgba(${56 + Math.random() * 40 | 0},${3 + Math.random() * 8 | 0},${5 + Math.random() * 8 | 0},${0.5 + Math.random() * 0.4})`;
+    g.beginPath(); g.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.2 + Math.random() * 5.5, 0, Math.PI * 2); g.fill();
   }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
@@ -830,7 +837,74 @@ function addBloodStain(x, z) {
   const s = 1.3 + Math.random() * 3.0; m.scale.set(s, s, 1);    // wider size variety
   m.material.opacity = 0.75 + Math.random() * 0.2; m.visible = true;
 }
-function clearBloodStains() { for (const m of bloodStains) { m.visible = false; m.material.opacity = 0; } }
+// --- Blood on the chain-link FENCE: vertical splats that run a little down the
+// wire (a slight settle/slide) and stay until the quarter clears. ---
+function makeDripTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 128;
+  const g = c.getContext('2d'); g.clearRect(0, 0, 64, 128);
+  // Top splat blob (shaded).
+  const grd = g.createRadialGradient(32, 30, 1, 32, 30, 26);
+  grd.addColorStop(0, 'rgba(78,5,8,0.95)'); grd.addColorStop(0.65, 'rgba(50,3,5,0.85)'); grd.addColorStop(1, 'rgba(24,0,2,0)');
+  g.fillStyle = grd; g.beginPath(); g.arc(32, 30, 26, 0, Math.PI * 2); g.fill();
+  // A few runs dripping straight down, each tapering + a bead at the tip.
+  for (let i = 0; i < 4; i++) {
+    const x = 18 + Math.random() * 28, w = 2 + Math.random() * 4, len = 34 + Math.random() * 70;
+    const lg = g.createLinearGradient(0, 26, 0, 26 + len);
+    lg.addColorStop(0, 'rgba(62,4,6,0.85)'); lg.addColorStop(1, 'rgba(38,2,4,0)');
+    g.fillStyle = lg; g.fillRect(x - w / 2, 26, w, len);
+    g.fillStyle = 'rgba(56,3,6,0.7)'; g.beginPath(); g.arc(x, 26 + len, w * 0.9, 0, Math.PI * 2); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const fenceBlood = [];
+const dripTextures = [];
+let fenceBloodI = 0;
+(function initFenceBlood() {
+  for (let i = 0; i < 3; i++) dripTextures.push(makeDripTexture());
+  for (let i = 0; i < 48; i++) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ map: dripTextures[0], transparent: true, depthWrite: false, opacity: 0, side: THREE.DoubleSide }));
+    m.visible = false; m.renderOrder = 2; scene.add(m); fenceBlood.push(m);
+  }
+})();
+// Splat blood onto the nearest fence panel (if the spray is near enough to reach
+// it), at the spray height, oriented to face the field. Each splat then slides
+// down a touch and settles.
+function addFenceBlood(x, y, z) {
+  const dpx = CAGE_X - x, dnx = x + CAGE_X, dpz = CAGE_Z - z, dnz = z + CAGE_Z;
+  const near = Math.min(dpx, dnx, dpz, dnz);
+  if (near > 16) return; // too far from any fence to splatter it
+  let wx, wz, ry, axis; // axis = which way the splat spreads ALONG the wall
+  if (near === dpx) { wx = CAGE_X - 0.06; wz = z; ry = -Math.PI / 2; axis = 'z'; }
+  else if (near === dnx) { wx = -CAGE_X + 0.06; wz = z; ry = Math.PI / 2; axis = 'z'; }
+  else if (near === dpz) { wx = x; wz = CAGE_Z - 0.06; ry = Math.PI; axis = 'x'; }
+  else { wx = x; wz = -CAGE_Z + 0.06; ry = 0; axis = 'x'; }
+  const n = 2 + (Math.random() * 3 | 0);
+  for (let i = 0; i < n; i++) {
+    const m = fenceBlood[fenceBloodI++ % fenceBlood.length];
+    m.material.map = dripTextures[(Math.random() * dripTextures.length) | 0]; m.material.needsUpdate = true;
+    const along = (Math.random() - 0.5) * 6;
+    const hy = THREE.MathUtils.clamp(y + (Math.random() - 0.25) * 2.6, 0.7, 6.5);
+    if (axis === 'z') m.position.set(wx, hy, THREE.MathUtils.clamp(wz + along, -CAGE_Z + 1, CAGE_Z - 1));
+    else m.position.set(THREE.MathUtils.clamp(wx + along, -CAGE_X + 1, CAGE_X - 1), hy, wz);
+    m.rotation.set(0, ry, 0);
+    const w = 0.8 + Math.random() * 1.4; m.scale.set(w, w * (1.5 + Math.random() * 0.8), 1);
+    m.material.opacity = 0.7 + Math.random() * 0.25; m.visible = true;
+    m.userData.vy = 0.5 + Math.random() * 1.0; m.userData.rest = Math.max(0.4, hy - (0.5 + Math.random() * 0.8));
+  }
+}
+function updateFenceBlood(dt) {
+  for (const m of fenceBlood) {
+    const u = m.userData;
+    if (!m.visible || !u || !u.vy) continue;
+    m.position.y -= u.vy * dt; u.vy *= Math.pow(0.12, dt); // slide down, decelerating into a settle
+    if (m.position.y <= u.rest || u.vy < 0.03) { m.position.y = Math.max(u.rest, m.position.y); u.vy = 0; }
+  }
+}
+function clearBloodStains() {
+  for (const m of bloodStains) { m.visible = false; m.material.opacity = 0; }
+  for (const m of fenceBlood) { m.visible = false; m.material.opacity = 0; if (m.userData) m.userData.vy = 0; }
+}
 // Touchdown confetti: a full-pool, multi-color shower that rains down.
 function confetti(z, atX) {
   const x = Number.isFinite(atX) ? atX : (game.carrier ? game.carrier.group.position.x : 0);
@@ -5369,36 +5443,23 @@ function driveSpecialCam(sp, dt) {
   sun.position.set(o.x + 40, 70, o.z + 20); sun.target.position.set(o.x, 0, o.z);
 }
 
-// ONLY during a REPLAY, hide a cage panel / perimeter wall that's actually
-// blocking the camera's view of the players — i.e. the camera is behind it on
-// that side AND it's in front of the camera (along the look direction). During
-// live gameplay the walls always stay solid.
-const _occF = new THREE.Vector3(), _occP = new THREE.Vector3();
-let _occHidden = false; // are any occluders currently hidden? (so we restore once)
-function cullOccluders() {
-  // During a REPLAY, any wall/cage panel the camera is behind may block the shot.
-  // During LIVE play, only the chain-link CAGE panels cull (so backing up to your
-  // own end zone doesn't shoot the play through the fence) — the graffiti walls
-  // stay put. A panel hides only when the camera is OUTSIDE it AND it's in the
-  // view direction (genuinely between the camera and the field).
-  const replay = game.state === STATE.REPLAY;
+// Hide a perimeter WALL whenever the camera is on its OUTSIDE (the far side from
+// the field), so a wall can never block the view of the players. The chain-link
+// FENCE/cage is never hidden — we always see it. This runs every frame (live and
+// replay): only the wall the camera has crossed behind disappears; the rest stay.
+function updateWallVisibility() {
   const cp = camera.position;
-  camera.getWorldDirection(_occF); // camera forward
-  _occHidden = false;
   for (const o of camOccluders) {
-    if (!replay && !o.userData.cage) { o.visible = true; continue; } // walls only cull in replay
+    if (o.userData.cage) { o.visible = true; continue; } // the fence always shows
     const s = o.userData.cullSide, at = o.userData.cullAt;
-    const behind = (s === 'px' && cp.x > at - 1) || (s === 'nx' && cp.x < -at + 1) ||
-                   (s === 'pz' && cp.z > at - 1) || (s === 'nz' && cp.z < -at + 1);
-    let hide = false;
-    if (behind) { o.getWorldPosition(_occP); hide = _occP.sub(cp).dot(_occF) > 0; } // in front of the camera = blocking the view
-    o.visible = !hide;
-    if (hide) _occHidden = true;
+    const outside = (s === 'px' && cp.x > at - 1.5) || (s === 'nx' && cp.x < -at + 1.5) ||
+                    (s === 'pz' && cp.z > at - 1.5) || (s === 'nz' && cp.z < -at + 1.5);
+    o.visible = !outside;
   }
 }
 
 function updateCamera(dt) {
-  cullOccluders(); // hide any wall the camera is behind (uses last frame's position)
+  updateWallVisibility(); // hide only the wall the camera has moved outside of (fence stays)
   if (game.state === STATE.REPLAY) {
     // Cinematic broadcast shot: the current preset angle, slowly orbiting the
     // ball. On an angle cut (r.snap, set while the screen is black) we jump the
@@ -5548,6 +5609,7 @@ function animate() {
   updateCut(realDt); // broadcast dip between plays (runs the reset at the dark peak)
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
+  updateFenceBlood(realDt); // blood runs down the fence (real-time, ignores slow-mo)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
