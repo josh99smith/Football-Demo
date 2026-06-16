@@ -2238,13 +2238,15 @@ function updateBlocks(dt) {
     d.engageT -= dt;
     const shedRoll = 0.25 * dt * (0.4 + (d.rt ? d.rt.tackle : 0.6));
     if (d.engageT <= 0 || Math.random() < shedRoll) { endEngage(o, d, true); continue; }
-    // Locked: press the two together at the contact point, face each other, churn
-    // in place (a slow wobble) — both play the shove pose; the rusher is stuck.
+    // Locked: press the two CHEST TO CHEST so their hands/helmets meet (not standing
+    // apart with arms in the air), face each other, churn in place (a slow wobble) —
+    // both play the shove pose; the rusher is stuck. (Locked pairs are skipped by
+    // the body-separation pass, so they're allowed to overlap into real contact.)
     const op = o.group.position, dp = d.group.position;
     let ax = dp.x - op.x, az = dp.z - op.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
     const mx = (op.x + dp.x) / 2, mz = (op.z + dp.z) / 2;
-    const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.05;
-    const half = 0.45 + wob;
+    const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.04;
+    const half = 0.32 + wob; // ~0.64yd apart: arms extended forward, hands lock in the middle
     op.x = mx - ax * half; op.z = mz - az * half;
     dp.x = mx + ax * half; dp.z = mz + az * half;
     o.heading = Math.atan2(ax, az); d.heading = Math.atan2(-ax, -az);
@@ -5278,17 +5280,18 @@ function applyBattleArms(ch, isTackler, w = 1) {
     if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.28 * w); ch.headBone.quaternion.multiply(_tq); } // shoulder/head down, driving in
   }
 }
-// Engaged BLOCK pose: a blocker locked onto a defender punches both hands into
-// him at chest level and leans into the shove, with a churning pump so it reads
-// as a sustained, live block (legs come from the run clip underneath).
+// Engaged BLOCK pose: locked hand-to-hand. Both arms extend forward at chest level
+// so the hands meet/lock with the opponent's (the two are pressed chest to chest by
+// updateBlocks), and he leans into the shove, with a churning pump so it reads as a
+// sustained, live block (legs come from the run clip underneath).
 function applyBlockPose(ch, w = 1) {
   if (!ch.upperArm || !ch.upperArmRest) return;
   const pump = Math.sin(performance.now() * 0.012);
-  blendBone(ch.upperArm, ch.upperArmRest, -(1.2 + pump * 0.14), w);     // hands punch out
-  blendBone(ch.foreArm, ch.foreArmRest, -(0.45 + pump * 0.12), w);      // arms nearly extended (shove, not wrap)
-  blendBone(ch.leftArm, ch.leftArmRest, -(1.2 - pump * 0.14), w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.45 - pump * 0.12), w);
-  blendLean(ch, 0.34 + pump * 0.04, 0, w);                              // drive into the block
+  blendBone(ch.upperArm, ch.upperArmRest, -(1.42 + pump * 0.12), w);    // upper arms up to horizontal, reaching forward
+  blendBone(ch.foreArm, ch.foreArmRest, -(0.28 + pump * 0.12), w);      // forearms nearly straight -> hands punch out to lock
+  blendBone(ch.leftArm, ch.leftArmRest, -(1.42 - pump * 0.12), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.28 - pump * 0.12), w);
+  blendLean(ch, 0.32 + pump * 0.04, 0, w);                              // drive into the block
 }
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
 // slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
