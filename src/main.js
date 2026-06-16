@@ -2710,6 +2710,7 @@ function popHelmet(ch, hx, hz, power) {
   // the same frame. (Not while a replay is itself re-firing the pop.)
   if (game.state !== STATE.REPLAY) {
     const ev = game.replay.evPool.pop() || {};
+    ev.type = 'helmet'; // pooled events can be stale 'tear' — always set the type
     ev.fi = game.replay.frames.length; ev.pIdx = game.all.indexOf(ch);
     ev.hx = hx; ev.hz = hz; ev.power = power || 70; ev.fired = false;
     game.replay.events.push(ev);
