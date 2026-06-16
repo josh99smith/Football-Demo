@@ -2051,6 +2051,12 @@ const TURBO_MULT = 1.28; // turbo burst (toned down so open-field runs are catch
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
 const FAT_MIN = 0.45;
 const fatigueSpeed = (ch) => 0.7 + 0.3 * THREE.MathUtils.clamp((ch.fatigue - FAT_MIN) / (1 - FAT_MIN), 0, 1); // 0.7 (gassed) .. 1.0 (fresh)
+// Power falloff with fatigue: a gassed player hits / wraps / sheds / blocks weaker.
+const fatiguePow = (ch) => 0.6 + 0.4 * THREE.MathUtils.clamp((ch.fatigue - FAT_MIN) / (1 - FAT_MIN), 0, 1); // 0.6 .. 1.0
+// Contact is tiring: tackling, getting hit, wrestling a block all drain the tank
+// (floored at FAT_MIN). The more contact + running a player does, the more he wears
+// down over the drive (only partly recovered between plays — see preparePlay).
+const drainFatigue = (ch, amt) => { if (ch) ch.fatigue = Math.max(FAT_MIN, ch.fatigue - amt); };
 function updateFatigue(ch, dt) {
   const stam = ch.rt ? ch.rt.stamina : 0.7;          // 0..1
   const exert = ch.speed / (ch.baseSpeed || 8);      // fraction of base top speed (turbo pushes >1)
@@ -2240,8 +2246,8 @@ function assignBlocks(blockForCarrier) {
 const ENGAGE_R = 1.5, SHED_BURST = 5.5;
 function startEngage(o, d) {
   o.engaging = d; d.blockedBy = o;
-  const bp = 0.55 + (o.rt ? o.rt.strength : 0.6);   // blocker drive power
-  const dp = 0.5 + (d.rt ? (d.rt.tackle + d.rt.strength) * 0.5 : 0.6); // rusher shed power
+  const bp = (0.55 + (o.rt ? o.rt.strength : 0.6)) * fatiguePow(o);   // blocker drive (weaker when gassed)
+  const dp = (0.5 + (d.rt ? (d.rt.tackle + d.rt.strength) * 0.5 : 0.6)) * fatiguePow(d); // rusher shed (a tired rusher gets stuck longer)
   d.engageT = THREE.MathUtils.clamp(1.3 * bp / dp, 0.5, 3.2) * (0.7 + Math.random() * 0.7);
 }
 function endEngage(o, d, shed) {
@@ -2252,6 +2258,7 @@ function endEngage(o, d, shed) {
     const c = game.carrier || game.qb;
     if (c) { const dx = c.group.position.x - d.group.position.x, dz = c.group.position.z - d.group.position.z, l = Math.hypot(dx, dz) || 1; d.vel.x += dx / l * SHED_BURST; d.vel.z += dz / l * SHED_BURST; }
     triggerArmAction(d, 'swat', 0.35); // a rip/swim move as he sheds
+    drainFatigue(d, 0.05); // ripping free takes a burst of energy
   }
 }
 function updateBlocks(dt) {
@@ -2284,6 +2291,7 @@ function updateBlocks(dt) {
     o.heading = Math.atan2(ax, az); d.heading = Math.atan2(-ax, -az);
     o.vel.set(0, 0, 0); d.vel.set(0, 0, 0); o.speed = 0; d.speed = 0;
     o.blocking = true; d.blocking = true; d.engaged = true; d.pursuit = false;
+    drainFatigue(o, 0.05 * dt); drainFatigue(d, 0.05 * dt); // wrestling the block tires both
   }
 }
 function clearEngagements() {
@@ -2928,7 +2936,8 @@ function showBanner(text, color = '#ffd23a', opts = {}) {
 // the gang size and turbo — flashed under the badge on a notable hit.
 function hitPower(lead, closing, gangSize = 1, big = false) {
   const tkl = lead && lead.rt ? lead.rt.tackle : 0.7;
-  const p = 48 + closing * 2.8 + tkl * 18 + (gangSize - 1) * 5 + (big ? 8 : 0) + (lead && lead.turbo ? 4 : 0);
+  const fp = lead ? fatiguePow(lead) : 1; // a gassed tackler hits softer
+  const p = 48 + closing * 2.8 + tkl * 18 * fp + (gangSize - 1) * 5 + (big ? 8 : 0) + (lead && lead.turbo ? 4 : 0);
   return THREE.MathUtils.clamp(Math.round(p), 55, 99);
 }
 const impactEl = document.getElementById('impact');
@@ -3213,7 +3222,11 @@ function groundPlayers() {
     restoreHelmet(ch); // snap a popped-off helmet back onto the head
     restoreTear(ch);   // un-split a torn-in-half body
     restoreRestPose(ch); // clean skeleton each play (no bone-position drift from ragdolls/replay)
-    ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0; ch.fatigue = 1; // fresh legs each play
+    ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0;
+    // Rest between plays restores only PART of the tank (more with stamina), so a
+    // heavily-used player stays worn down over a drive instead of resetting fresh.
+    if (ch.fatigue == null) ch.fatigue = 1;
+    ch.fatigue = Math.min(1, ch.fatigue + 0.2 + (ch.rt ? ch.rt.stamina : 0.7) * 0.22);
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
     if (!Number.isFinite(p.z)) p.z = Number.isFinite(h.z) ? h.z : 0;
@@ -4459,7 +4472,7 @@ function tryBreak(carrier, pile) {
   let p = input.turbo ? 0.52 : 0.34;
   const power = carrier.strength * carrier.fatigue * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1); // a gassed runner trucks fewer tacklers
   let gangStr = 0;
-  for (const t of pile) gangStr += 0.5 + (t.rt ? t.rt.tackle : 0.6); // wrap-up scales with TACKLING
+  for (const t of pile) gangStr += (0.5 + (t.rt ? t.rt.tackle : 0.6)) * fatiguePow(t); // wrap-up scales with TACKLING + freshness
   p *= THREE.MathUtils.clamp(power / (gangStr * 0.95), 0.3, 1.25);
   if (pile.length >= 2) p *= 0.45; // a gang is hard to slip
   if (pile.length >= 3) p *= 0.5;
@@ -4532,9 +4545,12 @@ function updateBattle(dt) {
   // Each ACTION press is a mash; the CPU steadily drags it toward the tackle,
   // harder when the tackler is the stronger man.
   if (input.battleMash > 0) { b.val += input.battleMash * BATTLE_TAP; b.flash = 1; input.battleMash = 0; }
-  // A strong TACKLER drags the meter down faster; a strong carrier resists.
-  const tklPow = 0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6), carPow = 0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7);
+  // A strong TACKLER drags the meter down faster; a strong carrier resists. Fatigue
+  // cuts both — a gassed man loses the wrestle — and the struggle itself tires them.
+  const tklPow = (0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6)) * fatiguePow(b.tackler);
+  const carPow = (0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7)) * fatiguePow(game.carrier);
   b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8);
+  drainFatigue(b.tackler, 0.07 * dt); drainFatigue(game.carrier, 0.07 * dt);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
   // Locked in contact: the carrier DRIVES off the anchor toward the tackler as
@@ -4621,7 +4637,9 @@ function beginTackle(lead, force = false) {
     const tp = t.group.position;
     const dx = cp.x - tp.x, dz = cp.z - tp.z, dd = Math.hypot(dx, dz);
     if (dd > CONTACT) { tp.x = cp.x - dx / dd * CONTACT; tp.z = cp.z - dz / dd * CONTACT; }
+    drainFatigue(t, big ? 0.16 : 0.1); // making the tackle is tiring (more on a big hit)
   }
+  drainFatigue(carrier, big ? 0.2 : 0.13); // taking the hit / fighting the pile wears the carrier most
 
   // Random FUMBLE: a jarring hit can knock the ball loose. Bigger hits and gang
   // tackles pop it more often — and a hit while TAUNTING strips it every time
