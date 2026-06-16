@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { PhysicsWorld, TackleRagdoll, pickVariant } from './ragdoll.js';
 import { BUILD } from './build.js';
@@ -47,7 +48,7 @@ const stadiumTowerVisuals = [];   // procedural corner-tower meshes (replaced by
 const towerGlows = [];            // additive bloom halos at the lamp banks (fake bloom + a slow flare twinkle)
 const towerSpots = [];            // the 4 corner floodlights (dimmed during the light show for a dark arena)
 let _glowTex = null;              // shared glow texture for the lamp bloom halos (lazily built)
-let towerTemplate = null, wallTemplate = null, cartTemplate = null, goalpostTemplate = null; // imported stadium props
+let towerTemplate = null, wallTemplate = null, cartTemplate = null, goalpostTemplate = null, stadcornerTemplate = null; // imported stadium props
 const procGoalposts = []; // the procedural goalposts (swapped for the GLB once it loads)
 // Cage panels + perimeter walls, tagged by side, so the camera can hide whichever
 // one it's standing BEHIND (otherwise it stares at the back of a wall, seeing nothing).
@@ -195,7 +196,23 @@ function placeStadiumProps() {
       scene.add(t);
     }
   }
-  if (wallTemplate) {
+  if (stadcornerTemplate) {
+    // Stadium redesign: a ring of tiered grandstand sections around the field
+    // (replaces the graffiti walls), each facing inward. Hideable like the walls
+    // so the camera never shoots through one. Sparse — the crowd fills behind.
+    const f = boxOf(stadcornerTemplate), S = 13 / f.size.y, yBase = -f.min.y * S;
+    const place = (x, z, ry) => {
+      const g = stadcornerTemplate.clone(true); g.scale.setScalar(S);
+      g.position.set(x, yBase, z); g.rotation.y = ry;
+      g.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; } });
+      g.userData.cullSide = Math.abs(x) > Math.abs(z) ? (x > 0 ? 'px' : 'nx') : (z > 0 ? 'pz' : 'nz');
+      g.userData.cullAt = Math.abs(x) > Math.abs(z) ? Math.abs(x) : Math.abs(z);
+      camOccluders.push(g); scene.add(g);
+    };
+    const RX = HALF_W + SIDELINE + 2, RZ = HALF_L + SIDELINE + 2;
+    for (const z of [-45, -15, 15, 45]) { place(RX, z, -Math.PI / 2); place(-RX, z, Math.PI / 2); } // sidelines
+    for (const x of [-14, 14]) { place(x, RZ, Math.PI); place(x, -RZ, 0); }                          // end lines
+  } else if (wallTemplate) {
     const f = boxOf(wallTemplate), S = 9 / f.size.y, wW = f.size.x * S; // ~9yd tall segments
     const place = (x, z, ry) => {
       const w = wallTemplate.clone(true); w.scale.setScalar(S); w.position.set(x, -f.min.y * S, z); w.rotation.y = ry; scene.add(w);
@@ -1056,6 +1073,12 @@ function driveReplayFlames(dt, fi) {
 // Assets + character factory
 // ===========================================================================
 const loader = new GLTFLoader();
+// KTX2 (Basis) texture support for compressed imported models (e.g. the stadium
+// corner). detectSupport needs the renderer; transcoder wasm is vendored.
+try {
+  const ktx2 = new KTX2Loader().setTranscoderPath('vendor/three/addons/libs/basis/').detectSupport(renderer);
+  loader.setKTX2Loader(ktx2);
+} catch (e) { console.warn('KTX2 loader unavailable', e); }
 const HEAD_SCALE = 1.6; // Blitz-style oversized heads (applied to both teams)
 const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
@@ -1106,6 +1129,7 @@ async function loadAssets() {
   try { wallTemplate = (await loadGLB('assets/wall.glb')).scene; } catch (e) { console.warn('wall missing', e); }
   try { cartTemplate = (await loadGLB('assets/cart.glb')).scene; } catch (e) { console.warn('cart missing', e); }
   try { goalpostTemplate = (await loadGLB('assets/goalpost.glb')).scene; } catch (e) { console.warn('goalpost missing', e); }
+  try { stadcornerTemplate = (await loadGLB('assets/stadcorner.glb')).scene; } catch (e) { console.warn('stadcorner missing', e); }
   placeStadiumProps();
   // The new merged Meshy pack (idle/walk variety, celebrations, parkour, scoop,
   // diving catch). Stripped to animation-only; same rig, so it drives our model
