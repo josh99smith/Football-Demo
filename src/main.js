@@ -4815,22 +4815,43 @@ function aimReceiver() {
   game.selected = bestI;
 }
 const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0);
-// Procedural THROW: snap the right arm up-and-over for a beat, then ease back.
-// The over-the-top amount tracks the launch angle (a lob lofts more than a
-// bullet), so it varies with the throw. Rig-agnostic (just the arm bones).
+// Smoothstep interpolation across [t,value] keyframes (t ascending in 0..1).
+function keyAngle(keys, t) {
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (t <= b[0]) { const k = (t - a[0]) / Math.max(1e-4, b[0] - a[0]); return a[1] + (b[1] - a[1]) * (k * k * (3 - 2 * k)); }
+  }
+  return keys[keys.length - 1][1];
+}
+// Procedural THROW: a real over-the-top QB motion — a fast forward WHIP (the
+// shoulder snaps over the top as the elbow extends), then a follow-through down
+// and across, easing back to rest. The torso leans into it and the off arm comes
+// up for balance. Asymmetric timing (quick whip, trailing follow-through) so it
+// reads as a throw, not a symmetric wave. The over-the-top amount tracks the
+// launch angle (a lob lofts more than a bullet). Rig-agnostic (arm bones + a
+// small torso lean); left arm mirrors with positive angles (see applyCatchPose).
 function applyThrowPose(ch, dt) {
   ch.throwAnimT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
-  const w = Math.sin(Math.PI * t); // 0 -> peak -> 0 (cock, release, return)
-  const over = THREE.MathUtils.lerp(1.5, 2.2, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1));
-  _tq.setFromAxisAngle(_xAxisL, -over * w);
-  ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
-  if (ch.foreArm && ch.foreArmRest) {
-    _tq.setFromAxisAngle(_xAxisL, -1.2 * w);
-    ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq);
+  const over = THREE.MathUtils.lerp(1.7, 2.3, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1)); // higher = more loft
+  // Right (throwing) arm: a touch back, then snap over the top, follow through.
+  const ua = keyAngle([[0, 0.25], [0.16, -over], [0.42, -0.85], [1, 0]], t);
+  _tq.setFromAxisAngle(_xAxisL, ua); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
+  if (ch.foreArm && ch.foreArmRest) { // elbow: cocked/flexed, EXTENDS through the release, slight re-flex on follow-through
+    const fa = keyAngle([[0, -0.6], [0.1, -1.75], [0.26, -0.15], [0.6, -0.7], [1, 0]], t);
+    _tq.setFromAxisAngle(_xAxisL, fa); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); ch.foreArm.updateMatrixWorld(true);
   }
-  ch.upperArm.updateMatrixWorld(true);
+  // Off (left) arm: rises forward for balance during the whip, then tucks back.
+  if (ch.leftArm && ch.leftArmRest) {
+    const la = keyAngle([[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]], t);
+    _tq.setFromAxisAngle(_xAxisL, la); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true);
+    if (ch.leftForeArm && ch.leftForeArmRest) { const lf = keyAngle([[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]], t); _tq.setFromAxisAngle(_xAxisL, lf); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+  }
+  // Torso drives into the throw: a brief forward lean that peaks at the whip.
+  const lean = keyAngle([[0, 0], [0.16, 0.22], [0.5, 0.08], [1, 0]], t);
+  if (lean > 0.001) { _qLeanY.setFromAxisAngle(_UP, ch.heading); _qLeanX.setFromAxisAngle(_XAX, lean); ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX); }
 }
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
