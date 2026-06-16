@@ -1897,6 +1897,8 @@ function applyRatings(p) {
   p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
 }
 const ovr = (rr) => Math.round(rr.reduce((a, b) => a + b, 0) / rr.length);
+// Per-game box score carried by each player (reset at kickoff / rematch).
+const blankStats = () => ({ cmp: 0, att: 0, passYds: 0, passTD: 0, intThrown: 0, rec: 0, recYds: 0, recTD: 0, car: 0, rushYds: 0, rushTD: 0, tkl: 0, sack: 0, intCaught: 0 });
 // Persistent rosters: the same names, positions and ratings every game. teamA is
 // the HOME red REAPERS (the player), teamB the AWAY blue DEMONS (the CPU). Roster
 // order maps to the formation slots: [QB, OL, OL, WR, WR, WR, RB] on offense (and
@@ -1936,8 +1938,8 @@ function spawnTeams() {
   const home = TEAMS.home.players, away = TEAMS.away.players;
   for (let i = 0; i < 7; i++) {
     const a = makeCharacter('off'); const b = makeCharacter('def');
-    a.surname = home[i].name; a.ratings = home[i].r; a.pos = home[i].pos;
-    b.surname = away[i].name; b.ratings = away[i].r; b.pos = away[i].pos;
+    a.surname = home[i].name; a.ratings = home[i].r; a.pos = home[i].pos; a.stats = blankStats();
+    b.surname = away[i].name; b.ratings = away[i].r; b.pos = away[i].pos; b.stats = blankStats();
     a.nameTag = makeNameTag(a.surname); a.group.add(a.nameTag);
     b.nameTag = makeNameTag(b.surname); b.group.add(b.nameTag);
     game.teamA.push(a); game.teamB.push(b);
@@ -2737,19 +2739,63 @@ function yardResult(gained) {
 }
 const elRateCard = document.getElementById('ratecard');
 const RC_LABELS = ['SPD', 'STR', 'STA', 'SKL', 'TKL'];
-let rcLast = '';
-function updateRateCard() {
-  const c = game.controlled;
-  if (!c || !c.rt) { if (elRateCard) elRateCard.classList.add('hidden'); rcLast = ''; return; }
-  const vals = RAT_KEYS.map((k) => c.rt[k + 'R']);
-  const key = (c.surname || '') + c.role + vals.join(',');
-  if (key === rcLast) return; rcLast = key;
-  let rows = '';
-  for (let i = 0; i < RAT_KEYS.length; i++) rows += `<div class="rc-row"><span>${RC_LABELS[i]}</span><div class="rc-bar"><i style="width:${vals[i]}%"></i></div><b>${vals[i]}</b></div>`;
-  const nm = c.surname ? `<div class="rc-name">${c.surname}</div>` : '';
-  elRateCard.innerHTML = `${nm}<div class="rc-role">${c.pos || c.role} · OVR ${ovr(vals)}</div>${rows}`;
-  elRateCard.classList.remove('hidden');
+function updateRateCard() { if (elRateCard) elRateCard.classList.add('hidden'); } // live ratings card removed — see post-play cards
+
+// ---- Post-play player cards: after a play, pop the card(s) of the players who
+// made it (e.g. the QB + the receiver on a completion) with their ratings and
+// running game stats. Stays up through the dead beat / play-select, gone at snap. ---
+const playerCardsEl = document.getElementById('playercards');
+function recordStats(result, endZ) {
+  const p = game.play; if (!p) return;
+  const gain = Number.isFinite(endZ) ? Math.round(game.dir * (endZ - game.los)) : 0;
+  const td = result === 'TD';
+  if (p.sack) { if (p.tackler && p.tackler.stats) { p.tackler.stats.tkl++; p.tackler.stats.sack++; } return; }
+  if (p.completed && p.catcher) {                          // completed pass
+    if (p.passer && p.passer.stats) { p.passer.stats.att++; p.passer.stats.cmp++; p.passer.stats.passYds += gain; if (td) p.passer.stats.passTD++; }
+    if (p.catcher.stats) { p.catcher.stats.rec++; p.catcher.stats.recYds += gain; if (td) p.catcher.stats.recTD++; }
+  } else if (p.viaPass) {                                   // incomplete (a pick is recorded in endReturn)
+    if (p.passer && p.passer.stats) p.passer.stats.att++;
+  } else if (p.carrier && p.carrier.stats) {               // designed run / scramble
+    p.carrier.stats.car++; p.carrier.stats.rushYds += gain; if (td) p.carrier.stats.rushTD++;
+  }
+  if (p.tackler && p.tackler.stats && !td) p.tackler.stats.tkl++;
 }
+function postPlayCards(result) {
+  const p = game.play; if (!p) return [];
+  const td = result === 'TD';
+  if (p.sack && p.tackler) return [{ player: p.tackler, kind: 'def' }];
+  if (p.completed && p.catcher) {
+    const e = []; if (p.passer) e.push({ player: p.passer, kind: 'pass' });
+    e.push({ player: p.catcher, kind: 'rec' }); return e;
+  }
+  if (p.viaPass && p.intBy) { const e = [{ player: p.intBy, kind: 'def' }]; if (p.passer) e.push({ player: p.passer, kind: 'pass' }); return e; }
+  if (p.viaPass) return p.passer ? [{ player: p.passer, kind: 'pass' }] : [];
+  if (p.carrier) { const e = [{ player: p.carrier, kind: 'rush' }]; if (p.tackler && !td) e.push({ player: p.tackler, kind: 'def' }); return e; }
+  return [];
+}
+function statLine(s, kind) {
+  if (kind === 'pass') return `${s.cmp}/${s.att} · ${s.passYds} YDS · ${s.passTD} TD · ${s.intThrown} INT`;
+  if (kind === 'rec') return `${s.rec} REC · ${s.recYds} YDS · ${s.recTD} TD`;
+  if (kind === 'rush') return `${s.car} CAR · ${s.rushYds} YDS · ${s.rushTD} TD`;
+  return `${s.tkl} TKL · ${s.sack} SK · ${s.intCaught} INT`;
+}
+const KIND_LABEL = { pass: 'PASSING', rec: 'RECEIVING', rush: 'RUSHING', def: 'DEFENSE' };
+function playerCardHTML(player, kind) {
+  if (!player || !player.rt) return '';
+  const vals = RAT_KEYS.map((k) => player.rt[k + 'R']);
+  let bars = '';
+  for (let i = 0; i < RAT_KEYS.length; i++) bars += `<div class="pc-row"><span>${RC_LABELS[i]}</span><div class="pc-bar"><i style="width:${vals[i]}%"></i></div><b>${vals[i]}</b></div>`;
+  return `<div class="pc-card"><div class="pc-head"><div class="pc-name">${player.surname || ''}</div><div class="pc-pos">${player.pos || player.role} · OVR ${ovr(vals)}</div></div>`
+    + `<div class="pc-stat"><i>${KIND_LABEL[kind]}</i>${statLine(player.stats || blankStats(), kind)}</div><div class="pc-bars">${bars}</div></div>`;
+}
+function showPlayerCards(result) {
+  if (!playerCardsEl) return;
+  const entries = postPlayCards(result);
+  if (!entries.length) return hidePlayerCards();
+  playerCardsEl.innerHTML = entries.map((e) => playerCardHTML(e.player, e.kind)).join('');
+  playerCardsEl.classList.remove('hidden');
+}
+function hidePlayerCards() { if (playerCardsEl) playerCardsEl.classList.add('hidden'); }
 const ordinal = (n) => ['1st', '2nd', '3rd', '4th'][n - 1] || n + 'th';
 const QLABEL = ['1ST', '2ND', '3RD', '4TH'];
 function fmtClock(s) {
@@ -2799,7 +2845,6 @@ function updateButtons() {
   else if (s === STATE.LOOSE) { setAction('DIVE'); show(turboBtn); }
   else if (s === STATE.BATTLE) { setAction('MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
-  updateRateCard(); // reflect whoever you're now controlling
 }
 // Decide what the contextual ACTION does for the ball carrier right now, and the
 // label to show. Captures the exact defender in the path and gates on cooldown,
@@ -3014,6 +3059,7 @@ function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
+  for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
   game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
@@ -3528,6 +3574,8 @@ function snap() {
   recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
   game.playClock = 0; game.lastBreak = -10;
+  game.play = { passer: null, target: null, catcher: null, carrier: null, tackler: null, viaPass: false, completed: false, intBy: null, sack: false }; // who did what (box score + post-play card)
+  hidePlayerCards();
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
   game.cpuQBTimer = game.userOnOffense ? 0 : 1.1 + Math.random() * 0.7;
@@ -3635,6 +3683,7 @@ function throwBall(power) {
   ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
   ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false; ball.hitFence = false;
   ball.mode = 'flying';
+  if (game.play) { game.play.passer = game.qb; game.play.target = recv; game.play.viaPass = true; } // box score: the throw
   game.state = STATE.AIR; selRing.visible = false;
   // Procedural throwing motion, varied by the throw: face the target and let
   // the over-the-top amount track the launch angle (lob = more loft).
@@ -3646,6 +3695,7 @@ function throwBall(power) {
 }
 function enterRun(player, msg) {
   game.state = STATE.RUN;
+  if (game.play && !game.play.carrier) game.play.carrier = player; // box score: ball carrier (handoff/scramble; catch keeps the catcher credit)
   game.carrier = player; player.route = null; player.holdHeading = false; // a runner faces where he runs
   ball.mode = 'carried';
   // You drive the carrier on your possession; on a CPU run you take over the
@@ -3857,6 +3907,19 @@ function tackleReturner(tackler) {
 }
 function endReturn(result, spotZ) {
   const userReturned = !game.userOnOffense; // the user's team (on defense) recovered & ran it back
+  // Box score + post-play card for the takeaway (the defender who got it, + the QB
+  // who threw the pick) — before game.returner is cleared below.
+  const returner = game.returner, pl = game.play;
+  if (pl && pl.viaPass && pl.intBy) {
+    if (pl.passer && pl.passer.stats) { pl.passer.stats.att++; pl.passer.stats.intThrown++; }
+    if (pl.intBy.stats) pl.intBy.stats.intCaught++;
+  }
+  if (playerCardsEl && returner) {
+    const cards = [{ player: returner, kind: 'def' }];
+    if (pl && pl.viaPass && pl.passer) cards.push({ player: pl.passer, kind: 'pass' });
+    playerCardsEl.innerHTML = cards.map((x) => playerCardHTML(x.player, x.kind)).join('');
+    playerCardsEl.classList.remove('hidden');
+  }
   game.returnActive = false; game.returner = null;
   game.state = STATE.DEAD; game.deadTimer = 1.1;
   game.clockStopped = true; // a return TD or turnover stops the clock
@@ -3924,6 +3987,7 @@ function endPlay(result, endZ) {
   game.state = STATE.DEAD; game.deadTimer = 1.1;
   hideFieldChrome(); updateButtons(); // never let a reticle/turbo ring outlive the play
   const userHad = game.userOnOffense;
+  recordStats(result, endZ); showPlayerCards(result); // box score + post-play cards (before giveBallTo moves the LOS)
   let tackleGain = 0; // yards on a tackle/oob result — drives the big-play replay
   game.clockStopped = true; // scores / incompletes / turnovers stop the clock; an in-bounds tackle re-starts it below
   if (result === 'TD') {
@@ -4312,8 +4376,9 @@ function updateBall(dt) {
       p.set(tx, ty, tz);
       if (ball.intercept) {
         ball.mode = 'carried'; ball.holder = c;
+        if (game.play) game.play.intBy = c; // box score: the pick
         beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
-      } else { ball.mode = 'carried'; enterRun(c, 'Caught it! Run!'); }
+      } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } enterRun(c, 'Caught it! Run!'); }
     }
   }
 }
@@ -4427,7 +4492,7 @@ function checkSack() {
   for (const d of game.defense) {
     if (d.ragdolling) continue;
     if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
-      game.carrier = game.qb; beginTackle(d, true);
+      game.carrier = game.qb; if (game.play) game.play.sack = true; beginTackle(d, true);
       showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit(); audio.say('sack', { force: true });
       game.replay.bigHit = true; // a sack is always a highlight
       return;
@@ -4577,6 +4642,7 @@ function updateBattle(dt) {
 function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
+  if (game.play && game.defense.includes(lead)) game.play.tackler = lead; // box score: credit the tackle
   if (!physics) { endPlay('tackle', cp.z); return; } // no physics: instant whistle
 
   // Gather the swarm: the lead plus the nearest defenders crashing the carrier.

@@ -565,6 +565,7 @@ body.replay-mode #fps { display: none !important; }
    (letterbox + REPLAY tag + CONTINUE) shows. */
 body.replay-mode #hud,
 body.replay-mode #ratecard,
+body.replay-mode #playercards,
 body.replay-mode #playresult,
 body.replay-mode #joystick,
 body.replay-mode .action-btn,
@@ -856,4 +857,35 @@ body.replay-mode #build-badge { display: none !important; }
 @media (max-width: 560px) {
   #startmenu .sm-matchup { gap: 6px; }
   #startmenu .sm-team { padding: 8px; }
+}
+
+/* ---------- Post-play player cards ---------- */
+#playercards {
+  position: fixed; z-index: 16;
+  left: 50%; transform: translateX(-50%);
+  top: max(64px, calc(env(safe-area-inset-top) + 56px));
+  display: flex; gap: 10px; pointer-events: none;
+  animation: pcIn 0.28s ease both;
+}
+#playercards.hidden { display: none; }
+@keyframes pcIn { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+#playercards .pc-card {
+  width: 184px; color: #eef2f7;
+  background: rgba(8, 12, 18, 0.82); border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px; padding: 9px 11px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); backdrop-filter: blur(7px);
+}
+#playercards .pc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+#playercards .pc-name { font-weight: 900; font-size: 16px; letter-spacing: 0.5px; color: #fff; }
+#playercards .pc-pos { font-size: 10px; font-weight: 800; letter-spacing: 0.5px; color: var(--accent); white-space: nowrap; }
+#playercards .pc-stat { margin: 5px 0 7px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: #cfe0ff; }
+#playercards .pc-stat i { display: block; font-style: normal; font-size: 9px; letter-spacing: 1.5px; color: rgba(255,255,255,0.5); margin-bottom: 1px; }
+#playercards .pc-row { display: flex; align-items: center; gap: 6px; font-size: 10px; margin-top: 2px; }
+#playercards .pc-row span { width: 26px; opacity: 0.75; }
+#playercards .pc-bar { flex: 1; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.16); overflow: hidden; }
+#playercards .pc-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #5aff8a, #ffd23a); }
+#playercards .pc-row b { width: 16px; text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  #playercards .pc-card { width: 150px; padding: 7px 9px; }
+  #playercards .pc-name { font-size: 14px; }
 }
