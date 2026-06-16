@@ -748,7 +748,7 @@ function makeFieldLine(color) {
   }
   scene.add(g); return g;
 }
-const losLine = makeFieldLine(0x2f6bff);
+const losLine = makeFieldLine(0xff3a30);
 const firstDownLine = makeFieldLine(0xffe14a);
 
 // Floating target arrow that hovers over the selected receiver.
