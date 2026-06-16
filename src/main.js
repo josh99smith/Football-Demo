@@ -1393,6 +1393,9 @@ function makeCharacter(team) {
     tauntT: 0, tauntCd: 0, diveT: 0, diveCd: 0, // showboat window/cooldown + diving-tackle window/cooldown
     fatigue: 1, // 1 = fresh, drains with exertion -> less top speed / break power
     backped: false,
+    // Procedural overlay blend weights (0..1): each eases in/out so a pose fades
+    // smoothly over the locomotion clip instead of snapping on/off in one frame.
+    throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, catchRaise: 0.8,
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
   };
@@ -3083,6 +3086,7 @@ function preparePlay(teleport) {
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
+    ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
@@ -4650,11 +4654,9 @@ function collapseDrag() {
 }
 // Grabber pose during the drag: lean into the carrier and wrap him up (reuses the
 // tackler grapple arms), legs churning from the artificial drive speed above.
-function applyGrabLean(ch) {
+function applyGrabLean(ch, w = 1) {
   const lean = 0.4 + Math.sin(performance.now() * 0.014) * 0.06;
-  _qLeanY.setFromAxisAngle(_UP, ch.heading);
-  _qLeanX.setFromAxisAngle(_XAX, lean);
-  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
+  blendLean(ch, lean, 0, w);
 }
 
 // --- Live fumble: the ball pops loose, glows, bounces, and both teams dive ---
@@ -4932,6 +4934,26 @@ function aimReceiver() {
   game.selected = bestI;
 }
 const _tq = new THREE.Quaternion(), _xAxisL = new THREE.Vector3(1, 0, 0);
+const _poseTarget = new THREE.Quaternion();
+// Weighted bone pose: instead of hard-setting a bone to (rest * rotation), SLERP
+// from its current mixer-driven orientation toward that posed target by `w`. At
+// w=1 it's the old hard set; as w eases 0<->1 the procedural pose blends in/out
+// over the locomotion clip with no one-frame snap. Rotation is about _xAxisL.
+function blendBone(bone, restQ, angle, w) {
+  if (!bone || !restQ) return;
+  _tq.setFromAxisAngle(_xAxisL, angle);
+  _poseTarget.copy(restQ).multiply(_tq);
+  bone.quaternion.slerp(_poseTarget, w);
+  bone.updateMatrixWorld(true);
+}
+// Weighted root lean: blend the group toward a (heading+sway, forward-lean) pose
+// by `w`, so a battle/grab/throw/sulk lean fades in and out over the plain stance.
+function blendLean(ch, lean, sway, w) {
+  _qLeanY.setFromAxisAngle(_UP, ch.heading + sway);
+  _qLeanX.setFromAxisAngle(_XAX, lean);
+  _poseTarget.copy(_qLeanY).multiply(_qLeanX);
+  ch.group.quaternion.slerp(_poseTarget, w);
+}
 // Smoothstep interpolation across [t,value] keyframes (t ascending in 0..1).
 function keyAngle(keys, t) {
   if (t <= keys[0][0]) return keys[0][1];
@@ -4948,42 +4970,37 @@ function keyAngle(keys, t) {
 // reads as a throw, not a symmetric wave. The over-the-top amount tracks the
 // launch angle (a lob lofts more than a bullet). Rig-agnostic (arm bones + a
 // small torso lean); left arm mirrors with positive angles (see applyCatchPose).
-function applyThrowPose(ch, dt) {
+function applyThrowPose(ch, dt, w = 1) {
   ch.throwAnimT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
   const over = THREE.MathUtils.lerp(1.7, 2.3, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1)); // higher = more loft
   // Right (throwing) arm: a touch back, then snap over the top, follow through.
-  const ua = keyAngle([[0, 0.25], [0.16, -over], [0.42, -0.85], [1, 0]], t);
-  _tq.setFromAxisAngle(_xAxisL, ua); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-  if (ch.foreArm && ch.foreArmRest) { // elbow: cocked/flexed, EXTENDS through the release, slight re-flex on follow-through
-    const fa = keyAngle([[0, -0.6], [0.1, -1.75], [0.26, -0.15], [0.6, -0.7], [1, 0]], t);
-    _tq.setFromAxisAngle(_xAxisL, fa); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); ch.foreArm.updateMatrixWorld(true);
-  }
+  blendBone(ch.upperArm, ch.upperArmRest, keyAngle([[0, 0.25], [0.16, -over], [0.42, -0.85], [1, 0]], t), w);
+  // elbow: cocked/flexed, EXTENDS through the release, slight re-flex on follow-through
+  blendBone(ch.foreArm, ch.foreArmRest, keyAngle([[0, -0.6], [0.1, -1.75], [0.26, -0.15], [0.6, -0.7], [1, 0]], t), w);
   // Off (left) arm: rises forward for balance during the whip, then tucks back.
-  if (ch.leftArm && ch.leftArmRest) {
-    const la = keyAngle([[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]], t);
-    _tq.setFromAxisAngle(_xAxisL, la); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true);
-    if (ch.leftForeArm && ch.leftForeArmRest) { const lf = keyAngle([[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]], t); _tq.setFromAxisAngle(_xAxisL, lf); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
-  }
+  blendBone(ch.leftArm, ch.leftArmRest, keyAngle([[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]], t), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, keyAngle([[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]], t), w);
   // Torso drives into the throw: a brief forward lean that peaks at the whip.
   const lean = keyAngle([[0, 0], [0.16, 0.22], [0.5, 0.08], [1, 0]], t);
-  if (lean > 0.001) { _qLeanY.setFromAxisAngle(_UP, ch.heading); _qLeanX.setFromAxisAngle(_XAX, lean); ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX); }
+  if (lean * w > 0.001) blendLean(ch, lean, 0, w);
 }
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
 // ball -> arms down) so it varies with the ball/player positions.
-function applyCatchPose(ch, ballPos) {
+function applyCatchPose(ch, ballPos, dt, w = 1) {
   if (!ch.upperArm || !ch.upperArmRest) return;
-  if (ch.throwAnimT > 0) return; // a throw motion owns the arms (rare pick-6 + lateral) — don't fight it
-
   const chestY = ch.group.position.y + 1.15;
-  const raise = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
-  _tq.setFromAxisAngle(_xAxisL, -raise);
-  ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-  if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.55); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
-  if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, raise); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
-  if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.55); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+  // Ease the reach height toward the ball each frame (instead of snapping), so a
+  // fast-moving ball is tracked smoothly and the hands settle as it's secured.
+  const want = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
+  ch.catchRaise += (want - ch.catchRaise) * Math.min(1, dt * 14);
+  const raise = ch.catchRaise;
+  blendBone(ch.upperArm, ch.upperArmRest, -raise, w);
+  blendBone(ch.foreArm, ch.foreArmRest, -0.55, w);
+  blendBone(ch.leftArm, ch.leftArmRest, raise, w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55, w);
 }
 // Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
 // poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
@@ -4994,7 +5011,7 @@ function triggerArmAction(ch, type, dur, targetPos) {
   ch.armPose = type; ch.armPoseDur = dur; ch.armPoseT = dur;
   ch.armPoseTarget = targetPos ? targetPos.clone() : null;
 }
-function applyArmAction(ch, dt) {
+function applyArmAction(ch, dt, bw = 1) {
   ch.armPoseT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const dur = ch.armPoseDur || 0.4;
@@ -5007,26 +5024,23 @@ function applyArmAction(ch, dt) {
     // Thrust the ball arm overhead and HOLD it there — showboating with the ball
     // aloft while still running (the carried ball follows the hand up).
     const e = Math.min(1, t * 4);
-    _tq.setFromAxisAngle(_xAxisL, -2.6 * e); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.2 * e); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
+    blendBone(ch.upperArm, ch.upperArmRest, -2.6 * e, bw);
+    blendBone(ch.foreArm, ch.foreArmRest, -0.2 * e, bw);
   } else if (ch.armPose === 'stiffarm') {
     // The off-arm punches straight out to ward off / truck — extends fast and
     // HOLDS for the move (not a quick wind-and-return), so it reads as a stiff-arm.
     const e = Math.min(1, t * 5);
-    _tq.setFromAxisAngle(_xAxisL, -1.45 * e); ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.12 * e); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); } // arm held straight
+    blendBone(ch.upperArm, ch.upperArmRest, -1.45 * e, bw);
+    blendBone(ch.foreArm, ch.foreArmRest, -0.12 * e, bw); // arm held straight
   } else if (ch.armPose === 'swat') {
     // One arm slashes up across the ball to bat it down.
-    _tq.setFromAxisAngle(_xAxisL, -reach * w);
-    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq);
-    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.4 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
-    ch.upperArm.updateMatrixWorld(true);
+    blendBone(ch.upperArm, ch.upperArmRest, -reach * w, bw);
+    blendBone(ch.foreArm, ch.foreArmRest, -0.4 * w, bw);
   } else { // 'pick' / 'reach' — both hands stab toward the ball
-    _tq.setFromAxisAngle(_xAxisL, -reach * w);
-    ch.upperArm.quaternion.copy(ch.upperArmRest).multiply(_tq); ch.upperArm.updateMatrixWorld(true);
-    if (ch.foreArm && ch.foreArmRest) { _tq.setFromAxisAngle(_xAxisL, -0.5 * w); ch.foreArm.quaternion.copy(ch.foreArmRest).multiply(_tq); }
-    if (ch.leftArm && ch.leftArmRest) { _tq.setFromAxisAngle(_xAxisL, reach * w); ch.leftArm.quaternion.copy(ch.leftArmRest).multiply(_tq); ch.leftArm.updateMatrixWorld(true); }
-    if (ch.leftForeArm && ch.leftForeArmRest) { _tq.setFromAxisAngle(_xAxisL, 0.5 * w); ch.leftForeArm.quaternion.copy(ch.leftForeArmRest).multiply(_tq); }
+    blendBone(ch.upperArm, ch.upperArmRest, -reach * w, bw);
+    blendBone(ch.foreArm, ch.foreArmRest, -0.5 * w, bw);
+    blendBone(ch.leftArm, ch.leftArmRest, reach * w, bw);
+    blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5 * w, bw);
   }
 }
 // Break-tackle BATTLE pose: the two lean into each other and churn — the
@@ -5034,7 +5048,7 @@ function applyArmAction(ch, dt) {
 // (stiff-arm out, ball cradled). Procedural so it reads as real contact.
 const _qLeanY = new THREE.Quaternion(), _qLeanX = new THREE.Quaternion();
 const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
-function applyBattleLean(ch, isTackler) {
+function applyBattleLean(ch, isTackler, w = 1) {
   const now = performance.now();
   const v = game.battle.val; // carrier's break meter (high = carrier winning)
   // Whoever's winning leans IN; the loser gets stood up. Plus a strain shimmer
@@ -5042,45 +5056,40 @@ function applyBattleLean(ch, isTackler) {
   const push = isTackler ? (0.5 - v * 0.32) : (0.22 + v * 0.34);
   const lean = push + Math.sin(now * 0.013 + (isTackler ? 0 : 1.5)) * 0.05;
   const sway = Math.sin(now * 0.009 + (isTackler ? 1 : 0)) * 0.05;
-  _qLeanY.setFromAxisAngle(_UP, ch.heading + sway);
-  _qLeanX.setFromAxisAngle(_XAX, lean);
-  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
+  blendLean(ch, lean, sway, w);
 }
-function applyBattleArms(ch, isTackler) {
+function applyBattleArms(ch, isTackler, w = 1) {
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = performance.now() * 0.001;
   const pump = Math.sin(t * 9);
-  const set = (bone, rest, a) => { if (bone && rest) { _tq.setFromAxisAngle(_xAxisL, a); bone.quaternion.copy(rest).multiply(_tq); bone.updateMatrixWorld(true); } };
   if (isTackler) {
     // Both arms shoot STRAIGHT forward (upper arm up, forearm extended) so the
     // hands reach across and lock onto the carrier — pushing, not wrapping back.
     // The pump shoves them in and out so it reads as a live struggle.
-    set(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12));
-    set(ch.foreArm, ch.foreArmRest, -(0.2 + pump * 0.1));
-    set(ch.leftArm, ch.leftArmRest, -(1.5 - pump * 0.12));
-    set(ch.leftForeArm, ch.leftForeArmRest, -(0.2 - pump * 0.1));
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.35); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
+    blendBone(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12), w);
+    blendBone(ch.foreArm, ch.foreArmRest, -(0.2 + pump * 0.1), w);
+    blendBone(ch.leftArm, ch.leftArmRest, -(1.5 - pump * 0.12), w);
+    blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.2 - pump * 0.1), w);
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.35 * w); ch.headBone.quaternion.multiply(_tq); } // head down, driving in
   } else {
     // Carrier shoves back: right arm extended into the tackler (hands lock), left
     // tucks/cradles the ball low.
-    set(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12));
-    set(ch.foreArm, ch.foreArmRest, -(0.18 + pump * 0.1));   // straight push, locking hands
-    set(ch.leftArm, ch.leftArmRest, -0.45);
-    set(ch.leftForeArm, ch.leftForeArmRest, -1.6);           // tuck/cradle the ball
-    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.12); ch.headBone.quaternion.multiply(_tq); } // chin up
+    blendBone(ch.upperArm, ch.upperArmRest, -(1.5 + pump * 0.12), w);
+    blendBone(ch.foreArm, ch.foreArmRest, -(0.18 + pump * 0.1), w);   // straight push, locking hands
+    blendBone(ch.leftArm, ch.leftArmRest, -0.45, w);
+    blendBone(ch.leftForeArm, ch.leftForeArmRest, -1.6, w);           // tuck/cradle the ball
+    if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, -0.12 * w); ch.headBone.quaternion.multiply(_tq); } // chin up
   }
 }
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
 // slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
-function applySulkPose(ch) {
+function applySulkPose(ch, w = 1) {
   const t = performance.now() * 0.001;
-  if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.7); ch.headBone.quaternion.multiply(_tq); }
-  const set = (b, r, a) => { if (b && r) { _tq.setFromAxisAngle(_xAxisL, a); b.quaternion.copy(r).multiply(_tq); b.updateMatrixWorld(true); } };
-  set(ch.upperArm, ch.upperArmRest, 0.2); set(ch.foreArm, ch.foreArmRest, 0.5);
-  set(ch.leftArm, ch.leftArmRest, 0.2); set(ch.leftForeArm, ch.leftForeArmRest, 0.5);
+  if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.7 * w); ch.headBone.quaternion.multiply(_tq); }
+  blendBone(ch.upperArm, ch.upperArmRest, 0.2, w); blendBone(ch.foreArm, ch.foreArmRest, 0.5, w);
+  blendBone(ch.leftArm, ch.leftArmRest, 0.2, w); blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5, w);
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
-  _qLeanY.setFromAxisAngle(_UP, ch.heading); _qLeanX.setFromAxisAngle(_XAX, lean);
-  ch.group.quaternion.copy(_qLeanY).multiply(_qLeanX);
+  blendLean(ch, lean, 0, w);
 }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
@@ -5135,21 +5144,40 @@ function updateAnimation(ch, dt) {
     const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
     if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
   }
-  if (inBattle) applyBattleLean(ch, ch === game.battle.tackler);
-  else if (grabbing) applyGrabLean(ch);
-  else {
-    ch.group.rotation.set(0, ch.heading, 0);
-    if (ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / SPIN_DUR) * Math.PI * 2; // 360 spin move
-  }
+  // Base root orientation: heading, plus any active 360 spin. Procedural leans
+  // below blend on top of this with their own eased weights.
+  ch.group.rotation.set(0, ch.heading, 0);
+  if (!inBattle && !grabbing && ch.spinT > 0) ch.group.rotation.y += (1 - ch.spinT / SPIN_DUR) * Math.PI * 2; // 360 spin move
   ch.mixer.update(dt);
-  // Procedural arm overrides (after the mixer), in priority order: the battle
-  // grapple, the gang-tackle wrap, securing a catch, throwing, then a one-off arm action.
-  if (inBattle) applyBattleArms(ch, ch === game.battle.tackler);
-  else if (grabbing) applyBattleArms(ch, true); // wrap him up like a tackler
-  else if (ball.mode === 'secured' && ch === ball.catcher) applyCatchPose(ch, ball.mesh.position);
-  else if (ch.throwAnimT > 0) applyThrowPose(ch, dt);
-  else if (ch.armPoseT > 0) applyArmAction(ch, dt);
-  else if (ch.sulk) applySulkPose(ch); // end-game loser: head hung, shoulders slumped
+  // Procedural overlays blend in/out via per-character weights, so a pose fades
+  // smoothly over the locomotion clip instead of snapping on/off in one frame.
+  // Pick the single active overlay (priority order); its weight eases toward 1
+  // while every other eases toward 0 — giving automatic crossfades between poses.
+  let active = null;
+  if (inBattle) active = 'battle';
+  else if (grabbing) active = 'grab';
+  else if (ball.mode === 'secured' && ch === ball.catcher) active = 'catch';
+  else if (ch.throwAnimT > 0) active = 'throw';
+  else if (ch.armPoseT > 0) active = 'arm';
+  else if (ch.sulk) active = 'sulk';
+  const POSE_IN = 0.09, POSE_OUT = 0.13; // ease-in / ease-out times (s)
+  const easeW = (cur, on) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
+  ch.battleW = easeW(ch.battleW, active === 'battle');
+  ch.grabW = easeW(ch.grabW, active === 'grab');
+  ch.catchW = easeW(ch.catchW, active === 'catch');
+  ch.throwW = easeW(ch.throwW, active === 'throw');
+  ch.armW = easeW(ch.armW, active === 'arm');
+  ch.sulkW = easeW(ch.sulkW, active === 'sulk');
+  // Leans first (orient the root), then arm poses, applied lowest -> highest
+  // priority so the dominant overlay wins the bones it shares with a fading one.
+  if (ch.sulkW > 0.001) applySulkPose(ch, ch.sulkW); // end-game loser: head hung, shoulders slumped
+  if (ch.grabW > 0.001) applyGrabLean(ch, ch.grabW);
+  if (ch.battleW > 0.001) applyBattleLean(ch, ch === game.battle.tackler, ch.battleW);
+  if (ch.armW > 0.001) applyArmAction(ch, dt, ch.armW);
+  if (ch.throwW > 0.001) applyThrowPose(ch, dt, ch.throwW);
+  if (ch.catchW > 0.001) applyCatchPose(ch, ball.mesh.position, dt, ch.catchW);
+  if (ch.grabW > 0.001) applyBattleArms(ch, true, ch.grabW); // wrap him up like a tackler
+  if (ch.battleW > 0.001) applyBattleArms(ch, ch === game.battle.tackler, ch.battleW);
   // Idle variety now comes from real per-player idle clips (see makeCharacter),
   // so no procedural stance offset is layered on top.
   // Keep dynamic poses out of the turf: one-shots clamp in their own branch
