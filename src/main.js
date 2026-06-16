@@ -2716,6 +2716,10 @@ function refreshRunAction(c) {
 // Juice (ported from Football-Game: ScreenShake.ts + TimeScale.ts)
 // ===========================================================================
 const moveToward = (v, t, maxD) => (v < t ? Math.min(v + maxD, t) : Math.max(v - maxD, t));
+// Procedural-overlay weight ease (in faster than out); hoisted so updateAnimation
+// doesn't rebuild a closure per character per frame.
+const POSE_IN = 0.09, POSE_OUT = 0.13;
+const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
 function turnToward(a, b, maxD) {
   let d = b - a;
   while (d > Math.PI) d -= Math.PI * 2;
@@ -5254,14 +5258,12 @@ function updateAnimation(ch, dt) {
   else if (ch.throwAnimT > 0) active = 'throw';
   else if (ch.armPoseT > 0) active = 'arm';
   else if (ch.sulk) active = 'sulk';
-  const POSE_IN = 0.09, POSE_OUT = 0.13; // ease-in / ease-out times (s)
-  const easeW = (cur, on) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
-  ch.battleW = easeW(ch.battleW, active === 'battle');
-  ch.grabW = easeW(ch.grabW, active === 'grab');
-  ch.catchW = easeW(ch.catchW, active === 'catch');
-  ch.throwW = easeW(ch.throwW, active === 'throw');
-  ch.armW = easeW(ch.armW, active === 'arm');
-  ch.sulkW = easeW(ch.sulkW, active === 'sulk');
+  ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
+  ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
+  ch.catchW = easeWeight(ch.catchW, active === 'catch', dt);
+  ch.throwW = easeWeight(ch.throwW, active === 'throw', dt);
+  ch.armW = easeWeight(ch.armW, active === 'arm', dt);
+  ch.sulkW = easeWeight(ch.sulkW, active === 'sulk', dt);
   // Leans first (orient the root), then arm poses, applied lowest -> highest
   // priority so the dominant overlay wins the bones it shares with a fading one.
   if (ch.sulkW > 0.001) applySulkPose(ch, ch.sulkW); // end-game loser: head hung, shoulders slumped
