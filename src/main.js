@@ -2783,10 +2783,13 @@ const KIND_LABEL = { pass: 'PASSING', rec: 'RECEIVING', rush: 'RUSHING', def: 'D
 function playerCardHTML(player, kind) {
   if (!player || !player.rt) return '';
   const vals = RAT_KEYS.map((k) => player.rt[k + 'R']);
-  let bars = '';
-  for (let i = 0; i < RAT_KEYS.length; i++) bars += `<div class="pc-row"><span>${RC_LABELS[i]}</span><div class="pc-bar"><i style="width:${vals[i]}%"></i></div><b>${vals[i]}</b></div>`;
-  return `<div class="pc-card"><div class="pc-head"><div class="pc-name">${player.surname || ''}</div><div class="pc-pos">${player.pos || player.role} · OVR ${ovr(vals)}</div></div>`
-    + `<div class="pc-stat"><i>${KIND_LABEL[kind]}</i>${statLine(player.stats || blankStats(), kind)}</div><div class="pc-bars">${bars}</div></div>`;
+  const team = game.teamA && game.teamA.includes(player) ? 'home' : 'away';
+  const port = portraitCache[`${team}_${kind}`];
+  const img = port ? `<img class="pc-portrait" src="${port}" alt="">` : '<div class="pc-portrait"></div>';
+  return `<div class="pc-card pc-${team}">${img}<div class="pc-ovr">${ovr(vals)}</div>`
+    + `<div class="pc-body"><div class="pc-name">${player.surname || ''}</div>`
+    + `<div class="pc-pos">${player.pos || player.role} · ${KIND_LABEL[kind]}</div>`
+    + `<div class="pc-stat">${statLine(player.stats || blankStats(), kind)}</div></div></div>`;
 }
 function showPlayerCards(result) {
   if (!playerCardsEl) return;
@@ -2796,6 +2799,70 @@ function showPlayerCards(result) {
   playerCardsEl.classList.remove('hidden');
 }
 function hidePlayerCards() { if (playerCardsEl) playerCardsEl.classList.add('hidden'); }
+// ---- Card portraits: render each team's model in a football pose (with a ball)
+// to a cached image per (team, kind), used as the player-card art. Same model per
+// team, so the pose varies by what the player did (throw / catch / carry / tackle).
+const portraitCache = {};
+function poseCardBone(b, rest, a) { if (b && rest) { _tq.setFromAxisAngle(_xAxisL, a); b.quaternion.copy(rest).multiply(_tq); } }
+function poseForCard(ch, kind) {
+  poseCardBone(ch.upperArm, ch.upperArmRest, 0); poseCardBone(ch.foreArm, ch.foreArmRest, 0);
+  poseCardBone(ch.leftArm, ch.leftArmRest, 0); poseCardBone(ch.leftForeArm, ch.leftForeArmRest, 0);
+  poseCardBone(ch.spineBone, ch.spineRest, 0);
+  if (kind === 'pass') { poseCardBone(ch.upperArm, ch.upperArmRest, -2.25); poseCardBone(ch.foreArm, ch.foreArmRest, -1.7); poseCardBone(ch.leftArm, ch.leftArmRest, 0.7); poseCardBone(ch.spineBone, ch.spineRest, -0.1); }
+  else if (kind === 'rec') { poseCardBone(ch.upperArm, ch.upperArmRest, -1.5); poseCardBone(ch.foreArm, ch.foreArmRest, -0.85); poseCardBone(ch.leftArm, ch.leftArmRest, -1.5); poseCardBone(ch.leftForeArm, ch.leftForeArmRest, -0.85); }
+  else if (kind === 'rush') { poseCardBone(ch.leftArm, ch.leftArmRest, -1.35); poseCardBone(ch.leftForeArm, ch.leftForeArmRest, -0.12); poseCardBone(ch.upperArm, ch.upperArmRest, 0.15); poseCardBone(ch.foreArm, ch.foreArmRest, -1.95); poseCardBone(ch.spineBone, ch.spineRest, 0.08); }
+  else { poseCardBone(ch.upperArm, ch.upperArmRest, -0.55); poseCardBone(ch.foreArm, ch.foreArmRest, -0.55); poseCardBone(ch.leftArm, ch.leftArmRest, -0.55); poseCardBone(ch.leftForeArm, ch.leftForeArmRest, -0.55); poseCardBone(ch.spineBone, ch.spineRest, 0.28); }
+}
+function restoreCardPose(ch) {
+  poseCardBone(ch.upperArm, ch.upperArmRest, 0); poseCardBone(ch.foreArm, ch.foreArmRest, 0);
+  poseCardBone(ch.leftArm, ch.leftArmRest, 0); poseCardBone(ch.leftForeArm, ch.leftForeArmRest, 0);
+  poseCardBone(ch.spineBone, ch.spineRest, 0);
+}
+function buildPortraits() {
+  if (!charTemplate || !game.teamA || !game.teamA.length) return;
+  try {
+    const W = 320, H = 360;
+    const rt = new THREE.WebGLRenderTarget(W, H, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    const pScene = new THREE.Scene();
+    pScene.add(new THREE.HemisphereLight(0xffffff, 0x55555f, 1.8));
+    pScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const dl = new THREE.DirectionalLight(0xffffff, 2.0); dl.position.set(2.5, 4, 3.5); pScene.add(dl);
+    const rim = new THREE.DirectionalLight(0x9ec0ff, 0.9); rim.position.set(-3, 2, -2); pScene.add(rim);
+    const pCam = new THREE.PerspectiveCamera(30, W / H, 0.1, 100);
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 12), new THREE.MeshStandardMaterial({ color: 0x6f3a18, roughness: 0.65 }));
+    ball.scale.set(0.42, 0.42, 0.66);
+    const buf = new Uint8Array(W * H * 4);
+    const cvs = document.createElement('canvas'); cvs.width = W; cvs.height = H; const cx = cvs.getContext('2d');
+    const prevColor = renderer.getClearColor(new THREE.Color()), prevAlpha = renderer.getClearAlpha();
+    const _wp = new THREE.Vector3();
+    for (const team of ['home', 'away']) {
+      const rep = team === 'home' ? game.teamA[0] : game.teamB[0];
+      if (!rep) continue;
+      const parent = rep.group.parent, sp = rep.group.position.clone(), sq = rep.group.quaternion.clone();
+      const tagVis = rep.nameTag ? rep.nameTag.visible : false; if (rep.nameTag) rep.nameTag.visible = false;
+      pScene.add(rep.group); rep.group.position.set(0, 0, 0); rep.group.rotation.set(0, 0.55, 0);
+      for (const kind of ['pass', 'rec', 'rush', 'def']) {
+        poseForCard(rep, kind);
+        rep.group.updateMatrixWorld(true);
+        if (kind !== 'def' && rep.handBone) { rep.handBone.getWorldPosition(_wp); ball.position.copy(_wp).add(new THREE.Vector3(0, 0, 0.12)); pScene.add(ball); }
+        else pScene.remove(ball);
+        pCam.position.set(0.15, 1.35, 2.75); pCam.lookAt(0, 1.05, 0);
+        renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
+        renderer.render(pScene, pCam);
+        renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+        const img = cx.createImageData(W, H);
+        for (let y = 0; y < H; y++) img.data.set(buf.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4); // flip Y
+        cx.putImageData(img, 0, 0);
+        portraitCache[`${team}_${kind}`] = cvs.toDataURL('image/png');
+      }
+      restoreCardPose(rep);
+      parent.add(rep.group); rep.group.position.copy(sp); rep.group.quaternion.copy(sq);
+      if (rep.nameTag) rep.nameTag.visible = tagVis;
+    }
+    renderer.setRenderTarget(null); renderer.setClearColor(prevColor, prevAlpha);
+    pScene.remove(ball); rt.dispose();
+  } catch (e) { console.warn('portrait render failed', e); }
+}
 const ordinal = (n) => ['1st', '2nd', '3rd', '4th'][n - 1] || n + 'th';
 const QLABEL = ['1ST', '2ND', '3RD', '4TH'];
 function fmtClock(s) {
@@ -6236,6 +6303,7 @@ loadAssets().then(() => {
   spawnTeams(); spawnBench(); makeBall();
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
+  buildPortraits(); // pre-render the posed card art for both teams
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   buildStartMenu();
