@@ -1420,7 +1420,7 @@ const game = {
   scoreOff: 0, scoreDef: 0,
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
-  deadTimer: 0,
+  deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
   tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
   drag: { active: false, t: 0, dur: 0, hx: 0, hz: 0, grabbers: [], baseAng: 0, big: false, closing: 0, gangShown: 0 }, // wrap-and-drag-down before the pile collapses to ragdolls (+ dynamic pile-on state)
   returnActive: false, returner: null, // interception runback (defense carries)
@@ -3266,20 +3266,20 @@ function applyReplayFrame(fi) {
 function updateReplay(dt) {
   const r = game.replay, f = r.frames, last = f.length - 1;
   if (r.phase === 'play') {
-    r.i += r.rate; // playback speed (full-play replays would drag at deep slow-mo; highlight pass is slower)
+    r.i += r.rate * game.tsFactor; // playback speed (full-play replays would drag at deep slow-mo; highlight pass is slower)
     r.seg += dt;
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
     else if (r.seg >= REPLAY_SEG) { r.phase = 'cutout'; } // mid-play broadcast cut to a new angle
     applyReplayFrame(Math.min(r.i, last));
   } else if (r.phase === 'cutout') { // quick fade to black while the action keeps running
-    r.i += r.rate; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate * game.tsFactor; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.min(1, r.fade + dt * 3.4);
     if (r.fade >= 1 || r.i >= last) {
       r.angleIdx = (r.angleIdx + 1) % REPLAY_ANGLES.length; r.seg = 0; r.snap = true; setReplayLabel();
       if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; } else r.phase = 'cutin';
     }
   } else if (r.phase === 'cutin') { // fade back up from the new angle, action continues
-    r.i += r.rate; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate * game.tsFactor; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 3.4);
     if (r.i >= last) { r.i = last; r.phase = 'hold'; r.hold = 0; }
     else if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
@@ -3297,16 +3297,19 @@ function updateReplay(dt) {
       for (const ev of r.events) ev.fired = false;
     }
   } else { // fadein: replay runs from the start while we fade back up from black
-    r.i += r.rate; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
+    r.i += r.rate * game.tsFactor; r.seg += dt; applyReplayFrame(Math.min(r.i, last));
     r.fade = Math.max(0, r.fade - dt * 2.6);
     if (r.fade <= 0) { r.fade = 0; r.phase = 'play'; }
   }
   if (rpFadeEl) rpFadeEl.style.opacity = r.fade.toFixed(3);
-  // Re-enact each gore event (helmet pop or torn-in-half) as playback reaches it.
+  // Re-enact each gore event (helmet pop or torn-in-half) as playback reaches
+  // it, and drop into slow-mo so the carnage reads (slows the recorded body via
+  // game.tsFactor AND the helmet/blood/torn-half physics via the sim dt).
   for (const ev of r.events) {
     if (ev.fired || r.i < ev.fi) continue;
     ev.fired = true; const ch = game.all[ev.pIdx]; if (!ch) continue;
     if (ev.type === 'tear') tearInHalf(ch, ev.hx, ev.hz, ev.power); else popHelmet(ch, ev.hx, ev.hz, ev.power);
+    timeScale.bulletTime(0.12, 1.0, 1.3); // slow-mo the gore in the replay
   }
   driveReplayFlames(dt, r.i); // ON FIRE / turbo flames follow the replayed bodies
 }
@@ -5723,7 +5726,8 @@ function animate() {
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
-  const dt = realDt * timeScale.update(realDt);
+  const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
+  const dt = realDt * tsf;
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
   updateCut(realDt); // broadcast dip between plays (runs the reset at the dark peak)
   updatePlay(dt);
