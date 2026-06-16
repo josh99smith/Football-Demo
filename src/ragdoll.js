@@ -115,6 +115,7 @@ const BONE_FALLBACKS = {
 
 const LOWER = new Set(['thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR']);
 const MAX_SPIN = 8; // rad/s — a body can never spin up into a contorted blur
+const CAGE_PAD = 0.2; // uniform inset (~torso radius) so no limb pokes past the fence
 
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _dir = new THREE.Vector3();
 const _c = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -326,7 +327,9 @@ export class TackleRagdoll {
       if (cy < minY) { cy = minY; if (v.y < 0) v.y = 0; hit = true; }
       else if (cy > 8) { cy = 8; if (v.y > 0) v.y = 0; hit = true; } // ceiling: no body floats above the field
       if (hx != null) {
-        const mx = hx - seg.r, mz = hz - seg.r;
+        // Uniform body pad (not per-segment seg.r): otherwise the thin head/limbs
+        // clamp closer to the fence than the wide torso and poke through past it.
+        const mx = hx - CAGE_PAD, mz = hz - CAGE_PAD;
         if (cx > mx) { cx = mx; if (v.x > 0) v.x = -v.x * 0.3; hit = true; } else if (cx < -mx) { cx = -mx; if (v.x < 0) v.x = -v.x * 0.3; hit = true; }
         if (cz > mz) { cz = mz; if (v.z > 0) v.z = -v.z * 0.3; hit = true; } else if (cz < -mz) { cz = -mz; if (v.z < 0) v.z = -v.z * 0.3; hit = true; }
       }

@@ -2106,15 +2106,15 @@ function updateDefense() {
       steer = seek(dp, ip.x, ip.z);
       d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
       d.pursuit = true;
-      // A blocker in the way screens this pursuer (slows him — opens a lane).
+      // A blocker in his PATH screens this pursuer (slows him — opens a lane).
       const blk = nearestBlockerTo(dp);
-      d.engaged = !!blk && distXZ(px(blk), dp) < 2.2;
+      d.engaged = blockerScreens(dp, blk, px(carrier));
     } else if (d.job === 'rush') {
       // Pass rush: bear down on the QB; an OL right in front walls you off.
       const qp = px(game.qb);
       steer = seek(dp, qp.x, qp.z);
       const blk = nearestBlockerTo(dp);
-      d.engaged = !!blk && distXZ(px(blk), dp) < 2.2 && !(carrier && carrier === game.qb);
+      d.engaged = blockerScreens(dp, blk, qp) && !(carrier && carrier === game.qb);
       d.turbo = !d.engaged && dist2(dp, qp) > 9;
     } else if (d.job === 'spy') {
       // Shadow the QB a few yards goal-side to wall off the scramble lane.
@@ -2296,6 +2296,42 @@ function clampToField(ch) {
   else if (p.x < -bx) { p.x = -bx; if (ch.vel.x < 0) ch.vel.x = -ch.vel.x * R; }
   if (p.z > bz) { p.z = bz; if (ch.vel.z > 0) ch.vel.z = -ch.vel.z * R; }
   else if (p.z < -bz) { p.z = -bz; if (ch.vel.z < 0) ch.vel.z = -ch.vel.z * R; }
+}
+
+// Hard body-to-body separation: upright players are soft cylinders (BODY_R) and
+// may not interpenetrate. After everyone has moved, push any overlapping pair
+// apart along their center line (half the penetration each) so blockers actually
+// wall people off and a crowd stops melting into one blob. Cheap O(n^2) over the
+// ~14 players. Ragdolls (their own physics) and the locked tackle/battle pile are
+// skipped so those intentional overlaps stay coherent. 2*BODY_R (0.84) is well
+// under TACKLE_R (1.5), so contact never blocks a tackle from triggering first.
+const BODY_R = 0.42;
+function resolveBodies() {
+  const a = game.all, min = BODY_R * 2, min2 = min * min;
+  for (let i = 0; i < a.length; i++) {
+    const A = a[i]; if (A.ragdolling || A.grabbing) continue;
+    const ap = A.group.position;
+    for (let j = i + 1; j < a.length; j++) {
+      const B = a[j]; if (B.ragdolling || B.grabbing) continue;
+      const bp = B.group.position;
+      const dx = bp.x - ap.x, dz = bp.z - ap.z, d2 = dx * dx + dz * dz;
+      if (d2 >= min2 || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2), pen = (min - d) * 0.5, nx = dx / d, nz = dz / d;
+      ap.x -= nx * pen; ap.z -= nz * pen;
+      bp.x += nx * pen; bp.z += nz * pen;
+    }
+  }
+}
+// Does a blocker screen this defender from his target — i.e. is he both close AND
+// roughly between the defender and where he wants to go? (A lineman beside the
+// rusher shouldn't wall him off; only one in his path should.)
+function blockerScreens(dp, blk, target) {
+  if (!blk) return false;
+  const bp = px(blk);
+  if (distXZ(bp, dp) > 2.0) return false;
+  const tx = target.x - dp.x, tz = target.z - dp.z, tl = Math.hypot(tx, tz) || 1;
+  const bx = bp.x - dp.x, bz = bp.z - dp.z, bl = Math.hypot(bx, bz) || 1;
+  return (tx / tl) * (bx / bl) + (tz / tl) * (bz / bl) > 0.25; // blocker lies along the path
 }
 
 // ===========================================================================
@@ -5581,6 +5617,14 @@ function updatePlay(dt) {
     if (ch.desired && (!Number.isFinite(ch.desired.x) || !Number.isFinite(ch.desired.z))) { ch.desired.x = 0; ch.desired.z = 0; }
     clampToField(ch);
     if (liveBall) updateFatigue(ch, dt); // tire with exertion while the ball's live
+  }
+  // Bodies can't pass through each other in open play (the locked pile/battle keep
+  // their intentional overlaps). Run after clamping so a push can't shove anyone
+  // out of the cage, then re-clamp the two who could have been nudged to the edge.
+  if (game.state === STATE.PRESNAP || game.state === STATE.LIVE || game.state === STATE.AIR ||
+      game.state === STATE.RUN || game.state === STATE.RETURN || game.state === STATE.LOOSE) {
+    resolveBodies();
+    for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
   }
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
