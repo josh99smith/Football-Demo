@@ -1459,15 +1459,21 @@ function updateCelebFx(dt) {
     // color-cycling sweep spotlights, and a steady drizzle of fireworks. Runs
     // until stopCelebParty() flips the mode off (REMATCH).
     celebFx.t += dt;
-    celebFx.dim = Math.min(0.5, celebFx.dim + dt * 1.5); applyArenaDim(celebFx.dim);
+    celebFx.dim = Math.min(0.85, celebFx.dim + dt * 1.5); applyArenaDim(celebFx.dim); // near-black arena
     const hue = (t * 0.5) % 1;
-    strobe.visible = true; strobe.color.setHSL(hue, 1, 0.5);
+    strobe.color.setHSL(hue, 1, 0.5);
     strobe.intensity = (Math.sin(t * 26) > 0 ? 1.9 : 0.25);
     for (let i = 0; i < sweepLights.length; i++) {
-      const L = sweepLights[i]; L.color.setHSL((hue + i / sweepLights.length) % 1, 1, 0.6);
+      const L = sweepLights[i];
       L.intensity = Math.min(L.intensity + dt * 16, SPOT_MAX);
-      const a = celebFx.t * 2.4 + i * 2.1;
-      L.target.position.set(Math.cos(a) * 18, 0, celebFx.z * 0.3 + Math.sin(a) * 18); L.target.updateMatrixWorld();
+      if (i === 0) { // KEY light pinned on the dance circle so the dancers stay lit in the dark
+        L.color.setHex(0xffffff);
+        L.target.position.set(0, 0, celebFx.z); L.target.updateMatrixWorld();
+      } else {       // the rest sweep the field in color
+        L.color.setHSL((hue + i / sweepLights.length) % 1, 1, 0.6);
+        const a = celebFx.t * 2.4 + i * 2.1;
+        L.target.position.set(Math.cos(a) * 18, 0, celebFx.z * 0.3 + Math.sin(a) * 18); L.target.updateMatrixWorld();
+      }
     }
     stepShells(dt);
     celebFx.next -= dt;
