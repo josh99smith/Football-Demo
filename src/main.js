@@ -1114,6 +1114,7 @@ let backLClip, backRClip; // backpedal locomotion (left/right drift)
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
+let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
@@ -1162,10 +1163,16 @@ async function loadAssets() {
   // animations3.glb: dances (hip-hop / boom / cheer) + anger (stomp / tantrum)
   // for the end-of-game dance party, same rig, animation-only.
   try { anim3 = await loadGLB('assets/animations3.glb'); } catch (e) { console.warn('animations3 missing', e); }
+  // animations4.glb: Meshy "push" clips (Push_Forward_and_Stop + Push_and_Walk_Forward),
+  // repurposed as line-of-scrimmage blocking + the break-tackle drive (sliced into
+  // variants below). Same rig, animation-only.
+  let anim4 = null;
+  try { anim4 = await loadGLB('assets/animations4.glb'); } catch (e) { console.warn('animations4 missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   if (anim2) for (const c of anim2.animations) if (!byName[c.name]) byName[c.name] = c; // additive: don't override existing
   if (anim3) for (const c of anim3.animations) if (!byName[c.name]) byName[c.name] = c; // additive: dances + anger
+  if (anim4) for (const c of anim4.animations) if (!byName[c.name]) byName[c.name] = c; // additive: push clips (block / battle drive)
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
   // (Hips position) that translates the body during the clip and then snaps
   // back to the spawn spot ("teleport"). We drive position from the game, so
@@ -1255,6 +1262,18 @@ async function loadAssets() {
   // Get-ups (played after a ragdoll when walking back to the line) — keep vertical
   // motion so the body rises off the turf.
   getUpClips = ['Stand_Up4', 'Stand_Up7'].map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  // Engaged-PUSH pool: the Meshy push clips repurposed as the line shove — used by
+  // offensive blockers, the rushers they lock up, AND the break-tackle defender. To
+  // get variety across the field, "Push_Forward_and_Stop" (a full shove) is taken
+  // whole and the long "Push_and_Walk_Forward" drive is sliced into several frame
+  // windows, so each player plays a DIFFERENT version. Rotation-only (in-place shove —
+  // groundClamp plants the feet) and PingPong-looped at runtime so a sustained push
+  // has no restart pop. Falls back to the procedural shove pose if the pack is missing.
+  const pushStop = byName['Push_Forward_and_Stop'], pushWalk = byName['Push_and_Walk_Forward'];
+  blockClips = [];
+  if (pushStop) blockClips.push(inPlace(pushStop)); // one full push-and-set cycle
+  if (pushWalk) for (const [a, b] of [[0, 90], [80, 170], [160, 240]]) // drive sliced into distinct shoves
+    blockClips.push(inPlace(THREE.AnimationUtils.subclip(pushWalk, 'push', a, b, 30)));
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -1346,6 +1365,18 @@ function makeCharacter(team) {
   // each picked per player for variety.
   if (danceClips.length) actions.dance = mk(danceClips[(Math.random() * danceClips.length) | 0]);
   if (sulkClips.length) actions.sulk = mk(sulkClips[(Math.random() * sulkClips.length) | 0]);
+  // Engaged push: a real clip-driven shove (used for blocking AND the break-tackle
+  // drive). Each player picks a random VERSION (a different push slice) and a random
+  // speed so a blocking line reads as individuals. PingPong-looped so the held push
+  // cycles without a pop.
+  let blockTS = 1;
+  if (blockClips.length) {
+    const a = mixer.clipAction(blockClips[(Math.random() * blockClips.length) | 0]);
+    a.setLoop(THREE.LoopPingPong, Infinity); a.enabled = true; a.clampWhenFinished = false;
+    a.setEffectiveWeight(0); a.play();
+    blockTS = 0.82 + Math.random() * 0.5; // per-player tempo
+    actions.block = a;
+  }
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
@@ -1402,7 +1433,7 @@ function makeCharacter(team) {
     // speed/turbo); prevHeading feeds the turn rate; breathPh desyncs idle breathing;
     // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
     bank: 0, lean: 0, prevHeading: 0, breathPh: Math.random() * 6.283, headYaw: 0,
-    blocking: false, blockFace: 0, blockW: 0, // procedural engaged-block pose
+    blocking: false, blockFace: 0, blockW: 0, blockTS, // engaged-block (clip-driven; blockW/applyBlockPose = fallback)
     engaging: null, blockedBy: null, engageT: 0, shedCd: 0, // block lock-up / shed system
     covers: -1, deep: false, assignment: null, zonePoint: null, blockTarget: null,
     strength: 1, ragdoll: null, ragdolling: false,
@@ -5575,6 +5606,9 @@ function updateAnimation(ch, dt) {
   if (ch.dancing && ch.actions.dance) { setClip(ch, 'dance'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
   if (ch.sulk && ch.actions.sulk) { setClip(ch, 'sulk'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
   const inBattle = game.state === STATE.BATTLE && (ch === game.carrier || ch === game.battle.tackler);
+  // The break-tackle (1-on-1) DEFENDER drives in with the push clip; the carrier
+  // keeps the procedural brace/wrap. (Falls back to the run+battle pose if no pack.)
+  const battleTackler = inBattle && ch === game.battle.tackler && !!ch.actions.block;
   if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
@@ -5586,7 +5620,7 @@ function updateAnimation(ch, dt) {
   // Backpedal: when moving backward relative to where he's facing (QB drop-back,
   // a DB dropping into coverage). Pick the left/right drift by lateral velocity.
   const along = ch.vel.x * Math.sin(ch.heading) + ch.vel.z * Math.cos(ch.heading); // + forward / - backward
-  if (inBattle) want = 'run';                // churning legs in the wrestle
+  if (inBattle) want = battleTackler ? 'block' : 'run'; // tackler drives with the push clip; carrier churns
   else {
     // Backpedal is ONLY for a DB dropping into coverage or the QB on his drop-back
     // (facing one way while moving the other). It must be the pass phase and the
@@ -5603,8 +5637,13 @@ function updateAnimation(ch, dt) {
     else if (ch.speed > 6) want = 'run';
     else if (ch.speed > 0.5) want = 'walk';
   }
+  // Engaged block: a clip-driven PUSH (push-clip slice) overrides locomotion while
+  // locked up — the blocker and the rusher he's engaged with both play it (their own
+  // random version/tempo). Procedural shove pose is the fallback.
+  if (ch.blocking && ch.actions.block) want = 'block';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
   setClip(ch, want);
+  if (want === 'block') ch.active.setEffectiveTimeScale(ch.blockTS || 1); // per-player block tempo
   // Foot-skating fix: drive the gait at the speed it was authored for, so a
   // planted foot stays put while the body travels (instead of sliding). The
   // run band churns a touch faster in the BATTLE so it reads as a struggle.
@@ -5623,12 +5662,12 @@ function updateAnimation(ch, dt) {
   // Pick the single active overlay (priority order); its weight eases toward 1
   // while every other eases toward 0 — giving automatic crossfades between poses.
   let active = null;
-  if (inBattle) active = 'battle';
+  if (inBattle) active = battleTackler ? null : 'battle'; // tackler = pure push clip (no procedural battle overlay)
   else if (grabbing) active = 'grab';
   else if (ball.mode === 'secured' && ch === ball.catcher) active = 'catch';
   else if (ch.throwAnimT > 0) active = 'throw';
   else if (ch.armPoseT > 0) active = 'arm';
-  else if (ch.blocking) active = 'block';
+  else if (ch.blocking && !ch.actions.block) active = 'block'; // procedural shove = fallback only (no clip pack)
   else if (ch.sulk) active = 'sulk';
   ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
   ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
@@ -5666,7 +5705,8 @@ function updateAnimation(ch, dt) {
   // above, and the leaning gang-tackle grab clamps here. Plain locomotion just
   // sits at the calibrated height — clear any leftover lift from a finished move.
   const draggedCarrier = game.drag.active && ch === game.carrier && !ch.ragdolling; // the man being wrapped/dragged
-  if (grabbing || draggedCarrier) groundClamp(ch);
+  const clipBlocking = (ch.blocking && ch.actions.block) || battleTackler; // push clip steps the feet -> clamp to the turf
+  if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
 }
 // Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
