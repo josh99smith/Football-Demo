@@ -865,44 +865,40 @@ body.replay-mode #build-badge { display: none !important; }
 /* ---------- Post-play player cards ---------- */
 #playercards {
   position: fixed; z-index: 16;
-  left: 50%; transform: translateX(-50%);
-  top: max(62px, calc(env(safe-area-inset-top) + 54px));
-  display: flex; gap: 12px; pointer-events: none;
+  left: max(8px, env(safe-area-inset-left));
+  top: max(30px, calc(env(safe-area-inset-top) + 26px));
+  display: flex; flex-direction: column; gap: 7px; pointer-events: none;
   animation: pcIn 0.28s ease both;
 }
 #playercards.hidden { display: none; }
-@keyframes pcIn { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes pcIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
 #playercards .pc-card {
-  position: relative; width: 186px; color: #eef2f7; overflow: hidden;
+  position: relative; width: 124px; color: #eef2f7; overflow: hidden;
   background: linear-gradient(180deg, rgba(20,26,36,0.92), rgba(8,11,16,0.92));
-  border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 14px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); backdrop-filter: blur(7px);
+  border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); backdrop-filter: blur(7px);
 }
 #playercards .pc-card.pc-home { border-color: rgba(214,40,40,0.7); }
 #playercards .pc-card.pc-away { border-color: rgba(60,120,230,0.7); }
+/* Bust crop: show the helmet + top half of the body (object-position pulls the
+   frame up so the head/helmet stays in view and the legs are cropped off). */
 #playercards .pc-portrait {
-  display: block; width: 100%; height: 150px; object-fit: contain;
-  background: radial-gradient(ellipse 70% 60% at 50% 38%, rgba(255,255,255,0.12), rgba(0,0,0,0) 70%);
+  display: block; width: 100%; height: 84px; object-fit: cover; object-position: 50% 14%;
+  background: radial-gradient(ellipse 70% 60% at 50% 34%, rgba(255,255,255,0.12), rgba(0,0,0,0) 70%);
 }
-#playercards .pc-card.pc-home .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 38%, rgba(214,40,40,0.32), rgba(0,0,0,0) 70%); }
-#playercards .pc-card.pc-away .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 38%, rgba(60,120,230,0.34), rgba(0,0,0,0) 70%); }
+#playercards .pc-card.pc-home .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 34%, rgba(214,40,40,0.32), rgba(0,0,0,0) 70%); }
+#playercards .pc-card.pc-away .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 34%, rgba(60,120,230,0.34), rgba(0,0,0,0) 70%); }
 #playercards .pc-ovr {
-  position: absolute; top: 8px; right: 8px;
-  min-width: 34px; padding: 3px 6px; border-radius: 9px; text-align: center;
-  font-weight: 900; font-size: 20px; line-height: 1; font-variant-numeric: tabular-nums;
+  position: absolute; top: 6px; right: 6px;
+  min-width: 26px; padding: 2px 5px; border-radius: 8px; text-align: center;
+  font-weight: 900; font-size: 15px; line-height: 1; font-variant-numeric: tabular-nums;
   color: #1a1208; background: linear-gradient(180deg, #ffe06a, #f0a020);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
 }
-#playercards .pc-body { padding: 7px 11px 10px; border-top: 1px solid rgba(255,255,255,0.1); }
-#playercards .pc-name { font-weight: 900; font-size: 18px; letter-spacing: 0.5px; color: #fff; line-height: 1.05; }
-#playercards .pc-pos { font-size: 10px; font-weight: 800; letter-spacing: 1px; color: var(--accent); margin-top: 1px; }
-#playercards .pc-stat { margin-top: 6px; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; color: #dbe7ff; }
-@media (max-width: 560px) {
-  #playercards .pc-card { width: 150px; }
-  #playercards .pc-portrait { height: 120px; }
-  #playercards .pc-name { font-size: 15px; }
-  #playercards .pc-ovr { font-size: 17px; }
-}
+#playercards .pc-body { padding: 5px 8px 7px; border-top: 1px solid rgba(255,255,255,0.1); }
+#playercards .pc-name { font-weight: 900; font-size: 13px; letter-spacing: 0.4px; color: #fff; line-height: 1.05; }
+#playercards .pc-pos { font-size: 8px; font-weight: 800; letter-spacing: 0.8px; color: var(--accent); margin-top: 1px; }
+#playercards .pc-stat { margin-top: 4px; font-size: 9.5px; font-weight: 800; font-variant-numeric: tabular-nums; color: #dbe7ff; }
 
 /* ---------- Balance telemetry overlay (toggle: I) ---------- */
 #dbg {

@@ -2944,7 +2944,7 @@ function buildPortraits() {
         rep.group.updateMatrixWorld(true);
         if (kind !== 'def' && rep.handBone) { rep.handBone.getWorldPosition(_wp); ball.position.copy(_wp).add(new THREE.Vector3(0, 0, 0.12)); pScene.add(ball); }
         else pScene.remove(ball);
-        pCam.position.set(0.15, 1.35, 2.75); pCam.lookAt(0, 1.05, 0);
+        pCam.position.set(0.12, 1.5, 2.25); pCam.lookAt(0, 1.42, 0); // bust framing: helmet + upper body
         renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
         renderer.render(pScene, pCam);
         renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
