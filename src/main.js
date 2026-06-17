@@ -1537,6 +1537,8 @@ const TUNE_DEFAULTS = {
   // World + audio
   fogColor: '#12203f', fogNear: 130, fogFar: 330,  // night haze
   masterVolume: 0.5,                               // master audio gain
+  // Debug visualization overlays (0/1)
+  vizColliders: 0, vizVectors: 0, vizLabels: 0,
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -6617,6 +6619,10 @@ const DBG_KNOBS = [
   { tab: 'World', key: 'fogNear', label: 'Fog near', min: 0, max: 300, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'fogFar', label: 'Fog far', min: 50, max: 600, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'masterVolume', label: 'Volume', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  // --- Viz: AI / hitbox debug overlays ---
+  { tab: 'Viz', key: 'vizColliders', label: 'Collider rings', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
+  { tab: 'Viz', key: 'vizVectors', label: 'Velocity + assignments', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
+  { tab: 'Viz', key: 'vizLabels', label: 'State labels', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6748,6 +6754,61 @@ buildDebugPanel(); // wire the sliders/buttons (panel starts hidden)
     if (fab) { fab.classList.remove('hidden'); fab.addEventListener('click', () => toggleDebugPanel()); }
   }
 }
+// ---- Debug AI / hitbox overlay: collider rings, velocity + assignment vectors,
+// and projected state labels. Drawn from the TUNE.viz* toggles (Viz tab). ----------
+let dbgVizLines = null; let _vizPos = null, _vizCol = null; const _vizLabelDivs = [];
+const VIZ_MAX = 7000; const _vizV = new THREE.Vector3();
+function ensureViz() {
+  if (dbgVizLines) return;
+  const g = new THREE.BufferGeometry();
+  _vizPos = new Float32Array(VIZ_MAX * 3); _vizCol = new Float32Array(VIZ_MAX * 3);
+  g.setAttribute('position', new THREE.BufferAttribute(_vizPos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(_vizCol, 3));
+  const m = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95, depthTest: false });
+  dbgVizLines = new THREE.LineSegments(g, m); dbgVizLines.frustumCulled = false; dbgVizLines.renderOrder = 999;
+  scene.add(dbgVizLines);
+}
+function updateDbgViz() {
+  const drawL = TUNE.vizColliders || TUNE.vizVectors, lbl = TUNE.vizLabels;
+  ensureViz();
+  const labelsEl = document.getElementById('dbgviz-labels');
+  if (!drawL && !lbl) { dbgVizLines.visible = false; if (labelsEl) labelsEl.style.display = 'none'; return; }
+  dbgVizLines.visible = !!drawL;
+  let n = 0; const P = _vizPos, C = _vizCol;
+  const seg = (x1, y1, z1, x2, y2, z2, r, g, b) => { if (n + 2 > VIZ_MAX) return; let i = n * 3; P[i] = x1; P[i + 1] = y1; P[i + 2] = z1; C[i] = r; C[i + 1] = g; C[i + 2] = b; n++; i = n * 3; P[i] = x2; P[i + 1] = y2; P[i + 2] = z2; C[i] = r; C[i + 1] = g; C[i + 2] = b; n++; };
+  const circ = (cx, cz, rad, y, r, g, b) => { const S = 22; for (let i = 0; i < S; i++) { const a0 = i / S * 6.2832, a1 = (i + 1) / S * 6.2832; seg(cx + Math.cos(a0) * rad, y, cz + Math.sin(a0) * rad, cx + Math.cos(a1) * rad, y, cz + Math.sin(a1) * rad, r, g, b); } };
+  if (drawL) for (const ch of game.all) {
+    if (ch.ragdolling) continue; const p = ch.group.position; const def = ch.team === 'def';
+    if (TUNE.vizColliders) {
+      circ(p.x, p.z, TUNE.bodyR, 0.06, 0.6, 0.6, 0.6);                          // body collider (gray)
+      if (ch === game.carrier) circ(p.x, p.z, TUNE.bodyR + 0.12, 0.07, 1, 0.9, 0.2); // carrier highlight
+      if (def) circ(p.x, p.z, TUNE.tackleReach, 0.05, 1, 0.25, 0.25);           // tackle reach (red)
+      else if (ch.role === 'WR' || ch.role === 'RB' || ch.role === 'TE') circ(p.x, p.z, TUNE.catchReach, 0.05, 0.3, 0.8, 1); // catch reach (cyan)
+    }
+    if (TUNE.vizVectors) {
+      if (ch.speed > 0.2) seg(p.x, 0.1, p.z, p.x + ch.vel.x * 0.28, 0.1, p.z + ch.vel.z * 0.28, 0.3, 1, 0.4); // velocity (green)
+      let t = null, col = null;
+      if (ch.engaging) { t = ch.engaging.group.position; col = [1, 0.6, 0.1]; }
+      else if (ch.blockTarget) { t = ch.blockTarget.group.position; col = [1, 0.85, 0.2]; }
+      else if (def && ch.covers >= 0 && game.receivers && game.receivers[ch.covers]) { t = game.receivers[ch.covers].group.position; col = [1, 0.3, 0.3]; }
+      if (t) seg(p.x, 0.12, p.z, t.x, 0.12, t.z, col[0], col[1], col[2]);
+    }
+  }
+  const gg = dbgVizLines.geometry; gg.setDrawRange(0, n); gg.attributes.position.needsUpdate = true; gg.attributes.color.needsUpdate = true; gg.boundingSphere = null;
+  if (!labelsEl) return;
+  if (!lbl) { labelsEl.style.display = 'none'; return; }
+  labelsEl.style.display = 'block';
+  const W = window.innerWidth, H = window.innerHeight; let li = 0;
+  for (const ch of game.all) {
+    if (ch.ragdolling) continue;
+    let div = _vizLabelDivs[li]; if (!div) { div = document.createElement('div'); div.className = 'vl'; labelsEl.appendChild(div); _vizLabelDivs[li] = div; }
+    _vizV.set(ch.group.position.x, ch.group.position.y + 2.2, ch.group.position.z); _vizV.project(camera);
+    if (_vizV.z > 1 || _vizV.z < -1) { div.style.display = 'none'; }
+    else { div.style.display = 'block'; div.style.left = ((_vizV.x * 0.5 + 0.5) * W) + 'px'; div.style.top = ((-_vizV.y * 0.5 + 0.5) * H) + 'px'; div.textContent = (ch === game.carrier ? '★' : '') + (ch.role || '?') + '·' + (ch.job || '-'); div.style.color = ch.team === 'def' ? '#9ec0ff' : '#ffb0b0'; }
+    li++;
+  }
+  for (; li < _vizLabelDivs.length; li++) _vizLabelDivs[li].style.display = 'none';
+}
 function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
   updateDbg(); // balance telemetry overlay (toggle with I)
@@ -6758,6 +6819,7 @@ function animate() {
   if (dbgCam.on) {
     if (dbgCam.scrub >= 0 && game.replay.frames.length) applyReplayFrame(Math.min(dbgCam.scrub, dbgScrubMax()));
     applyDebugCam();
+    updateDbgViz();
     renderer.render(scene, camera);
     if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); }
     requestAnimationFrame(animate);
@@ -6793,6 +6855,7 @@ function animate() {
 
   updateAmbience(realDt);
   updateCamera(realDt);
+  updateDbgViz();
   renderer.render(scene, camera);
   if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); } // debug screenshot (clean 3D, no HUD)
   requestAnimationFrame(animate);
