@@ -903,3 +903,16 @@ body.replay-mode #build-badge { display: none !important; }
   #playercards .pc-name { font-size: 15px; }
   #playercards .pc-ovr { font-size: 17px; }
 }
+
+/* ---------- Balance telemetry overlay (toggle: I) ---------- */
+#dbg {
+  position: fixed; z-index: 40;
+  left: max(8px, env(safe-area-inset-left)); top: 50%;
+  transform: translateY(-50%);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px; line-height: 1.45; white-space: pre;
+  color: #aef9c8; background: rgba(0, 0, 0, 0.6);
+  padding: 7px 9px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.14);
+  pointer-events: none;
+}
+#dbg.hidden { display: none; }

@@ -1434,6 +1434,7 @@ const game = {
   selected: 5, receivers: [],
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
+  tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -2698,6 +2699,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
+    if (e.code === 'KeyI') toggleDbg();              // I = balance telemetry overlay
     if (game.choosing) {
       if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
@@ -2758,6 +2760,7 @@ function recordStats(result, endZ) {
   const p = game.play; if (!p) return;
   const gain = Number.isFinite(endZ) ? Math.round(game.dir * (endZ - game.los)) : 0;
   const td = result === 'TD';
+  if (game.tally && gain >= 20) game.tally.bigPlays++;
   if (p.sack) { if (p.tackler && p.tackler.stats) { p.tackler.stats.tkl++; p.tackler.stats.sack++; } return; }
   if (p.completed && p.catcher) {                          // completed pass
     if (p.passer && p.passer.stats) { p.passer.stats.att++; p.passer.stats.cmp++; p.passer.stats.passYds += gain; if (td) p.passer.stats.passTD++; }
@@ -3130,11 +3133,27 @@ function endGame() {
   douseFire();
   audio.whistle();
   showBanner('FINAL', game.scoreOff >= game.scoreDef ? '#3fe08a' : '#ff6a5a');
+  try { console.log('[BALANCE]', balanceSummary().text); } catch (e) { /* ignore */ }
+}
+// ---- Balance telemetry: aggregate team box scores + game tally. Tunable knobs
+// are read against these numbers; toggle the live overlay with the 'I' key.
+function teamAgg(team) {
+  const a = { cmp: 0, att: 0, passYds: 0, recYds: 0, car: 0, rushYds: 0, tkl: 0, sack: 0, intCaught: 0, passTD: 0, rushTD: 0, recTD: 0 };
+  for (const ch of team) { const s = ch.stats; if (!s) continue; for (const k in a) a[k] += s[k] || 0; }
+  return a;
+}
+function balanceSummary() {
+  const A = game.teamA ? teamAgg(game.teamA) : null, B = game.teamB ? teamAgg(game.teamB) : null;
+  const t = game.tally;
+  const line = (nm, sc, g) => g ? `${nm} ${sc}  |  ${g.cmp}/${g.att} ${g.passYds}py  ${g.car}car ${g.rushYds}ry  ${g.sack}sk ${g.tkl}tkl ${g.intCaught}int` : `${nm} ${sc}`;
+  const text = `${line('RPR', game.scoreOff, A)}\n${line('DMN', game.scoreDef, B)}\nQ${game.quarter} plays:${t.plays} sacks:${t.sacks} fum:${t.fumbles} pick:${t.picks} big:${t.bigPlays}`;
+  return { A, B, text };
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
+  game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
@@ -3649,6 +3668,7 @@ function snap() {
   clearPlayResult(); // wipe last play's readout
   recycleReplayBuffers(); game.replay.bigHit = false; // recycle last play's buffers, fresh footage for this play
   game.whistled = false; // the play-ending whistle hasn't blown yet
+  if (game.tally) game.tally.plays++;
   game.playClock = 0; game.lastBreak = -10;
   game.play = { passer: null, target: null, catcher: null, carrier: null, tackler: null, viaPass: false, completed: false, intBy: null, sack: false }; // who did what (box score + post-play card)
   hidePlayerCards();
@@ -4453,6 +4473,7 @@ function updateBall(dt) {
       if (ball.intercept) {
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
+        if (game.tally) game.tally.picks++;
         beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
       } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } enterRun(c, 'Caught it! Run!'); }
     }
@@ -4568,7 +4589,7 @@ function checkSack() {
   for (const d of game.defense) {
     if (d.ragdolling) continue;
     if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
-      game.carrier = game.qb; if (game.play) game.play.sack = true; beginTackle(d, true);
+      game.carrier = game.qb; if (game.play) game.play.sack = true; if (game.tally) game.tally.sacks++; beginTackle(d, true);
       showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit(); audio.say('sack', { force: true });
       game.replay.bigHit = true; // a sack is always a highlight
       return;
@@ -5033,6 +5054,7 @@ function ballLooseFromAir() {
   setStatus('Loose ball — recover it!'); updateButtons();
 }
 function startFumble(carrier, hitX, hitZ) {
+  if (game.tally) game.tally.fumbles++;
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
   const cp = carrier.group.position;
   ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null; ball.fromFence = false; ball.grabCd = 0.55; // let it bounce before anyone can fall on it
@@ -6234,8 +6256,13 @@ function updateFps() {
   const now = performance.now(), el = now - _fpsT;
   if (el >= 500) { fpsEl.textContent = Math.round(_fpsN * 1000 / el) + ' FPS'; _fpsT = now; _fpsN = 0; }
 }
+const dbgEl = document.getElementById('dbg');
+let dbgOn = false;
+function toggleDbg() { dbgOn = !dbgOn; if (dbgEl) dbgEl.classList.toggle('hidden', !dbgOn); }
+function updateDbg() { if (dbgOn && dbgEl) { try { dbgEl.textContent = balanceSummary().text; } catch (e) { /* ignore */ } } }
 function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
+  updateDbg(); // balance telemetry overlay (toggle with I)
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
