@@ -1509,6 +1509,11 @@ const TUNE_DEFAULTS = {
   bodyR: 0.42,           // player body-collider radius — half the min spacing (yd)
   playerSize: 1.0,       // × visual player model scale
   ballSize: 1.0,         // × visual football scale
+  exposure: 1.3,         // renderer tone-mapping exposure (overall brightness)
+  lightAmbient: 0.6,     // hemisphere (sky/ground) ambient intensity
+  lightKey: 0.85,        // sun/moonlight key directional intensity
+  lightRim: 0.35,        // cool rim directional intensity
+  lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1683,8 +1688,15 @@ function launchShell(x, z) {
 const SPOT_MAX = 20; // dramatic white field spotlights (light show / party)
 function applyArenaDim(dim) {           // dim the night lighting for the light show (0..1)
   const k = 1 - dim * 0.97;            // full dim crushes the arena to ~3% — nearly black, not pure 0
-  hemi.intensity = 0.6 * k; sun.intensity = 0.85 * k; rim.intensity = 0.35 * k;
-  for (const s of towerSpots) s.intensity = (s.userData.base || 1.6) * k; // kill the floodlights too, else the field stays lit
+  hemi.intensity = TUNE.lightAmbient * k; sun.intensity = TUNE.lightKey * k; rim.intensity = TUNE.lightRim * k;
+  for (const s of towerSpots) s.intensity = (s.userData.base || 1.6) * TUNE.lightFloods * k; // kill the floodlights too, else the field stays lit
+}
+// Apply the debug lighting knobs to the scene (the un-dimmed baseline). Called at
+// boot and whenever a lighting slider changes.
+function applyLighting() {
+  renderer.toneMappingExposure = TUNE.exposure;
+  hemi.intensity = TUNE.lightAmbient; sun.intensity = TUNE.lightKey; rim.intensity = TUNE.lightRim;
+  for (const s of towerSpots) s.intensity = (s.userData.base || 1.6) * TUNE.lightFloods;
 }
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
@@ -6515,6 +6527,12 @@ const DBG_KNOBS = [
   { key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
   { key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
   { key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // Lighting
+  { key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
+  { key: 'lightAmbient', label: 'Ambient light', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
+  { key: 'lightKey', label: 'Key / sun light', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
+  { key: 'lightRim', label: 'Rim light', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
+  { key: 'lightFloods', label: 'Floodlights ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), onChange: () => applyLighting() },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6725,6 +6743,7 @@ loadAssets().then(() => {
   game.firstDown = game.los + FIRST_DOWN_YDS;
   buildPortraits(); // pre-render the posed card art for both teams
   if (TUNE.playerSize !== 1) applyPlayerSize(); // honor a saved player-size override
+  applyLighting(); // honor saved lighting knobs (towers exist now)
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   buildStartMenu();
