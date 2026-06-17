@@ -37,7 +37,7 @@ camera.position.set(0, 7, -12);
 // Free debug camera (orbit/zoom/pan) + rewind scrubber — toggled from the debug
 // panel or the C key. While on, the sim is frozen so any angle can be inspected /
 // screenshotted, and the play can be scrubbed back through the replay buffer.
-const dbgCam = { on: false, az: 0.6, el: 0.55, dist: 16, target: new THREE.Vector3(0, 1.2, 0), scrub: -1, shot: false };
+const dbgCam = { on: false, az: 0.6, el: 0.55, dist: 16, target: new THREE.Vector3(0, 1.2, 0), scrub: -1, shot: false, autoRotate: false, follow: false };
 
 // --- Sky dome (vertical gradient) + a crowd-filled stadium bowl ---
 function gradientCanvas(stops, w, h) {
@@ -1323,7 +1323,7 @@ function makeCharacter(team) {
   model.position.y = isDef ? DEF_GROUND_Y : GROUND_Y;
   model.traverse((o) => {
     if (o.isMesh) {
-      o.castShadow = true; o.frustumCulled = false;
+      o.castShadow = true; o.frustumCulled = false; o.userData.isBody = true;
       o.material = o.material.clone();
       if (isDef && !useBlue) { // fallback: tint the offense model blue
         o.material.color.setHex(0x5f8dff);
@@ -1525,6 +1525,18 @@ const TUNE_DEFAULTS = {
   lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
   lightFloodColor: '#fff4d6',    // floodlight color
   playerGlow: 0.35,      // player skin self-illumination (1 = fully self-lit, 0 = scene-lit only)
+  // Look / materials
+  offenseTint: '#ffffff', defenseTint: '#ffffff', // per-team body color multiply
+  skinRough: 1.0, skinMetal: 0.0,                  // player skin material
+  turfTint: '#ffffff',                             // field grass color multiply
+  // Camera framing
+  camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
+  // FX / juice
+  ragdolls: 1, gore: 1,                            // 0 = off
+  shakeAmt: 1.0, hitZoomAmt: 1.0,                  // × screen shake / hit zoom-punch
+  // World + audio
+  fogColor: '#12203f', fogNear: 130, fogFar: 330,  // night haze
+  masterVolume: 0.5,                               // master audio gain
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1719,6 +1731,24 @@ function applyLighting() {
   rim.intensity = TUNE.lightRim; rim.color.set(TUNE.lightRimColor);
   for (const s of towerSpots) { s.intensity = (s.userData.base || 1.6) * TUNE.lightFloods; s.color.set(TUNE.lightFloodColor); }
 }
+const _tintC = new THREE.Color();
+// Material knobs: per-team body tint + skin metal/rough, and a turf color multiply.
+function applyLook() {
+  for (const ch of game.all) {
+    if (!ch.model) continue;
+    const tint = ch.team === 'def' ? TUNE.defenseTint : TUNE.offenseTint;
+    ch.model.traverse((o) => {
+      if (o.isMesh && o.userData.isBody && o.material) {
+        o.material.color.set(tint); o.material.roughness = TUNE.skinRough; o.material.metalness = TUNE.skinMetal; o.material.needsUpdate = true;
+      }
+    });
+  }
+  for (const tm of turfMats) { if (!tm.base) tm.base = tm.mat.color.clone(); tm.mat.color.copy(tm.base).multiply(_tintC.set(TUNE.turfTint)); }
+}
+function applyFog() {
+  if (scene.fog) { scene.fog.color.set(TUNE.fogColor); scene.fog.near = TUNE.fogNear; scene.fog.far = TUNE.fogFar; }
+}
+function applyAudio() { try { if (audio && audio.master) audio.master.gain.value = TUNE.masterVolume; } catch (e) { /* audio not ready */ } }
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
   // spark physics (gravity + air drag + fade; glitter twinkles)
@@ -2643,6 +2673,8 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
 
 // ---- Free debug camera: orbit/zoom/pan, rewind scrub, screenshot ----------------
 function applyDebugCam() {
+  if (dbgCam.follow) { const c = game.carrier || game.qb || ball.holder; const p = c ? c.group.position : (ball.mesh ? ball.mesh.position : null); if (p) dbgCam.target.lerp(p, 0.25); }
+  if (dbgCam.autoRotate) dbgCam.az += 0.012;
   const t = dbgCam.target, ce = Math.cos(dbgCam.el), se = Math.sin(dbgCam.el);
   camera.position.set(t.x + dbgCam.dist * ce * Math.sin(dbgCam.az), Math.max(0.3, t.y + dbgCam.dist * se), t.z + dbgCam.dist * ce * Math.cos(dbgCam.az));
   camera.lookAt(t);
@@ -3198,7 +3230,7 @@ class ScreenShake {
       oy += (Math.random() * 2 - 1) * maxOffset * 0.5 * s;
       this.trauma = Math.max(0, this.trauma - dt * 1.6);
     }
-    this.offX = ox; this.offY = oy; this.offZ = oz;
+    this.offX = ox * TUNE.shakeAmt; this.offY = oy * TUNE.shakeAmt; this.offZ = oz * TUNE.shakeAmt;
     const k = Math.max(0, 1 - dt * 11); // snappy lurch-out, recovers in ~0.18s
     this.kickX *= k; this.kickZ *= k;
     if (Math.abs(this.kickX) < 0.01) this.kickX = 0;
@@ -3416,6 +3448,7 @@ const WALK_SPEED = 5.2; // jog-back pace during the between-plays reset
 const flyingHelmets = [];
 const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion(), _bloodPos = new THREE.Vector3();
 function popHelmet(ch, hx, hz, power) {
+  if (!TUNE.gore) return; // gore disabled (debug)
   const h = ch.helmet;
   if (!h || !h.userData.rest || h.userData.flying) return;
   scene.attach(h); // detach from the head bone, keeping its current world transform
@@ -3516,6 +3549,7 @@ function buildHalf(ch, keepTop, bit) {
 }
 const _tearHD = new THREE.Vector3(), _tearCV = new THREE.Vector3();
 function tearInHalf(ch, hx, hz, power) {
+  if (!TUNE.gore) return; // gore disabled (debug)
   if (!ch.model || ch.torn) return;
   if (!ch._torn) ch._torn = { top: buildHalf(ch, true, 0x1000), bottom: buildHalf(ch, false, 0x2000) };
   // The original body is replaced by the two halves — drop its ragdoll.
@@ -4871,6 +4905,7 @@ function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
 let midplayBit = 0;
 const MIDPLAY_BITS = [0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800];
 function knockdownDefender(d) {
+  if (!TUNE.ragdolls) return; // ragdolls disabled (debug)
   const c = game.carrier ? game.carrier.group.position : d.group.position;
   const dx = d.group.position.x - c.x, dz = d.group.position.z - c.z;
   const l = Math.hypot(dx, dz) || 1;
@@ -4993,7 +5028,7 @@ function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
   if (game.play && game.defense.includes(lead)) game.play.tackler = lead; // box score: credit the tackle
-  if (!physics) { endPlay('tackle', cp.z); return; } // no physics: instant whistle
+  if (!physics || !TUNE.ragdolls) { endPlay('tackle', cp.z); return; } // no physics / ragdolls off: instant whistle
 
   // Gather the swarm: the lead plus the nearest defenders crashing the carrier.
   const pile = [lead, ...game.defense
@@ -6322,7 +6357,7 @@ const _tp = new THREE.Vector3(), _tl = new THREE.Vector3(), _fp = new THREE.Vect
 const _cinePos = new THREE.Vector3(), _cineLook = new THREE.Vector3();
 
 /** Punch the camera in tight on the action for `hold` seconds (a hit close-up). */
-function hitZoom(hold = 0.5, zoom = 1) { cam.cineHold = Math.max(cam.cineHold, hold); cam.cineZoom = Math.max(cam.cineZoom, zoom); }
+function hitZoom(hold = 0.5, zoom = 1) { cam.cineHold = Math.max(cam.cineHold, hold); cam.cineZoom = Math.max(cam.cineZoom, 1 + (zoom - 1) * TUNE.hitZoomAmt); }
 // Cinematic camera override: 'hero' (low slow orbit on the star pre-snap) or
 // 'td' (low up-angle flex/standover on the scorer). Cleared when it expires or
 // the play state moves on (see updateCamera).
@@ -6443,8 +6478,8 @@ function updateCamera(dt) {
   // Framing: wide & high for pass plays (see the QB, the arc and the routes);
   // tighter & lower behind a ball carrier. Eased so a catch / incompletion
   // glides instead of snapping.
-  const back = passPlay ? 11 : chase ? 7 : loose ? 9.5 : 8.5;
-  const hgt = air ? Math.max(6.8, _fp.y + 3) : passPlay ? 6.8 : chase ? 4.3 : 5.6;
+  const back = (passPlay ? 11 : chase ? 7 : loose ? 9.5 : 8.5) * TUNE.camDist;
+  const hgt = (air ? Math.max(6.8, _fp.y + 3) : passPlay ? 6.8 : chase ? 4.3 : 5.6) * TUNE.camHeight;
   const aheadL = passPlay ? 11 : chase ? 7.5 : loose ? 6 : 6.5;
   const lookH = air ? (_fp.y * 0.5 + 1.0) : 1.5;
   const fe = Math.min(1, dt * 4); // framing ease
@@ -6473,7 +6508,7 @@ function updateCamera(dt) {
   }
   // FOV: a touch wider on pass plays so more of the field fits; the hit close-up
   // zooms in from there (down to ~34°, tighter on the biggest hits).
-  const baseFov = passPlay ? 60 : 55;
+  const baseFov = (passPlay ? 60 : 55) * TUNE.camFov;
   cam.fovKick = Math.max(0, cam.fovKick - dt * 22); // snap zoom-punch, eases out
   const minFov = THREE.MathUtils.clamp(34 - (z - 1) * 17, 18, 34);
   const wantFov = baseFov - (baseFov - minFov) * e - cam.fovKick;
@@ -6550,6 +6585,12 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
   { tab: 'Colliders', key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // --- Look / materials ---
+  { tab: 'Look', key: 'offenseTint', label: 'Offense tint', type: 'color', onChange: () => applyLook() },
+  { tab: 'Look', key: 'defenseTint', label: 'Defense tint', type: 'color', onChange: () => applyLook() },
+  { tab: 'Look', key: 'skinRough', label: 'Skin roughness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
+  { tab: 'Look', key: 'skinMetal', label: 'Skin metalness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
+  { tab: 'Look', key: 'turfTint', label: 'Turf tint', type: 'color', onChange: () => applyLook() },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
@@ -6562,6 +6603,20 @@ const DBG_KNOBS = [
   { tab: 'Lighting', key: 'lightFloods', label: 'Floodlights ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), onChange: L },
   { tab: 'Lighting', key: 'lightFloodColor', label: 'Floodlight color', type: 'color', onChange: L },
   { tab: 'Lighting', key: 'playerGlow', label: 'Player glow', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerGlow() },
+  // --- Camera framing (the Camera tab also holds the free-cam / rewind controls) ---
+  { tab: 'Camera', key: 'camFov', label: 'FOV ×', min: 0.6, max: 1.6, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Camera', key: 'camDist', label: 'Cam distance ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Camera', key: 'camHeight', label: 'Cam height ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  // --- FX / juice ---
+  { tab: 'FX', key: 'ragdolls', label: 'Ragdolls', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
+  { tab: 'FX', key: 'gore', label: 'Gore', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
+  { tab: 'FX', key: 'shakeAmt', label: 'Screen shake ×', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'FX', key: 'hitZoomAmt', label: 'Hit zoom ×', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // --- World + audio ---
+  { tab: 'World', key: 'fogColor', label: 'Fog color', type: 'color', onChange: () => applyFog() },
+  { tab: 'World', key: 'fogNear', label: 'Fog near', min: 0, max: 300, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
+  { tab: 'World', key: 'fogFar', label: 'Fog far', min: 50, max: 600, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
+  { tab: 'World', key: 'masterVolume', label: 'Volume', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6594,7 +6649,7 @@ function buildDebugPanel() {
   rowsWrap.innerHTML = ''; tabsBar.innerHTML = '';
   // Tabs: one per knob group, plus a Camera tab holding the cam/rewind controls.
   const tabs = []; for (const k of DBG_KNOBS) if (!tabs.includes(k.tab)) tabs.push(k.tab);
-  tabs.push('Camera');
+  if (!tabs.includes('Camera')) tabs.push('Camera');
   const panes = {};
   for (const t of tabs) { const p = document.createElement('div'); p.className = 'dbg-pane'; panes[t] = p; rowsWrap.appendChild(p); }
   for (const k of DBG_KNOBS) buildKnobRow(k, panes[k.tab]);
@@ -6638,6 +6693,8 @@ function buildDebugPanel() {
   dbgPanelEl.querySelector('#dbg-rew').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub - 5); });
   dbgPanelEl.querySelector('#dbg-fwd').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub + 5); });
   dbgPanelEl.querySelector('#dbg-shot').addEventListener('click', () => { dbgCam.shot = true; });
+  const arBtn = dbgPanelEl.querySelector('#dbg-autorot'); arBtn.addEventListener('click', () => { dbgCam.autoRotate = !dbgCam.autoRotate; arBtn.textContent = 'Auto-rotate: ' + (dbgCam.autoRotate ? 'on' : 'off'); });
+  const flBtn = dbgPanelEl.querySelector('#dbg-follow'); flBtn.addEventListener('click', () => { dbgCam.follow = !dbgCam.follow; flBtn.textContent = 'Follow ball: ' + (dbgCam.follow ? 'on' : 'off'); });
   dbgPanelEl.querySelector('#dbg-scrub').addEventListener('input', (e) => { if (dbgCam.on) dbgCam.scrub = THREE.MathUtils.clamp(Math.round(+e.target.value), 0, dbgScrubMax()); });
   updateDbgExport();
 }
@@ -6792,7 +6849,7 @@ loadAssets().then(() => {
   game.firstDown = game.los + FIRST_DOWN_YDS;
   buildPortraits(); // pre-render the posed card art for both teams
   if (TUNE.playerSize !== 1) applyPlayerSize(); // honor a saved player-size override
-  applyLighting(); // honor saved lighting knobs (towers exist now)
+  applyLighting(); applyLook(); applyFog(); applyAudio(); // honor saved Look/Lighting/World/Audio knobs
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   buildStartMenu();
