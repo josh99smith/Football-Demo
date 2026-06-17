@@ -34,6 +34,11 @@ scene.fog = new THREE.Fog(0x12203f, 130, 330); // night haze blends distance int
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(0, 7, -12);
 
+// Free debug camera (orbit/zoom/pan) + rewind scrubber — toggled from the debug
+// panel or the C key. While on, the sim is frozen so any angle can be inspected /
+// screenshotted, and the play can be scrubbed back through the replay buffer.
+const dbgCam = { on: false, az: 0.6, el: 0.55, dist: 16, target: new THREE.Vector3(0, 1.2, 0), scrub: -1, shot: false };
+
 // --- Sky dome (vertical gradient) + a crowd-filled stadium bowl ---
 function gradientCanvas(stops, w, h) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -2572,7 +2577,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
   const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
-  const onLeft = (x, target) => x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
+  const onLeft = (x, target) => !dbgCam.on && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
     if (d > maxR) { dx = dx / d * maxR; dy = dy / d * maxR; }
@@ -2601,6 +2606,67 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   window.addEventListener('mousedown', (e) => { if (id !== null || !onLeft(e.clientX, e.target)) return; audio.unlock(); start(e.clientX, e.clientY, 'mouse'); });
   window.addEventListener('mousemove', (e) => { if (id === 'mouse') track(e.clientX, e.clientY); });
   window.addEventListener('mouseup', () => { if (id === 'mouse') end(); });
+})();
+
+// ---- Free debug camera: orbit/zoom/pan, rewind scrub, screenshot ----------------
+function applyDebugCam() {
+  const t = dbgCam.target, ce = Math.cos(dbgCam.el), se = Math.sin(dbgCam.el);
+  camera.position.set(t.x + dbgCam.dist * ce * Math.sin(dbgCam.az), Math.max(0.3, t.y + dbgCam.dist * se), t.z + dbgCam.dist * ce * Math.cos(dbgCam.az));
+  camera.lookAt(t);
+}
+const dbgScrubMax = () => Math.max(0, game.replay.frames.length - 1);
+function setDbgScrub(i) {
+  dbgCam.scrub = THREE.MathUtils.clamp(Math.round(i), 0, dbgScrubMax());
+  const sl = document.getElementById('dbg-scrub'); if (sl) sl.value = dbgCam.scrub;
+}
+function toggleDebugCam(on) {
+  dbgCam.on = on === undefined ? !dbgCam.on : on;
+  if (dbgCam.on) {
+    dbgCam.target.copy(cam.lookCur);                       // seed orbit from the live view
+    const off = camera.position.clone().sub(dbgCam.target);
+    dbgCam.dist = Math.max(3, off.length());
+    dbgCam.az = Math.atan2(off.x, off.z);
+    dbgCam.el = Math.asin(THREE.MathUtils.clamp(off.y / dbgCam.dist, -0.2, 0.99));
+    const sl = document.getElementById('dbg-scrub'); if (sl) sl.max = dbgScrubMax();
+    setDbgScrub(dbgScrubMax());                            // start at the latest recorded frame
+  } else { dbgCam.scrub = -1; }
+  const btn = document.getElementById('dbg-freecam'); if (btn) btn.textContent = 'Free Cam: ' + (dbgCam.on ? 'ON' : 'OFF');
+  if (dbgPanelEl) dbgPanelEl.classList.toggle('cam-on', dbgCam.on);
+}
+// Capture the WebGL canvas to a PNG download (DOM overlays are not included — a
+// clean shot of the 3D scene). Flagged here, grabbed right after the next render.
+function saveCanvasPNG() {
+  try { const a = document.createElement('a'); a.href = renderer.domElement.toDataURL('image/png'); a.download = `reapers_${Date.now()}.png`; a.click(); }
+  catch (e) { setStatus('Screenshot failed'); }
+}
+(function freecamControls() {
+  const RK = 0.005;
+  let drag = false, pan = false, lx = 0, ly = 0, pinch = 0;
+  const rot = (dx, dy) => { dbgCam.az -= dx * RK; dbgCam.el = THREE.MathUtils.clamp(dbgCam.el + dy * RK, -0.2, 1.5); };
+  const _r = new THREE.Vector3(), _u = new THREE.Vector3();
+  const panT = (dx, dy) => {
+    _r.setFromMatrixColumn(camera.matrix, 0); _u.setFromMatrixColumn(camera.matrix, 1);
+    const s = dbgCam.dist * 0.0016; dbgCam.target.addScaledVector(_r, -dx * s).addScaledVector(_u, dy * s);
+  };
+  const zoom = (f) => { dbgCam.dist = THREE.MathUtils.clamp(dbgCam.dist * f, 2, 90); };
+  canvas.addEventListener('mousedown', (e) => { if (!dbgCam.on) return; drag = true; pan = e.button === 2 || e.shiftKey; lx = e.clientX; ly = e.clientY; e.preventDefault(); });
+  window.addEventListener('mousemove', (e) => { if (!dbgCam.on || !drag) return; const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY; pan ? panT(dx, dy) : rot(dx, dy); });
+  window.addEventListener('mouseup', () => { drag = false; });
+  canvas.addEventListener('wheel', (e) => { if (!dbgCam.on) return; e.preventDefault(); zoom(1 + Math.sign(e.deltaY) * 0.08); }, { passive: false });
+  canvas.addEventListener('contextmenu', (e) => { if (dbgCam.on) e.preventDefault(); });
+  const mid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+  const dist2 = (a, b) => Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+  canvas.addEventListener('touchstart', (e) => {
+    if (!dbgCam.on) return; e.preventDefault(); const t = e.touches;
+    if (t.length >= 2) { pinch = dist2(t[0], t[1]); const m = mid(t[0], t[1]); lx = m.x; ly = m.y; }
+    else if (t.length === 1) { lx = t[0].clientX; ly = t[0].clientY; pinch = 0; }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    if (!dbgCam.on) return; e.preventDefault(); const t = e.touches;
+    if (t.length >= 2) { const d = dist2(t[0], t[1]); if (pinch) zoom(pinch / d); const m = mid(t[0], t[1]); panT(m.x - lx, m.y - ly); lx = m.x; ly = m.y; pinch = d; }
+    else if (t.length === 1) { rot(t[0].clientX - lx, t[0].clientY - ly); lx = t[0].clientX; ly = t[0].clientY; }
+  }, { passive: false });
+  canvas.addEventListener('touchend', (e) => { if (!dbgCam.on) return; const t = e.touches; if (t.length) { lx = t[0].clientX; ly = t[0].clientY; } pinch = 0; }, { passive: false });
 })();
 
 const actionBtn = document.getElementById('action-btn');
@@ -2810,6 +2876,12 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
     if (e.code === 'KeyI') toggleDbg();              // I = balance telemetry overlay
     if (e.code === 'Backquote') toggleDebugPanel();  // ` = debug knob panel
+    if (e.code === 'KeyC') toggleDebugCam();         // C = free debug camera (freeze + orbit)
+    if (dbgCam.on) {                                 // while frozen: arrows rewind/advance, P screenshots
+      if (e.code === 'ArrowLeft') { setDbgScrub(dbgCam.scrub - 1); return; }
+      if (e.code === 'ArrowRight') { setDbgScrub(dbgCam.scrub + 1); return; }
+      if (e.code === 'KeyP') { dbgCam.shot = true; return; }
+    }
     if (game.choosing) {
       if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
@@ -6494,6 +6566,12 @@ function buildDebugPanel() {
     diffBtn.textContent = 'Difficulty: ' + DIFF[game.diff].label;
   });
   diffBtn.textContent = 'Difficulty: ' + (DIFF[game.diff] || DIFF.pro).label;
+  // Free camera + rewind + screenshot
+  dbgPanelEl.querySelector('#dbg-freecam').addEventListener('click', () => toggleDebugCam());
+  dbgPanelEl.querySelector('#dbg-rew').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub - 5); });
+  dbgPanelEl.querySelector('#dbg-fwd').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub + 5); });
+  dbgPanelEl.querySelector('#dbg-shot').addEventListener('click', () => { dbgCam.shot = true; });
+  dbgPanelEl.querySelector('#dbg-scrub').addEventListener('input', (e) => { if (dbgCam.on) dbgCam.scrub = THREE.MathUtils.clamp(Math.round(+e.target.value), 0, dbgScrubMax()); });
   updateDbgExport();
 }
 // Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.
@@ -6551,6 +6629,16 @@ function animate() {
   updateDbg(); // balance telemetry overlay (toggle with I)
   updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
   const realDt = Math.min(clock.getDelta(), 0.05);
+  // Free debug camera: the sim is frozen; just scrub the replay buffer (rewind) and
+  // drive the orbit camera, then render. Nothing in the game advances.
+  if (dbgCam.on) {
+    if (dbgCam.scrub >= 0 && game.replay.frames.length) applyReplayFrame(Math.min(dbgCam.scrub, dbgScrubMax()));
+    applyDebugCam();
+    renderer.render(scene, camera);
+    if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); }
+    requestAnimationFrame(animate);
+    return;
+  }
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
   const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
@@ -6582,6 +6670,7 @@ function animate() {
   updateAmbience(realDt);
   updateCamera(realDt);
   renderer.render(scene, camera);
+  if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); } // debug screenshot (clean 3D, no HUD)
   requestAnimationFrame(animate);
 }
 window.addEventListener('resize', () => {

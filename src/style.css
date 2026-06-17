@@ -949,6 +949,12 @@ body.replay-mode #build-badge { display: none !important; }
   margin-top: 8px; font-size: 9.5px; line-height: 1.45; color: #ffd23a;
   word-break: break-all; opacity: 0.95;
 }
+#debugpanel .dbg-cam { margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); display: flex; flex-direction: column; gap: 6px; }
+#debugpanel #dbg-freecam { font-family: inherit; font-size: 11px; font-weight: 800; color: #06140d; background: #9ec0ff; border: none; border-radius: 7px; padding: 7px 8px; cursor: pointer; }
+#debugpanel.cam-on #dbg-freecam { background: #ffd23a; box-shadow: 0 0 0 2px rgba(255,210,58,0.4); }
+#debugpanel .dbg-camhint { font-size: 9px; color: rgba(255,255,255,0.5); line-height: 1.3; }
+#debugpanel .dbg-cam #dbg-scrub { width: 100%; accent-color: #9ec0ff; height: 16px; cursor: pointer; }
+#debugpanel .dbg-cam .dbg-actrow button { font-family: inherit; font-size: 11px; font-weight: 700; color: #06140d; background: #9ec0ff; border: none; border-radius: 7px; padding: 6px 4px; cursor: pointer; flex: 1; }
 #debugpanel .dbg-tele {
   margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12);
   font-size: 10.5px; line-height: 1.5; white-space: pre; color: #aef9c8;
