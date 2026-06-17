@@ -916,3 +916,14 @@ body.replay-mode #build-badge { display: none !important; }
   pointer-events: none;
 }
 #dbg.hidden { display: none; }
+
+/* ---------- Start-menu difficulty selector ---------- */
+#startmenu .sm-difflabel { font-size: 11px; font-weight: 800; letter-spacing: 2px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+#startmenu .sm-diffs { display: flex; gap: 8px; }
+#startmenu .sm-diff {
+  font-family: inherit; font-weight: 800; letter-spacing: 1px; font-size: 13px;
+  padding: 8px 16px; border-radius: 999px; cursor: pointer;
+  color: #cfd8e6; background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.18);
+}
+#startmenu .sm-diff.on { color: #1a1208; background: linear-gradient(180deg, #ffe06a, #f0a020); border-color: transparent; }
+#startmenu .sm-diff:active { transform: translateY(1px); }

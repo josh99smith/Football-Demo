@@ -1435,6 +1435,7 @@ const game = {
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
+  diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -1939,8 +1940,8 @@ function spawnTeams() {
   const home = TEAMS.home.players, away = TEAMS.away.players;
   for (let i = 0; i < 7; i++) {
     const a = makeCharacter('off'); const b = makeCharacter('def');
-    a.surname = home[i].name; a.ratings = home[i].r; a.pos = home[i].pos; a.stats = blankStats();
-    b.surname = away[i].name; b.ratings = away[i].r; b.pos = away[i].pos; b.stats = blankStats();
+    a.surname = home[i].name; a.ratings = home[i].r; a.pos = home[i].pos; a.stats = blankStats(); a.cpu = false;
+    b.surname = away[i].name; b.ratings = away[i].r; b.pos = away[i].pos; b.stats = blankStats(); b.cpu = true; // Demons are always the CPU
     a.nameTag = makeNameTag(a.surname); a.group.add(a.nameTag);
     b.nameTag = makeNameTag(b.surname); b.group.add(b.nameTag);
     game.teamA.push(a); game.teamB.push(b);
@@ -2050,6 +2051,15 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
 const TURBO_MULT = 1.28; // turbo burst (toned down so open-field runs are catchable)
+// Difficulty: scales the CPU team (teamB) and a little player assist. cpuSpd =
+// CPU speed mult; cpuCatch = +/- to CPU catch odds; cpuAcc = CPU throw-error mult
+// (>1 = more errant); userBreak = your break-tackle mult.
+const DIFF = {
+  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25 },
+  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00 },
+  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82 },
+};
+const diff = () => DIFF[game.diff] || DIFF.pro;
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
 const FAT_MIN = 0.45;
@@ -2380,10 +2390,17 @@ function updateOffense(dt) {
 function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
   let speed = (ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed) * fatigueSpeed(ch);
+  if (ch.cpu) speed *= diff().cpuSpd; // difficulty: scale the CPU team's pace
   if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
-  // Chase-down burst: a fast defender turboing after the ball carrier in the open
-  // gets a pursuit bonus scaled by SPEED, so a breakaway can be run down.
-  if (ch.pursuit && ch.turbo && ch.rt) speed *= 1 + 0.5 * Math.max(0, ch.rt.speed - 0.4); // fast pursuers get a real closing burst
+  // Chase-down burst: a defender pursuing the ball carrier in the open gets a
+  // closing bonus scaled by SPEED (so a fast DB can actually run down a breakaway
+  // — a thrilling chase, not an automatic TD). A late man WAY behind the carrier
+  // gets a little extra catch-up so a long run is contestable, not a guaranteed six.
+  if (ch.pursuit && ch.rt) {
+    let bonus = (ch.turbo ? 0.62 : 0.18) * Math.max(0, ch.rt.speed - 0.4);
+    if (game.carrier && distXZ(px(ch), px(game.carrier)) > 10) bonus += 0.1; // catch-up on a long breakaway
+    speed *= 1 + bonus;
+  }
   if (ch.engaged) speed *= 0.28; // a pass rusher walled off by a blocker is stalled hard
   let tvx = 0, tvz = 0;
   // Honor a SUB-UNIT desired as an arrival speed scale: seek() returns a unit
@@ -3367,7 +3384,7 @@ function groundPlayers() {
     // Rest between plays restores only PART of the tank (more with stamina), so a
     // heavily-used player stays worn down over a drive instead of resetting fresh.
     if (ch.fatigue == null) ch.fatigue = 1;
-    ch.fatigue = Math.min(1, ch.fatigue + 0.2 + (ch.rt ? ch.rt.stamina : 0.7) * 0.22);
+    ch.fatigue = Math.min(1, ch.fatigue + 0.28 + (ch.rt ? ch.rt.stamina : 0.7) * 0.24);
     const p = ch.group.position, h = ch.home || { x: 0, z: 0 };
     if (!Number.isFinite(p.x)) p.x = Number.isFinite(h.x) ? h.x : 0;
     if (!Number.isFinite(p.z)) p.z = Number.isFinite(h.z) ? h.z : 0;
@@ -3764,7 +3781,7 @@ function throwBall(power) {
   // long throws drift more) — but mostly on target so it's catchable.
   // QB SKILL tightens the throw (accurate passers miss by less).
   const acc = 1.3 - (game.qb.rt ? game.qb.rt.skill : 0.8) * 0.75; // ~0.9 (elite) .. ~1.2 (poor)
-  const errMag = THREE.MathUtils.lerp(0.9, 0.35, p) * THREE.MathUtils.clamp(t / 1.2, 0.5, 1.4) * acc;
+  const errMag = THREE.MathUtils.lerp(0.9, 0.35, p) * THREE.MathUtils.clamp(t / 1.2, 0.5, 1.4) * acc * (game.qb.cpu ? diff().cpuAcc : 1);
   const ea = Math.random() * Math.PI * 2;
   tx = clampX(tx + Math.cos(ea) * errMag);
   tz = THREE.MathUtils.clamp(tz + Math.sin(ea) * errMag, -HALF_L + 1, HALF_L - 1);
@@ -4543,16 +4560,17 @@ function tryReception() {
 
   // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
+  const cpuAdj = bestR.cpu ? diff().cpuCatch : 0; // difficulty: nudge CPU catch odds
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
-    if (Math.random() < 0.84 + rxSkill * 0.14) { startSecure(bestR, false); return true; }
+    if (Math.random() < 0.84 + rxSkill * 0.14 + cpuAdj) { startSecure(bestR, false); return true; }
     passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
   }
 
   // Contested: catch odds fall as coverage tightens, lifted by the receiver's
   // hands and lowered by the defender's coverage skill; picks scale with the DB.
   const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
-  let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3;
+  let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3 + cpuAdj;
   if (game.onFire) pCatch += 0.12;
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
@@ -4631,7 +4649,7 @@ function knockdownDefender(d) {
 function tryBreak(carrier, pile) {
   if (game.playClock - game.lastBreak < 0.55) return false;
   const speed = Math.hypot(carrier.vel.x, carrier.vel.z);
-  let p = input.turbo ? 0.52 : 0.34;
+  let p = (input.turbo ? 0.52 : 0.34) * diff().userBreak; // difficulty: your break-tackle assist
   const power = carrier.strength * carrier.fatigue * (1 + speed / 16) * (input.turbo ? 1.2 : 1) * (game.onFire ? 1.4 : 1); // a gassed runner trucks fewer tacklers
   let gangStr = 0;
   for (const t of pile) gangStr += (0.5 + (t.rt ? t.rt.tackle : 0.6)) * fatiguePow(t); // wrap-up scales with TACKLING + freshness
@@ -4808,7 +4826,7 @@ function beginTackle(lead, force = false) {
   // tackles pop it more often — and a hit while TAUNTING strips it every time
   // (that's the risk of showboating). The carrier goes down and the ball pops
   // free for a live scramble (see startFumble) instead of the play ending.
-  if (carrier.tauntT > 0 || Math.random() < (big ? 0.13 : 0.05) + (gang ? 0.06 : 0)) {
+  if (carrier.tauntT > 0 || Math.random() < (big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
@@ -6316,10 +6334,18 @@ function rosterCardHTML(side) {
 }
 function buildStartMenu() {
   if (!startMenuEl) return;
+  const diffBtns = ['rookie', 'pro', 'allpro'].map((k) =>
+    `<button class="sm-diff${game.diff === k ? ' on' : ''}" data-diff="${k}">${DIFF[k].label}</button>`).join('');
   startMenuEl.innerHTML = `
     <div class="sm-title">REAPERS FOOTBALL</div>
     <div class="sm-matchup">${rosterCardHTML('home')}<span class="sm-vs">VS</span>${rosterCardHTML('away')}</div>
+    <div class="sm-difflabel">DIFFICULTY</div>
+    <div class="sm-diffs">${diffBtns}</div>
     <button id="sm-start" class="sm-start">START&nbsp;GAME&nbsp;▸</button>`;
+  startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
+    game.diff = el.dataset.diff;
+    startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b === el));
+  }));
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
 }
