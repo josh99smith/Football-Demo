@@ -1484,17 +1484,29 @@ const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN
 // Live-tunable gameplay knobs, editable at runtime from the DEBUG panel (tap the
 // version badge or press the ` key). Read everywhere instead of hard-coded values.
 const TUNE_DEFAULTS = {
-  fightChance: 0.18,    // post-play scuffle chance after a no-replay tackle/OOB
-  fightKnockback: 3.2,  // how hard the scuffle victim is staggered back (yd/s)
-  blockTempo: 1.0,      // global × on the engaged-push / break-tackle clip speed
-  staggerDur: 0.4,      // broken-tackle ("BROKE IT!") hit-stagger length (s)
+  fightChance: 0.18,     // post-play scuffle chance after a no-replay tackle/OOB
+  fightKnockback: 3.2,   // how hard the scuffle victim is staggered back (yd/s)
+  blockTempo: 1.0,       // global × on the engaged-push / break-tackle clip speed
+  staggerDur: 0.4,       // broken-tackle ("BROKE IT!") hit-stagger length (s)
+  fumbleChance: 1.0,     // × on the base fumble odds on a hit
+  breakTackleEase: 1.0,  // × how easy the 1-on-1 break-tackle battle is (>1 easier)
+  celebChance: 0.5,      // odds a home TD triggers a stadium celebration show
+  quarterLen: 90,        // seconds of game clock per quarter (applies next quarter)
 };
 const TUNE = { ...TUNE_DEFAULTS };
+// Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
+// tuned setup survives reloads. Guarded for the headless harness (no localStorage).
+const TUNE_STORE_KEY = 'rfTune';
+try {
+  if (typeof localStorage !== 'undefined') {
+    const saved = JSON.parse(localStorage.getItem(TUNE_STORE_KEY) || '{}');
+    for (const k in TUNE_DEFAULTS) if (typeof saved[k] === 'number') TUNE[k] = saved[k];
+  }
+} catch (e) { /* ignore corrupt/unavailable storage */ }
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
-const QUARTER_LEN = 90;  // seconds of game clock per quarter (arcade-fast)
-const PLAY_CLOCK = 15;   // delay-of-game countdown before the snap
+const PLAY_CLOCK = 15;   // delay-of-game countdown before the snap (quarter length = TUNE.quarterLen)
 const game = {
   state: STATE.PRESNAP,
   offense: [], defense: [], all: [],
@@ -1504,7 +1516,7 @@ const game = {
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
-  quarter: 1, gameClock: QUARTER_LEN, snapClock: PLAY_CLOCK, gameOver: false,
+  quarter: 1, gameClock: TUNE.quarterLen, snapClock: PLAY_CLOCK, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
   tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
@@ -1586,7 +1598,7 @@ const fwLights = [];            // brief colored point-flashes at each burst
 const sweepLights = [];         // spotlights (white) for the light show
 let fwLightI = 0;
 let strobe = null;              // red strobe (light show)
-const CELEB_CHANCE = 0.5;       // odds a home TD triggers a stadium celebration
+// Stadium-celebration odds are TUNE.celebChance (debug-tunable).
 const celebFx = { mode: null, t: 0, next: 0, z: 0, dim: 0, grand: false, lightsOn: false };
 // Toggle ALL celebration lights together so the scene's light COUNT is constant
 // during any celebration (otherwise per-burst point-light toggles change the
@@ -3209,7 +3221,7 @@ function advanceQuarter() {
   game.quarter += 1;
   clearBloodStains(); // fresh turf each quarter
   if (game.quarter > 4) { endGame(); return; }
-  game.gameClock = QUARTER_LEN; game.clockStopped = true; // new quarter waits for the snap
+  game.gameClock = TUNE.quarterLen; game.clockStopped = true; // new quarter waits for the snap
   audio.whistle();
   if (game.quarter === 3) showBanner('HALFTIME', '#ffd23a');
   else showBanner(`Q${game.quarter}`, '#ffd23a');
@@ -3241,7 +3253,7 @@ function resetGame() {
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
-  game.quarter = 1; game.gameClock = QUARTER_LEN; game.gameOver = false; game.clockStopped = true;
+  game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
   game.los = DRIVE_START; game.down = 1; game.firstDown = game.los + FIRST_DOWN_YDS;
   game.fireCount = 0; douseFire();
@@ -4180,7 +4192,7 @@ function endPlay(result, endZ) {
       const scorer = celebrateTD(); game.deadTimer = 2.6; // let the dance play before the replay
       // Stadium-level celebration: HOME (player's) team only, and only sometimes
       // — randomly a fireworks show or a dark-arena strobe/spotlight light show.
-      if (Math.random() < CELEB_CHANCE) {
+      if (Math.random() < TUNE.celebChance) {
         game.deadTimer = 4.2; // hold the dead-ball beat so the show plays before the replay
         if (Math.random() < 0.5) startFireworksCeleb(endZ, scorer); else startLightShow(endZ);
       }
@@ -4833,7 +4845,7 @@ function updateBattle(dt) {
   // cuts both — a gassed man loses the wrestle — and the struggle itself tires them.
   const tklPow = (0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6)) * fatiguePow(b.tackler);
   const carPow = (0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7)) * fatiguePow(game.carrier);
-  b.val -= BATTLE_CPU * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8);
+  b.val -= (BATTLE_CPU / TUNE.breakTackleEase) * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8); // ease>1 = easier to break
   drainFatigue(b.tackler, 0.07 * dt); drainFatigue(game.carrier, 0.07 * dt);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
@@ -4931,7 +4943,7 @@ function beginTackle(lead, force = false) {
   // tackles pop it more often — and a hit while TAUNTING strips it every time
   // (that's the risk of showboating). The carrier goes down and the ball pops
   // free for a live scramble (see startFumble) instead of the play ending.
-  if (carrier.tauntT > 0 || Math.random() < (big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) {
+  if (carrier.tauntT > 0 || Math.random() < ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
@@ -6400,6 +6412,10 @@ const DBG_KNOBS = [
   { key: 'fightKnockback', label: 'Scuffle knockback', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) },
   { key: 'blockTempo', label: 'Block tempo ×', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6416,15 +6432,33 @@ function buildDebugPanel() {
     lab.append(name, val);
     const sl = document.createElement('input');
     sl.type = 'range'; sl.min = k.min; sl.max = k.max; sl.step = k.step; sl.value = TUNE[k.key];
-    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); });
+    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); updateDbgExport(); });
     dbgValEls[k.key] = { val, sl, fmt: k.fmt };
     row.append(lab, sl); rows.append(row);
   }
+  const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); } updateDbgExport(); };
   dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
   dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
+  // Save: persist the current knobs to localStorage so they survive a reload.
+  const saveBtn = dbgPanelEl.querySelector('#dbg-save');
+  saveBtn.addEventListener('click', () => {
+    try { localStorage.setItem(TUNE_STORE_KEY, dbgTuneJSON()); saveBtn.textContent = '✓ Saved'; }
+    catch (e) { saveBtn.textContent = 'Save failed'; }
+    setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200);
+  });
+  // Copy: put the JSON on the clipboard so it can be pasted in to become the defaults.
+  const copyBtn = dbgPanelEl.querySelector('#dbg-copy');
+  copyBtn.addEventListener('click', async () => {
+    const json = dbgTuneJSON();
+    try { await navigator.clipboard.writeText(json); copyBtn.textContent = '✓ Copied'; }
+    catch (e) { copyBtn.textContent = 'Copy failed'; }
+    setTimeout(() => { copyBtn.textContent = 'Copy values'; }, 1200);
+  });
+  // Reset: back to code defaults AND clear the saved override.
   dbgPanelEl.querySelector('#dbg-reset').addEventListener('click', () => {
     Object.assign(TUNE, TUNE_DEFAULTS);
-    for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); }
+    try { localStorage.removeItem(TUNE_STORE_KEY); } catch (e) { /* ignore */ }
+    refreshSliders();
   });
   const diffBtn = dbgPanelEl.querySelector('#dbg-diff');
   diffBtn.addEventListener('click', () => {
@@ -6433,6 +6467,17 @@ function buildDebugPanel() {
     diffBtn.textContent = 'Difficulty: ' + DIFF[game.diff].label;
   });
   diffBtn.textContent = 'Difficulty: ' + (DIFF[game.diff] || DIFF.pro).label;
+  updateDbgExport();
+}
+// Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.
+function dbgTuneJSON() {
+  const o = {}; for (const k in TUNE_DEFAULTS) o[k] = Math.round(TUNE[k] * 1000) / 1000;
+  return JSON.stringify(o);
+}
+function updateDbgExport() {
+  if (!dbgPanelEl) return;
+  const ex = dbgPanelEl.querySelector('.dbg-export');
+  if (ex) { const saved = (() => { try { return localStorage.getItem(TUNE_STORE_KEY); } catch (e) { return null; } })(); ex.textContent = (saved ? '★ saved · ' : '') + dbgTuneJSON(); }
 }
 function toggleDebugPanel(on) {
   dbgPanelOn = on === undefined ? !dbgPanelOn : on;
