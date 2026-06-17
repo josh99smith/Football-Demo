@@ -2547,7 +2547,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -6453,6 +6453,16 @@ function updateDebugPanel() {
 }
 buildDebugPanel(); // wire the sliders/buttons (panel starts hidden)
 { const bb = document.getElementById('build-badge'); if (bb) bb.addEventListener('click', () => toggleDebugPanel()); }
+// Mobile/touch entry to debug mode: add ?debug to the URL and a tappable gear
+// button appears (there's no keyboard for the ` shortcut on a phone). Hidden for
+// normal players. The version-badge tap + ` key still work too.
+{
+  const loc = typeof location !== 'undefined' ? location : null;
+  if (loc && /\bdebug\b/.test(loc.search + ' ' + loc.hash)) {
+    const fab = document.getElementById('dbg-fab');
+    if (fab) { fab.classList.remove('hidden'); fab.addEventListener('click', () => toggleDebugPanel()); }
+  }
+}
 function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
   updateDbg(); // balance telemetry overlay (toggle with I)
