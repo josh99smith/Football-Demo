@@ -1481,6 +1481,15 @@ function setClip(ch, name) {
 // Game state
 // ===========================================================================
 const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN: 'return', TACKLE: 'tackle', BATTLE: 'battle', LOOSE: 'loose', DEAD: 'dead', RESET: 'reset', REPLAY: 'replay' };
+// Live-tunable gameplay knobs, editable at runtime from the DEBUG panel (tap the
+// version badge or press the ` key). Read everywhere instead of hard-coded values.
+const TUNE_DEFAULTS = {
+  fightChance: 0.18,    // post-play scuffle chance after a no-replay tackle/OOB
+  fightKnockback: 3.2,  // how hard the scuffle victim is staggered back (yd/s)
+  blockTempo: 1.0,      // global × on the engaged-push / break-tackle clip speed
+  staggerDur: 0.4,      // broken-tackle ("BROKE IT!") hit-stagger length (s)
+};
+const TUNE = { ...TUNE_DEFAULTS };
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -2538,7 +2547,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel';
   const onLeft = (x, target) => x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -2776,6 +2785,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
     if (e.code === 'KeyI') toggleDbg();              // I = balance telemetry overlay
+    if (e.code === 'Backquote') toggleDebugPanel();  // ` = debug knob panel
     if (game.choosing) {
       if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
@@ -4230,7 +4240,7 @@ function endPlay(result, endZ) {
     else if (bigPlay || Math.random() < 0.2) replayed = startReplay(false); // multi-angle from the top
     // No replay this snap? Roll for a cosmetic post-whistle scuffle instead — it
     // needs the live field (a replay would cut away from it).
-    if (!replayed && !game.gameOver && Math.random() < FIGHT_CHANCE)
+    if (!replayed && !game.gameOver && Math.random() < TUNE.fightChance)
       startPostPlayFight(game.carrier ? game.carrier.group.position.x : 0, endZ);
   } else if ((result === 'fumble' || result === 'intercept') && Math.random() < 0.5) {
     startReplay(false); // turnovers are highlight-worthy too
@@ -4240,8 +4250,7 @@ function endPlay(result, endZ) {
 // player square up — the instigator throws a jab or a flying kick (pack 7) and the
 // other is blown back off his feet. No flags, no yardage; pure Blitz attitude. It
 // plays out during an extended dead-ball beat (only when no replay is showing, so
-// the camera stays live on the field).
-const FIGHT_CHANCE = 0.18; // chance of a scuffle after a no-replay tackle/OOB
+// the camera stays live on the field). Tunables live in TUNE (debug panel).
 function startPostPlayFight(sx, sz) {
   if (!jabClip && !kickClip) return false;          // pack missing
   const spot = { x: sx, z: sz };
@@ -4261,7 +4270,7 @@ function startPostPlayFight(sx, sz) {
   const move = (kickClip && (!jabClip || Math.random() < 0.5)) ? 'kick' : 'jab';
   playOneShot(attacker, move, 2.2, true);
   if (blownBackClip) playOneShot(victim, 'blownback', 2.4, true);
-  const kb = 3.2; // stagger the victim back along the punch line (the DEAD coast decays it)
+  const kb = TUNE.fightKnockback; // stagger the victim back along the punch line (the DEAD coast decays it)
   victim.vel.set(Math.sin(attacker.heading) * kb, 0, Math.cos(attacker.heading) * kb); victim.speed = kb;
   game.deadTimer = Math.max(game.deadTimer, 2.6); // hold the beat so the scuffle plays out
   showBanner('SCUFFLE!', '#ff7a3a'); shake.add(0.25); hitZoom(2.2, 1.05);
@@ -4898,7 +4907,7 @@ function beginTackle(lead, force = false) {
   if (!force && game.userOnOffense && tryBreak(carrier, pile)) {
     knockdownDefender(lead);
     carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
-    if (carrier.actions.hitreact && carrier.oneShotT <= 0) playOneShot(carrier, 'hitreact', 0.4, true); // rocked, but powers through
+    if (carrier.actions.hitreact && carrier.oneShotT <= 0) playOneShot(carrier, 'hitreact', TUNE.staggerDur, true); // rocked, but powers through
     shake.add(0.2);
     shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
     showBanner('BROKE IT!', '#bfffd0');
@@ -5708,7 +5717,7 @@ function updateAnimation(ch, dt) {
   if (ch.blocking && ch.actions.block) want = 'block';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
   setClip(ch, want);
-  if (want === 'block') ch.active.setEffectiveTimeScale(ch.blockTS || 1); // per-player block tempo
+  if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
   // Foot-skating fix: drive the gait at the speed it was authored for, so a
   // planted foot stays put while the body travels (instead of sliding). The
   // run band churns a touch faster in the BATTLE so it reads as a struggle.
@@ -6383,9 +6392,71 @@ const dbgEl = document.getElementById('dbg');
 let dbgOn = false;
 function toggleDbg() { dbgOn = !dbgOn; if (dbgEl) dbgEl.classList.toggle('hidden', !dbgOn); }
 function updateDbg() { if (dbgOn && dbgEl) { try { dbgEl.textContent = balanceSummary().text; } catch (e) { /* ignore */ } } }
+
+// ---- DEBUG MODE panel: live-tune the gameplay knobs (TUNE) + fire test triggers.
+// Open by tapping the version badge or pressing the ` key. ------------------------
+const DBG_KNOBS = [
+  { key: 'fightChance', label: 'Scuffle chance', min: 0, max: 1, step: 0.01, fmt: (v) => v.toFixed(2) },
+  { key: 'fightKnockback', label: 'Scuffle knockback', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'blockTempo', label: 'Block tempo ×', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+];
+const dbgPanelEl = document.getElementById('debugpanel');
+let dbgPanelOn = false;
+const dbgValEls = {};
+function buildDebugPanel() {
+  if (!dbgPanelEl) return;
+  const rows = dbgPanelEl.querySelector('.dbg-rows');
+  rows.innerHTML = '';
+  for (const k of DBG_KNOBS) {
+    const row = document.createElement('div'); row.className = 'dbg-row';
+    const lab = document.createElement('label');
+    const name = document.createElement('span'); name.textContent = k.label;
+    const val = document.createElement('span'); val.className = 'dbg-val'; val.textContent = k.fmt(TUNE[k.key]);
+    lab.append(name, val);
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = k.min; sl.max = k.max; sl.step = k.step; sl.value = TUNE[k.key];
+    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); });
+    dbgValEls[k.key] = { val, sl, fmt: k.fmt };
+    row.append(lab, sl); rows.append(row);
+  }
+  dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
+  dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
+  dbgPanelEl.querySelector('#dbg-reset').addEventListener('click', () => {
+    Object.assign(TUNE, TUNE_DEFAULTS);
+    for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); }
+  });
+  const diffBtn = dbgPanelEl.querySelector('#dbg-diff');
+  diffBtn.addEventListener('click', () => {
+    const order = ['rookie', 'pro', 'allpro'];
+    game.diff = order[(order.indexOf(game.diff) + 1) % order.length];
+    diffBtn.textContent = 'Difficulty: ' + DIFF[game.diff].label;
+  });
+  diffBtn.textContent = 'Difficulty: ' + (DIFF[game.diff] || DIFF.pro).label;
+}
+function toggleDebugPanel(on) {
+  dbgPanelOn = on === undefined ? !dbgPanelOn : on;
+  if (dbgPanelEl) dbgPanelEl.classList.toggle('hidden', !dbgPanelOn);
+}
+// Trigger a post-play scuffle on demand near the ball so the knobs can be eyeballed.
+function forceScuffle() {
+  const c = game.carrier || game.qb || ball.holder;
+  const x = c ? c.group.position.x : 0;
+  const z = c ? c.group.position.z : (ball.mesh ? ball.mesh.position.z : game.los);
+  const ok = startPostPlayFight(x, z);
+  if (!ok) setStatus('No opposing pair nearby to scuffle');
+}
+function updateDebugPanel() {
+  if (!dbgPanelOn || !dbgPanelEl) return;
+  const tele = dbgPanelEl.querySelector('.dbg-tele');
+  try { tele.textContent = balanceSummary().text + `\nstate:${game.state}`; } catch (e) { /* ignore */ }
+}
+buildDebugPanel(); // wire the sliders/buttons (panel starts hidden)
+{ const bb = document.getElementById('build-badge'); if (bb) bb.addEventListener('click', () => toggleDebugPanel()); }
 function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
   updateDbg(); // balance telemetry overlay (toggle with I)
+  updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.

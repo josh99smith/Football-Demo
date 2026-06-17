@@ -917,6 +917,40 @@ body.replay-mode #build-badge { display: none !important; }
 }
 #dbg.hidden { display: none; }
 
+/* ---------- Debug panel (live knob tuning + test triggers) ---------- */
+#build-badge { cursor: pointer; pointer-events: auto; } /* tap the version badge to open the debug panel */
+#debugpanel {
+  position: fixed; z-index: 60;
+  right: max(8px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top));
+  width: 250px; max-height: 86vh; overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: #d9f7e6; background: rgba(8, 12, 16, 0.92);
+  border: 1px solid rgba(120, 255, 180, 0.35); border-radius: 10px;
+  padding: 10px 11px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  pointer-events: auto; -webkit-user-select: none; user-select: none;
+}
+#debugpanel.hidden { display: none; }
+#debugpanel .dbg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+#debugpanel .dbg-title { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #8effc0; }
+#debugpanel #dbg-close { background: none; border: none; color: #8effc0; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
+#debugpanel .dbg-row { margin: 9px 0; }
+#debugpanel .dbg-row label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
+#debugpanel .dbg-row .dbg-val { color: #ffd23a; font-weight: 700; }
+#debugpanel input[type=range] { width: 100%; accent-color: #3fe08a; height: 16px; cursor: pointer; }
+#debugpanel .dbg-actions { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+#debugpanel .dbg-actions button {
+  font-family: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  color: #06140d; background: #3fe08a; border: none; border-radius: 7px;
+  padding: 7px 8px; cursor: pointer;
+}
+#debugpanel .dbg-actions button:active { transform: translateY(1px); }
+#debugpanel #dbg-reset { background: #ff7a3a; }
+#debugpanel #dbg-diff { background: #5a8bff; color: #fff; }
+#debugpanel .dbg-tele {
+  margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12);
+  font-size: 10.5px; line-height: 1.5; white-space: pre; color: #aef9c8;
+}
+
 /* ---------- Start-menu difficulty selector ---------- */
 #startmenu .sm-difflabel { font-size: 11px; font-weight: 800; letter-spacing: 2px; color: rgba(255,255,255,0.55); margin-top: 2px; }
 #startmenu .sm-diffs { display: flex; gap: 8px; }

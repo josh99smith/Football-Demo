@@ -58,6 +58,18 @@
   <div id="fps"></div>
   <!-- Balance telemetry overlay (toggle with the I key) -->
   <div id="dbg" class="hidden"></div>
+  <!-- Debug panel: live-tune gameplay knobs + test triggers (tap the version
+       badge or press the ` key). Built in main.js (buildDebugPanel). -->
+  <div id="debugpanel" class="hidden">
+    <div class="dbg-head"><span class="dbg-title">DEBUG MODE</span><button id="dbg-close" aria-label="close">×</button></div>
+    <div class="dbg-rows"></div>
+    <div class="dbg-actions">
+      <button id="dbg-scuffle">Force Scuffle</button>
+      <button id="dbg-diff">Difficulty: PRO</button>
+      <button id="dbg-reset">Reset Knobs</button>
+    </div>
+    <div class="dbg-tele"></div>
+  </div>
   <!-- Controlled-player ratings card (legacy, now unused) -->
   <div id="ratecard" class="hidden"></div>
   <!-- Post-play player card(s): the players who made the last play, with ratings + game stats -->
