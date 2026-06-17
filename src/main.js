@@ -1498,6 +1498,12 @@ const TUNE_DEFAULTS = {
   fatigueDrain: 1.0,     // × how fast players gas out
   playClock: 15,         // delay-of-game seconds before the snap (applies next play)
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
+  tackleReach: 1.5,      // contact radius for a tackle (yd)
+  catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
+  engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
+  bodyR: 0.42,           // player body-collider radius — half the min spacing (yd)
+  playerSize: 1.0,       // × visual player model scale
+  ballSize: 1.0,         // × visual football scale
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -2342,7 +2348,7 @@ function assignBlocks(blockForCarrier) {
 // rusher sheds fast; a good blocker sustains it), plus a small random shed chance
 // so it varies. On a shed the defender bursts free toward the ball; the blocker
 // gets a brief cooldown before he can re-lock.
-const ENGAGE_R = 1.5, SHED_BURST = 5.5;
+const SHED_BURST = 5.5; // block engage radius is TUNE.engageReach
 function startEngage(o, d) {
   o.engaging = d; d.blockedBy = o;
   const bp = (0.55 + (o.rt ? o.rt.strength : 0.6)) * fatiguePow(o);   // blocker drive (weaker when gassed)
@@ -2369,7 +2375,7 @@ function updateBlocks(dt) {
     const d = o.engaging || o.blockTarget;
     if (!d || d.ragdolling || d === game.controlled) { if (o.engaging) endEngage(o, o.engaging, false); continue; } // never freeze the human
     if (!o.engaging) { // try to lock on
-      if (!d.blockedBy && d.shedCd <= 0 && distXZ(px(o), px(d)) < ENGAGE_R) startEngage(o, d);
+      if (!d.blockedBy && d.shedCd <= 0 && distXZ(px(o), px(d)) < TUNE.engageReach) startEngage(o, d);
       else continue;
     }
     // Sustain the lock: tick the duel, maybe shed (timer out or a random rip).
@@ -2516,16 +2522,16 @@ function clampToField(ch) {
   else if (p.z < -bz) { p.z = -bz; if (ch.vel.z < 0) ch.vel.z = -ch.vel.z * R; }
 }
 
-// Hard body-to-body separation: upright players are soft cylinders (BODY_R) and
+// Hard body-to-body separation: upright players are soft cylinders (TUNE.bodyR) and
 // may not interpenetrate. After everyone has moved, push any overlapping pair
 // apart along their center line (half the penetration each) so blockers actually
 // wall people off and a crowd stops melting into one blob. Cheap O(n^2) over the
 // ~14 players. Ragdolls (their own physics) and the locked tackle/battle pile are
-// skipped so those intentional overlaps stay coherent. 2*BODY_R (0.84) is well
-// under TACKLE_R (1.5), so contact never blocks a tackle from triggering first.
-const BODY_R = 0.42;
+// skipped so those intentional overlaps stay coherent. 2*TUNE.bodyR (0.84) is well
+// under TUNE.tackleReach (1.5), so contact never blocks a tackle from triggering first.
+// Player body-collider radius is TUNE.bodyR.
 function resolveBodies() {
-  const a = game.all, min = BODY_R * 2, min2 = min * min;
+  const a = game.all, min = TUNE.bodyR * 2, min2 = min * min;
   for (let i = 0; i < a.length; i++) {
     const A = a[i]; if (A.ragdolling || A.grabbing || A.engaging || A.blockedBy) continue;
     const ap = A.group.position;
@@ -4082,7 +4088,7 @@ function updateReturn(dt, turboOn, fireMul) {
   if (scored) { endReturn('returnTD', rp.z); return; }
   for (const o of game.offense) {
     if (o.ragdolling) continue;
-    if (Math.hypot(o.group.position.x - rp.x, o.group.position.z - rp.z) <= TACKLE_R) { tackleReturner(o); return; }
+    if (Math.hypot(o.group.position.x - rp.x, o.group.position.z - rp.z) <= TUNE.tackleReach) { tackleReturner(o); return; }
   }
 }
 function tackleReturner(tackler) {
@@ -4444,7 +4450,7 @@ function driveFinaleCam(dt) {
 // ===========================================================================
 // Ball + outcomes
 // ===========================================================================
-const TACKLE_R = 1.5, CATCH_R = 1.6, CATCH_R_INTENDED = 2.6, CONTEST_R = 2.7;
+const CONTEST_R = 2.7; // catch radii are TUNE.tackleReach / TUNE.catchReach (intended = +1.0)
 const THROW_ANIM_DUR = 0.5; // procedural throwing-motion length (s) — matches THROW_CHARGE_MAX so a full-hold bullet doesn't snap back to idle before release
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _d = new THREE.Vector3();
 const _bv = new THREE.Vector3(), _ballQ = new THREE.Quaternion(), _spinQ = new THREE.Quaternion();
@@ -4483,6 +4489,7 @@ function ensureBallVisible() {
   p.y = THREE.MathUtils.clamp(p.y, 0.12, 60);
 }
 function updateBall(dt) {
+  if (ball.mesh) ball.mesh.scale.setScalar(TUNE.ballSize); // debug: visual football size
   if (ball.mode !== 'flying') landRing.visible = false; // landing reticle only mid-flight
   if (ball.mode === 'rest') return; // sits where it landed (incomplete pass)
   if (ball.mode === 'dead') { // deflected/incomplete in the air — fall to the turf
@@ -4667,7 +4674,7 @@ function tryReception() {
   // any other receiver needs the ball right on him.
   let bestR = null, dR = Infinity;
   for (const wr of game.receivers) {
-    const reach = wr === ball.targetRecv ? CATCH_R_INTENDED : CATCH_R;
+    const reach = wr === ball.targetRecv ? (TUNE.catchReach + 1.0) : TUNE.catchReach;
     const d = near(wr);
     if (d <= reach && d < dR) { dR = d; bestR = wr; }
   }
@@ -4709,7 +4716,7 @@ function checkRunOutcome() {
   for (const db of game.defense) {
     if (db.ragdolling) continue;
     const d = Math.hypot(db.group.position.x - c.x, db.group.position.z - c.z);
-    if (d <= TACKLE_R) { beginTackle(db); return; }       // hard contact
+    if (d <= TUNE.tackleReach) { beginTackle(db); return; }       // hard contact
     if (db.pursuit && d <= LUNGE_R && d < lungeD) { lungeD = d; lunger = db; } // chaser within dive range
   }
   // Shoestring/diving tackle: a pursuer who caught up but can't get fully even
@@ -4729,7 +4736,7 @@ function checkSack() {
   const qp = game.qb.group.position;
   for (const d of game.defense) {
     if (d.ragdolling) continue;
-    if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TACKLE_R) {
+    if (Math.hypot(d.group.position.x - qp.x, d.group.position.z - qp.z) <= TUNE.tackleReach) {
       game.carrier = game.qb; if (game.play) game.play.sack = true; if (game.tally) game.tally.sacks++; beginTackle(d, true);
       showBanner('SACK!', '#ff5a3a'); setStatus('SACK!'); audio.bigHit(); audio.say('sack', { force: true });
       game.replay.bigHit = true; // a sack is always a highlight
@@ -6429,6 +6436,13 @@ const DBG_KNOBS = [
   { key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
   { key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  // Collider distances + sizes
+  { key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
+  { key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6445,11 +6459,11 @@ function buildDebugPanel() {
     lab.append(name, val);
     const sl = document.createElement('input');
     sl.type = 'range'; sl.min = k.min; sl.max = k.max; sl.step = k.step; sl.value = TUNE[k.key];
-    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); updateDbgExport(); });
+    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); updateDbgExport(); });
     dbgValEls[k.key] = { val, sl, fmt: k.fmt };
     row.append(lab, sl); rows.append(row);
   }
-  const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); } updateDbgExport(); };
+  const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); } updateDbgExport(); };
   dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
   dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
   // Save: persist the current knobs to localStorage so they survive a reload.
@@ -6503,6 +6517,17 @@ function forceScuffle() {
   const z = c ? c.group.position.z : (ball.mesh ? ball.mesh.position.z : game.los);
   const ok = startPostPlayFight(x, z);
   if (!ok) setStatus('No opposing pair nearby to scuffle');
+}
+// Debug: rescale every player's visual model and re-seat it on the turf. Called when
+// the Player size knob changes (the collider radii are separate TUNE knobs).
+function applyPlayerSize() {
+  const m = TUNE.playerSize;
+  for (const ch of game.all) {
+    if (!ch.model) continue;
+    const isDef = ch.team === 'def';
+    ch.model.scale.setScalar((isDef ? DEF_SCALE : SCALE) * m);
+    ch.model.position.y = (isDef ? DEF_GROUND_Y : GROUND_Y) * m; // keep the feet on the ground
+  }
 }
 function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
@@ -6610,6 +6635,7 @@ loadAssets().then(() => {
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   buildPortraits(); // pre-render the posed card art for both teams
+  if (TUNE.playerSize !== 1) applyPlayerSize(); // honor a saved player-size override
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   buildStartMenu();
