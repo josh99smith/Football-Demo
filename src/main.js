@@ -1510,6 +1510,7 @@ const TUNE_DEFAULTS = {
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
+  jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyR: 0.42,           // player body-collider radius — half the min spacing (yd)
   playerSize: 1.0,       // × visual player model scale
@@ -4831,8 +4832,16 @@ function passBrokenUp(msg, color, swatter, swatType) {
 // Resolve a ball in flight against nearby players. Most throws into coverage
 // are CONTESTED — only a clear window is a clean catch; tight coverage is
 // usually an incompletion / breakup, with rare picks on blanketed throws.
+// Vertical catch reach (yd): standing + arms (~2.5) plus a leap from athleticism
+// (speed/hands), scaled by player size. Drives the jump-ball contest + the viz.
+function vReach(ch) {
+  const r = ch.rt; const ath = r ? (r.speed * 0.5 + r.skill * 0.3) : 0.4;
+  return (2.5 + (0.2 + ath) * 1.7) * TUNE.playerSize; // bigger players reach higher
+}
 function tryReception() {
   const p = ball.mesh.position;
+  const ballY = p.y;
+  const high = THREE.MathUtils.clamp((ballY - 1.6) / 2.0, 0, 1); // 0 = low/chest ball, 1 = high jump ball
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
   // The intended receiver gets a bigger window (the throw was aimed at him);
   // any other receiver needs the ball right on him.
@@ -4853,10 +4862,13 @@ function tryReception() {
 
   // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
+  const rxReach = vReach(bestR); // vertical reach (standing + leap)
   const cpuAdj = bestR.cpu ? diff().cpuCatch : 0; // difficulty: nudge CPU catch odds
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
-    if (Math.random() < 0.84 + rxSkill * 0.14 + cpuAdj) { startSecure(bestR, false); return true; }
+    let base = 0.84 + rxSkill * 0.14 + cpuAdj;
+    if (ballY > rxReach) base -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // thrown over his head
+    if (Math.random() < base) { startSecure(bestR, false); return true; }
     passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
   }
 
@@ -4864,6 +4876,12 @@ function tryReception() {
   // hands and lowered by the defender's coverage skill; picks scale with the DB.
   const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
   let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3 + cpuAdj;
+  // Vertical contest: on a HIGH ball, the player who out-reaches the other wins it
+  // (a tall/leaping WR beats a short DB on a jump ball, and vice-versa). Neutral on
+  // low balls (high≈0). Gated/scaled by the jump-reach debug knob.
+  const dbReachV = bestDef ? vReach(bestDef) : 0;
+  pCatch += high * THREE.MathUtils.clamp(rxReach - dbReachV, -1.5, 1.5) * 0.35 * TUNE.jumpReach;
+  if (ballY > rxReach) pCatch -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // over the receiver's reach
   if (game.onFire) pCatch += 0.12;
   pCatch += TUNE.catchBias; // global completion-odds nudge (debug knob)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
@@ -6610,6 +6628,7 @@ const DBG_KNOBS = [
   // --- Colliders + sizes ---
   { tab: 'Colliders', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
@@ -6847,13 +6866,14 @@ function updateDbgViz() {
   let n = 0; const P = _vizPos, C = _vizCol;
   const seg = (x1, y1, z1, x2, y2, z2, r, g, b) => { if (n + 2 > VIZ_MAX) return; let i = n * 3; P[i] = x1; P[i + 1] = y1; P[i + 2] = z1; C[i] = r; C[i + 1] = g; C[i + 2] = b; n++; i = n * 3; P[i] = x2; P[i + 1] = y2; P[i + 2] = z2; C[i] = r; C[i + 1] = g; C[i + 2] = b; n++; };
   const circ = (cx, cz, rad, y, r, g, b) => { const S = 22; for (let i = 0; i < S; i++) { const a0 = i / S * 6.2832, a1 = (i + 1) / S * 6.2832; seg(cx + Math.cos(a0) * rad, y, cz + Math.sin(a0) * rad, cx + Math.cos(a1) * rad, y, cz + Math.sin(a1) * rad, r, g, b); } };
+  const cyl = (cx, cz, rad, h, r, g, b) => { circ(cx, cz, rad, 0.06, r, g, b); circ(cx, cz, rad, h, r, g, b); for (let i = 0; i < 4; i++) { const a = i / 4 * 6.2832; seg(cx + Math.cos(a) * rad, 0.06, cz + Math.sin(a) * rad, cx + Math.cos(a) * rad, h, cz + Math.sin(a) * rad, r, g, b); } }; // wireframe cylinder (3D collider)
   if (drawL) for (const ch of game.all) {
     if (ch.ragdolling) continue; const p = ch.group.position; const def = ch.team === 'def';
     if (TUNE.vizColliders) {
-      circ(p.x, p.z, TUNE.bodyR, 0.06, 0.6, 0.6, 0.6);                          // body collider (gray)
+      cyl(p.x, p.z, TUNE.bodyR, 1.8 * TUNE.playerSize, 0.6, 0.6, 0.6);          // body collider (3D cylinder, gray)
       if (ch === game.carrier) circ(p.x, p.z, TUNE.bodyR + 0.12, 0.07, 1, 0.9, 0.2); // carrier highlight
-      if (def) circ(p.x, p.z, TUNE.tackleReach, 0.05, 1, 0.25, 0.25);           // tackle reach (red)
-      else if (ch.role === 'WR' || ch.role === 'RB' || ch.role === 'TE') circ(p.x, p.z, TUNE.catchReach, 0.05, 0.3, 0.8, 1); // catch reach (cyan)
+      if (def) circ(p.x, p.z, TUNE.tackleReach, 0.05, 1, 0.25, 0.25);           // tackle reach (ground, red)
+      else if (ch.role === 'WR' || ch.role === 'RB' || ch.role === 'TE') cyl(p.x, p.z, TUNE.catchReach, vReach(ch), 0.3, 0.8, 1); // catch volume (3D cylinder up to vertical reach, cyan)
     }
     if (TUNE.vizVectors) {
       if (ch.speed > 0.2) seg(p.x, 0.1, p.z, p.x + ch.vel.x * 0.28, 0.1, p.z + ch.vel.z * 0.28, 0.3, 1, 0.4); // velocity (green)
