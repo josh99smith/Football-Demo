@@ -1329,6 +1329,11 @@ function makeCharacter(team) {
         o.material.color.setHex(0x5f8dff);
         o.material.emissive = new THREE.Color(0x1a3a8c);
         o.material.emissiveIntensity = 0.6;
+      } else {
+        // The skin ships fully self-lit (emissiveFactor 1 + emissive skin texture),
+        // so scene lights barely touch it. Dial the glow down (TUNE.playerGlow) so the
+        // body is lit by the floods/key like the helmet — tunable in the debug panel.
+        o.material.emissiveIntensity = TUNE.playerGlow;
       }
       o.material.needsUpdate = true;
     }
@@ -1519,6 +1524,7 @@ const TUNE_DEFAULTS = {
   lightRimColor: '#6f86c0',      // rim color
   lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
   lightFloodColor: '#fff4d6',    // floodlight color
+  playerGlow: 0.35,      // player skin self-illumination (1 = fully self-lit, 0 = scene-lit only)
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1698,6 +1704,14 @@ function applyArenaDim(dim) {           // dim the night lighting for the light 
 }
 // Apply the debug lighting knobs to the scene (the un-dimmed baseline). Called at
 // boot and whenever a lighting slider changes.
+// Set player-skin self-illumination so the bodies catch the scene lights (the GLB
+// ships them fully self-lit). Skips the rare blue-tint fallback (no def model).
+function applyPlayerGlow() {
+  for (const ch of game.all) {
+    if (!ch.model || (ch.team === 'def' && !defTemplate)) continue;
+    ch.model.traverse((o) => { if (o.isMesh && o.material) { o.material.emissiveIntensity = TUNE.playerGlow; o.material.needsUpdate = true; } });
+  }
+}
 function applyLighting() {
   renderer.toneMappingExposure = TUNE.exposure;
   hemi.intensity = TUNE.lightAmbient; hemi.color.set(TUNE.lightAmbientSky); hemi.groundColor.set(TUNE.lightAmbientGround);
@@ -6547,6 +6561,7 @@ const DBG_KNOBS = [
   { tab: 'Lighting', key: 'lightRimColor', label: 'Rim color', type: 'color', onChange: L },
   { tab: 'Lighting', key: 'lightFloods', label: 'Floodlights ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), onChange: L },
   { tab: 'Lighting', key: 'lightFloodColor', label: 'Floodlight color', type: 'color', onChange: L },
+  { tab: 'Lighting', key: 'playerGlow', label: 'Player glow', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerGlow() },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
