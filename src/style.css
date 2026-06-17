@@ -929,6 +929,19 @@ body.replay-mode #build-badge { display: none !important; }
 #debugpanel .dbg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 #debugpanel .dbg-title { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #8effc0; }
 #debugpanel #dbg-close { background: none; border: none; color: #8effc0; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
+#debugpanel .dbg-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+#debugpanel .dbg-tabs button {
+  font-family: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.5px;
+  color: #aef9c8; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px; padding: 4px 8px; cursor: pointer;
+}
+#debugpanel .dbg-tabs button.on { color: #06140d; background: #8effc0; border-color: #8effc0; }
+#debugpanel .dbg-pane { display: none; }
+#debugpanel .dbg-pane.on { display: block; }
+#debugpanel .dbg-rowcolor label { margin-bottom: 0; align-items: center; }
+#debugpanel .dbg-rowcolor input[type=color] { width: 38px; height: 22px; padding: 0; border: 1px solid rgba(255,255,255,0.25); border-radius: 5px; background: none; cursor: pointer; }
+#debugpanel .dbg-rowcolor { display: flex; justify-content: space-between; align-items: center; }
+#debugpanel .dbg-rowcolor label { flex: 1; }
 #debugpanel .dbg-row { margin: 9px 0; }
 #debugpanel .dbg-row label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
 #debugpanel .dbg-row .dbg-val { color: #ffd23a; font-weight: 700; }

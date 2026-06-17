@@ -1511,9 +1511,14 @@ const TUNE_DEFAULTS = {
   ballSize: 1.0,         // × visual football scale
   exposure: 1.3,         // renderer tone-mapping exposure (overall brightness)
   lightAmbient: 0.6,     // hemisphere (sky/ground) ambient intensity
+  lightAmbientSky: '#44588f',    // hemisphere sky color
+  lightAmbientGround: '#0c1208', // hemisphere ground color
   lightKey: 0.85,        // sun/moonlight key directional intensity
+  lightKeyColor: '#b9c8ee',      // key/sun color
   lightRim: 0.35,        // cool rim directional intensity
+  lightRimColor: '#6f86c0',      // rim color
   lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
+  lightFloodColor: '#fff4d6',    // floodlight color
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1522,7 +1527,7 @@ const TUNE_STORE_KEY = 'rfTune';
 try {
   if (typeof localStorage !== 'undefined') {
     const saved = JSON.parse(localStorage.getItem(TUNE_STORE_KEY) || '{}');
-    for (const k in TUNE_DEFAULTS) if (typeof saved[k] === 'number') TUNE[k] = saved[k];
+    for (const k in TUNE_DEFAULTS) if (saved[k] !== undefined && typeof saved[k] === typeof TUNE_DEFAULTS[k]) TUNE[k] = saved[k];
   }
 } catch (e) { /* ignore corrupt/unavailable storage */ }
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
@@ -1695,8 +1700,10 @@ function applyArenaDim(dim) {           // dim the night lighting for the light 
 // boot and whenever a lighting slider changes.
 function applyLighting() {
   renderer.toneMappingExposure = TUNE.exposure;
-  hemi.intensity = TUNE.lightAmbient; sun.intensity = TUNE.lightKey; rim.intensity = TUNE.lightRim;
-  for (const s of towerSpots) s.intensity = (s.userData.base || 1.6) * TUNE.lightFloods;
+  hemi.intensity = TUNE.lightAmbient; hemi.color.set(TUNE.lightAmbientSky); hemi.groundColor.set(TUNE.lightAmbientGround);
+  sun.intensity = TUNE.lightKey; sun.color.set(TUNE.lightKeyColor);
+  rim.intensity = TUNE.lightRim; rim.color.set(TUNE.lightRimColor);
+  for (const s of towerSpots) { s.intensity = (s.userData.base || 1.6) * TUNE.lightFloods; s.color.set(TUNE.lightFloodColor); }
 }
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
@@ -6505,44 +6512,55 @@ function updateDbg() { if (dbgOn && dbgEl) { try { dbgEl.textContent = balanceSu
 
 // ---- DEBUG MODE panel: live-tune the gameplay knobs (TUNE) + fire test triggers.
 // Open by tapping the version badge or pressing the ` key. ------------------------
+const L = () => applyLighting();
 const DBG_KNOBS = [
-  { key: 'fightChance', label: 'Scuffle chance', min: 0, max: 1, step: 0.01, fmt: (v) => v.toFixed(2) },
-  { key: 'fightKnockback', label: 'Scuffle knockback', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'blockTempo', label: 'Block tempo ×', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-  { key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
-  { key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
-  { key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
-  { key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
-  { key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
-  { key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
-  { key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
-  { key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
-  // Collider distances + sizes
-  { key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
-  { key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
-  { key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  // Lighting
-  { key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
-  { key: 'lightAmbient', label: 'Ambient light', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
-  { key: 'lightKey', label: 'Key / sun light', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
-  { key: 'lightRim', label: 'Rim light', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLighting() },
-  { key: 'lightFloods', label: 'Floodlights ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), onChange: () => applyLighting() },
+  // --- Gameplay ---
+  { tab: 'Gameplay', key: 'fightChance', label: 'Scuffle chance', min: 0, max: 1, step: 0.01, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'fightKnockback', label: 'Scuffle knockback', min: 0, max: 8, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'blockTempo', label: 'Block tempo ×', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
+  { tab: 'Gameplay', key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
+  { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  // --- Colliders + sizes ---
+  { tab: 'Colliders', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
+  { tab: 'Colliders', key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // --- Lighting (intensity + color per source) ---
+  { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
+  { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
+  { tab: 'Lighting', key: 'lightAmbientSky', label: 'Ambient · sky', type: 'color', onChange: L },
+  { tab: 'Lighting', key: 'lightAmbientGround', label: 'Ambient · ground', type: 'color', onChange: L },
+  { tab: 'Lighting', key: 'lightKey', label: 'Key / sun', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
+  { tab: 'Lighting', key: 'lightKeyColor', label: 'Key / sun color', type: 'color', onChange: L },
+  { tab: 'Lighting', key: 'lightRim', label: 'Rim', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
+  { tab: 'Lighting', key: 'lightRimColor', label: 'Rim color', type: 'color', onChange: L },
+  { tab: 'Lighting', key: 'lightFloods', label: 'Floodlights ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1), onChange: L },
+  { tab: 'Lighting', key: 'lightFloodColor', label: 'Floodlight color', type: 'color', onChange: L },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
 const dbgValEls = {};
-function buildDebugPanel() {
-  if (!dbgPanelEl) return;
-  const rows = dbgPanelEl.querySelector('.dbg-rows');
-  rows.innerHTML = '';
-  for (const k of DBG_KNOBS) {
-    const row = document.createElement('div'); row.className = 'dbg-row';
+function buildKnobRow(k, pane) {
+  const row = document.createElement('div'); row.className = 'dbg-row';
+  if (k.type === 'color') {
+    row.classList.add('dbg-rowcolor');
+    const lab = document.createElement('label'); const name = document.createElement('span'); name.textContent = k.label; lab.append(name);
+    const inp = document.createElement('input'); inp.type = 'color'; inp.value = TUNE[k.key];
+    inp.addEventListener('input', () => { TUNE[k.key] = inp.value; if (k.onChange) k.onChange(); updateDbgExport(); });
+    dbgValEls[k.key] = { sl: inp, set: (v) => { inp.value = v; } };
+    row.append(lab, inp);
+  } else {
     const lab = document.createElement('label');
     const name = document.createElement('span'); name.textContent = k.label;
     const val = document.createElement('span'); val.className = 'dbg-val'; val.textContent = k.fmt(TUNE[k.key]);
@@ -6550,10 +6568,26 @@ function buildDebugPanel() {
     const sl = document.createElement('input');
     sl.type = 'range'; sl.min = k.min; sl.max = k.max; sl.step = k.step; sl.value = TUNE[k.key];
     sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); updateDbgExport(); });
-    dbgValEls[k.key] = { val, sl, fmt: k.fmt };
-    row.append(lab, sl); rows.append(row);
+    dbgValEls[k.key] = { val, sl, fmt: k.fmt, set: (v) => { sl.value = v; val.textContent = k.fmt(v); } };
+    row.append(lab, sl);
   }
-  const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].sl.value = TUNE[k.key]; dbgValEls[k.key].val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); } updateDbgExport(); };
+  pane.appendChild(row);
+}
+function buildDebugPanel() {
+  if (!dbgPanelEl) return;
+  const rowsWrap = dbgPanelEl.querySelector('.dbg-rows'); const tabsBar = dbgPanelEl.querySelector('.dbg-tabs');
+  rowsWrap.innerHTML = ''; tabsBar.innerHTML = '';
+  // Tabs: one per knob group, plus a Camera tab holding the cam/rewind controls.
+  const tabs = []; for (const k of DBG_KNOBS) if (!tabs.includes(k.tab)) tabs.push(k.tab);
+  tabs.push('Camera');
+  const panes = {};
+  for (const t of tabs) { const p = document.createElement('div'); p.className = 'dbg-pane'; panes[t] = p; rowsWrap.appendChild(p); }
+  for (const k of DBG_KNOBS) buildKnobRow(k, panes[k.tab]);
+  const camSec = dbgPanelEl.querySelector('.dbg-cam'); if (camSec) panes['Camera'].appendChild(camSec);
+  const showTab = (t) => { for (const tt of tabs) panes[tt].classList.toggle('on', tt === t); tabsBar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t)); };
+  for (const t of tabs) { const b = document.createElement('button'); b.textContent = t; b.dataset.tab = t; b.addEventListener('click', () => showTab(t)); tabsBar.appendChild(b); }
+  showTab(tabs[0]);
+  const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].set(TUNE[k.key]); if (k.onChange) k.onChange(); } updateDbgExport(); };
   dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
   dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
   // Save: persist the current knobs to localStorage so they survive a reload.
@@ -6594,7 +6628,7 @@ function buildDebugPanel() {
 }
 // Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.
 function dbgTuneJSON() {
-  const o = {}; for (const k in TUNE_DEFAULTS) o[k] = Math.round(TUNE[k] * 1000) / 1000;
+  const o = {}; for (const k in TUNE_DEFAULTS) { const v = TUNE[k]; o[k] = typeof v === 'number' ? Math.round(v * 1000) / 1000 : v; }
   return JSON.stringify(o);
 }
 function updateDbgExport() {
