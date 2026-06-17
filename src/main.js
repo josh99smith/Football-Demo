@@ -1114,8 +1114,10 @@ let backLClip, backRClip; // backpedal locomotion (left/right drift)
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
+let vaultClips = []; // hurdle pool (per-player variety, animations2/5.glb)
 let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
 let jabClip, kickClip, blownBackClip; // post-play scuffle (attack + knockback, animations5.glb)
+let hitReactClip; // broken-tackle stagger (Hit_in_Back_While_Running, animations5.glb)
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
@@ -1237,9 +1239,10 @@ async function loadAssets() {
   // Per-player idle / walk pools so a lineup reads as individuals (real mocap
   // variety instead of procedural arm offsets) and the huddle walk-back isn't
   // robotic. Fall back to the originals if the new pack didn't load.
-  // Idle is the clean breathing stance only. The Idle_02/03/8 variety clips
-  // include arms-spread / taunt poses that look wrong standing on the field.
-  idleClips = [idleClip].filter(Boolean);
+  // Idle pool = clean breathing stances only. The Idle_02/03/8 variety clips have
+  // arms-spread / taunt poses that look wrong standing on the field; Idle_10 (pack 7)
+  // is a calm settled stance, so it joins Idle_11 for per-player variety.
+  idleClips = [idleClip, byName['Idle_10'] && inPlace(byName['Idle_10'])].filter(Boolean);
   if (!idleClips.length) idleClips = [inPlace(byName['Idle_11'])];
   // Walk pool is just the gameplay-paced Walking clip: the Casual_Walk /
   // Proud_Strut variety are leisurely cutscene gaits (~half pace) that skate
@@ -1262,9 +1265,14 @@ async function loadAssets() {
     ? inPlaceY(THREE.AnimationUtils.subclip(byName['Leap_Right_and_Catch'], 'divecatch', 0, 30, 30)) // leap+secure (drop the long fall)
     : catchClip;
   scoopClip = byName['Male_Run_Forward_Pick_Up_Left'] ? inPlaceY(byName['Male_Run_Forward_Pick_Up_Left']) : null;
-  vaultClip = byName['Jump_Over_Obstacle_1'] ? inPlaceY(byName['Jump_Over_Obstacle_1'])
-    : (byName['Parkour_Vault_2'] ? inPlaceY(byName['Parkour_Vault_2']) : jukeClip);
+  // Hurdle pool: two obstacle jumps + the parkour vault, so a leaping defender/runner
+  // doesn't always clear the pile the same way. Per-player pick in makeCharacter.
+  vaultClips = ['Jump_Over_Obstacle_1', 'Jump_Over_Obstacle_2', 'Parkour_Vault_2']
+    .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  vaultClip = vaultClips[0] || jukeClip; // default / fallback
   cageVaultClip = byName['Parkour_Vault_with_Roll'] ? inPlaceY(byName['Parkour_Vault_with_Roll']) : vaultClip;
+  // Broken-tackle stagger (pack 7): the runner gets rocked but powers through.
+  hitReactClip = byName['Hit_in_Back_While_Running'] ? inPlaceY(byName['Hit_in_Back_While_Running']) : null;
   // Get-ups (played after a ragdoll when walking back to the line) — keep vertical
   // motion so the body rises off the turf.
   getUpClips = ['Stand_Up4', 'Stand_Up7'].map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
@@ -1369,8 +1377,11 @@ function makeCharacter(team) {
   if (tackleClip) actions.tackle = oneShot(tackleClip);
   if (diveCatchClip) actions.divecatch = oneShot(diveCatchClip);
   if (scoopClip) actions.scoop = oneShot(scoopClip);
-  if (vaultClip) actions.vault = oneShot(vaultClip);
+  // Per-player hurdle clip from the pool (variety), falling back to the single default.
+  if (vaultClips.length) actions.vault = oneShot(vaultClips[(Math.random() * vaultClips.length) | 0]);
+  else if (vaultClip) actions.vault = oneShot(vaultClip);
   if (cageVaultClip) actions.cagevault = oneShot(cageVaultClip);
+  if (hitReactClip) actions.hitreact = oneShot(hitReactClip); // broken-tackle stagger
   if (celebClips.length) actions.celebrate = oneShot(celebClips[(Math.random() * celebClips.length) | 0]); // this player's TD dance
   if (getUpClips.length) actions.getup = oneShot(getUpClips[(Math.random() * getUpClips.length) | 0]); // pop up after a knockdown
   // End-of-game finale: a looping dance (winner) and a looping anger clip (loser),
@@ -4887,6 +4898,7 @@ function beginTackle(lead, force = false) {
   if (!force && game.userOnOffense && tryBreak(carrier, pile)) {
     knockdownDefender(lead);
     carrier.vel.x *= 0.8; carrier.vel.z *= 0.8;
+    if (carrier.actions.hitreact && carrier.oneShotT <= 0) playOneShot(carrier, 'hitreact', 0.4, true); // rocked, but powers through
     shake.add(0.2);
     shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
     showBanner('BROKE IT!', '#bfffd0');
