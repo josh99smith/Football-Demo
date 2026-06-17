@@ -3412,6 +3412,15 @@ function balanceSummary() {
   const text = `${line('RPR', game.scoreOff, A)}\n${line('DMN', game.scoreDef, B)}\nQ${game.quarter} plays:${t.plays} sacks:${t.sacks} fum:${t.fumbles} pick:${t.picks} big:${t.bigPlays}`;
   return { A, B, text };
 }
+// Rich balance report (real aggregated telemetry + derived rates) for the Stats tab.
+function dbgBalanceReport() {
+  const A = game.teamA ? teamAgg(game.teamA) : null, B = game.teamB ? teamAgg(game.teamB) : null, t = game.tally;
+  const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+  const avg = (n, d) => d ? (n / d).toFixed(1) : '0.0';
+  const blk = (nm, sc, g) => !g ? `${nm} ${sc}` :
+    `${nm}  ${sc} pts\n  pass ${g.cmp}/${g.att} (${pct(g.cmp, g.att)}%)  ${g.passYds}yd  ${avg(g.passYds, g.att)}/att  ${g.passTD}td\n  rush ${g.car}c  ${g.rushYds}yd  ${avg(g.rushYds, g.car)}/c  ${g.rushTD}td\n  def  ${g.tkl}tkl ${g.sack}sk ${g.intCaught}int`;
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}`;
+}
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
@@ -6683,6 +6692,8 @@ function buildDebugPanel() {
   const presetsSec = dbgPanelEl.querySelector('.dbg-presets'); if (presetsSec) panes['Presets'].appendChild(presetsSec);
   if (!tabs.includes('Scenario')) { tabs.push('Scenario'); const p = document.createElement('div'); p.className = 'dbg-pane'; panes['Scenario'] = p; rowsWrap.appendChild(p); }
   const scSec = dbgPanelEl.querySelector('.dbg-scenario'); if (scSec) panes['Scenario'].appendChild(scSec);
+  if (!tabs.includes('Stats')) { tabs.push('Stats'); const p = document.createElement('div'); p.className = 'dbg-pane'; panes['Stats'] = p; rowsWrap.appendChild(p); }
+  const statSec = dbgPanelEl.querySelector('.dbg-stats'); if (statSec) panes['Stats'].appendChild(statSec);
   const showTab = (t) => { for (const tt of tabs) panes[tt].classList.toggle('on', tt === t); tabsBar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t)); };
   for (const t of tabs) { const b = document.createElement('button'); b.textContent = t; b.dataset.tab = t; b.addEventListener('click', () => showTab(t)); tabsBar.appendChild(b); }
   showTab(tabs[0]);
@@ -6755,6 +6766,9 @@ function buildDebugPanel() {
   dbgPanelEl.querySelector('#dbg-setB').addEventListener('click', () => { abB = dbgTuneJSON(); });
   dbgPanelEl.querySelector('#dbg-toA').addEventListener('click', () => { if (abA) applyTune(abA); });
   dbgPanelEl.querySelector('#dbg-toB').addEventListener('click', () => { if (abB) applyTune(abB); });
+  // Stats / balance report
+  dbgPanelEl.querySelector('#dbg-stat-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(dbgBalanceReport()); } catch (e) { /* ignore */ } });
+  dbgPanelEl.querySelector('#dbg-stat-reset').addEventListener('click', () => { game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }; for (const ch of game.all) ch.stats = blankStats(); });
   updateDbgExport();
 }
 // Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.
@@ -6794,6 +6808,8 @@ function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
   const tele = dbgPanelEl.querySelector('.dbg-tele');
   try { tele.textContent = balanceSummary().text + `\nstate:${game.state}`; } catch (e) { /* ignore */ }
+  const rep = dbgPanelEl.querySelector('#dbg-statrep'); // live balance report (Stats tab)
+  if (rep && rep.offsetParent !== null) { try { rep.textContent = dbgBalanceReport(); } catch (e) { /* ignore */ } }
 }
 buildDebugPanel(); // wire the sliders/buttons (panel starts hidden)
 { const bb = document.getElementById('build-badge'); if (bb) bb.addEventListener('click', () => toggleDebugPanel()); }
