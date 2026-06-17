@@ -74,7 +74,7 @@
       <button id="dbg-freecam">Free Cam: OFF</button>
       <div class="dbg-camhint">drag rotate · wheel/pinch zoom · shift/2-finger pan</div>
       <div class="dbg-actrow"><button id="dbg-autorot">Auto-rotate: off</button><button id="dbg-follow">Follow ball: off</button></div>
-      <div class="dbg-actrow"><button id="dbg-rew">⏪ −5</button><button id="dbg-fwd">+5 ⏩</button><button id="dbg-shot">📷 PNG</button></div>
+      <div class="dbg-actrow"><button id="dbg-rew">⏪ −5</button><button id="dbg-step">Step ▶</button><button id="dbg-fwd">+5 ⏩</button><button id="dbg-shot">📷</button></div>
       <input id="dbg-scrub" type="range" min="0" max="100" value="100" aria-label="rewind">
     </div>
     <div class="dbg-presets">
@@ -84,11 +84,19 @@
       <div class="dbg-camhint">A/B compare — Set, then flip:</div>
       <div class="dbg-actrow"><button id="dbg-setA">Set A</button><button id="dbg-setB">Set B</button><button id="dbg-toA">▶ A</button><button id="dbg-toB">▶ B</button></div>
     </div>
+    <div class="dbg-scenario">
+      <label class="dbg-scrow">LOS <input id="dbg-sc-los" type="range" min="-45" max="45" step="1" value="-30"><span id="dbg-sc-losv">-30</span></label>
+      <label class="dbg-scrow">Down <input id="dbg-sc-down" type="range" min="1" max="4" step="1" value="1"><span id="dbg-sc-downv">1</span></label>
+      <label class="dbg-scrow">To go <input id="dbg-sc-togo" type="range" min="1" max="30" step="1" value="30"><span id="dbg-sc-togov">30</span></label>
+      <button id="dbg-sc-apply">Apply &amp; line up</button>
+    </div>
     <div class="dbg-export" aria-label="current settings"></div>
     <div class="dbg-tele"></div>
   </div>
   <!-- Debug AI/state labels (projected over players when the Viz overlay is on) -->
   <div id="dbgviz-labels"></div>
+  <!-- Debug event log (toggle in the Viz tab) -->
+  <div id="dbglog" class="hidden"></div>
   <!-- Debug toggle button for touch devices: shown only when the URL has ?debug
        (so normal players never see it). Opens/closes the debug panel. -->
   <button id="dbg-fab" class="hidden" aria-label="toggle debug panel">⚙</button>

@@ -37,7 +37,7 @@ camera.position.set(0, 7, -12);
 // Free debug camera (orbit/zoom/pan) + rewind scrubber — toggled from the debug
 // panel or the C key. While on, the sim is frozen so any angle can be inspected /
 // screenshotted, and the play can be scrubbed back through the replay buffer.
-const dbgCam = { on: false, az: 0.6, el: 0.55, dist: 16, target: new THREE.Vector3(0, 1.2, 0), scrub: -1, shot: false, autoRotate: false, follow: false };
+const dbgCam = { on: false, az: 0.6, el: 0.55, dist: 16, target: new THREE.Vector3(0, 1.2, 0), scrub: -1, shot: false, autoRotate: false, follow: false, step: false };
 
 // --- Sky dome (vertical gradient) + a crowd-filled stadium bowl ---
 function gradientCanvas(stops, w, h) {
@@ -1538,7 +1538,7 @@ const TUNE_DEFAULTS = {
   fogColor: '#12203f', fogNear: 130, fogFar: 330,  // night haze
   masterVolume: 0.5,                               // master audio gain
   // Debug visualization overlays (0/1)
-  vizColliders: 0, vizVectors: 0, vizLabels: 0,
+  vizColliders: 0, vizVectors: 0, vizLabels: 0, vizLog: 0,
   // Difficulty fine-tune (multiply/offset on top of the rookie/pro/all-pro preset)
   cpuSpdMul: 1.0, cpuCatchAdd: 0.0, cpuAccMul: 1.0, userBreakMul: 1.0,
 };
@@ -3297,7 +3297,15 @@ const CALLOUT_ICONS = {
   'PICK SIX!': 'star', 'INTERCEPTED!': 'star', 'PICKED OFF!': 'star', 'TURNOVER!': 'star', 'TURNOVER': 'star',
   'ON FIRE!': 'fire', 'OFF THE WALL!': 'bolt', 'HURDLE!': 'bolt',
 };
+const dbgLogBuf = [];
+function dbgLogPush(msg) {
+  const t = (game && game.quarter) ? `Q${game.quarter} ${fmtClock(game.gameClock)} ` : '';
+  dbgLogBuf.push(`<span class="lg-t">${t}</span>${msg}`);
+  if (dbgLogBuf.length > 16) dbgLogBuf.shift();
+  const el = document.getElementById('dbglog'); if (el) el.innerHTML = dbgLogBuf.slice().reverse().join('<br>');
+}
 function showBanner(text, color = '#ffd23a', opts = {}) {
+  dbgLogPush(text); // feed the debug event log
   const icon = opts.icon || CALLOUT_ICONS[text];
   bannerEl.style.color = color;
   if (icon) {
@@ -6633,6 +6641,7 @@ const DBG_KNOBS = [
   { tab: 'Viz', key: 'vizColliders', label: 'Collider rings', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
   { tab: 'Viz', key: 'vizVectors', label: 'Velocity + assignments', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
   { tab: 'Viz', key: 'vizLabels', label: 'State labels', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
+  { tab: 'Viz', key: 'vizLog', label: 'Event log', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
@@ -6672,6 +6681,8 @@ function buildDebugPanel() {
   const camSec = dbgPanelEl.querySelector('.dbg-cam'); if (camSec) panes['Camera'].appendChild(camSec);
   if (!tabs.includes('Presets')) { tabs.push('Presets'); const p = document.createElement('div'); p.className = 'dbg-pane'; panes['Presets'] = p; rowsWrap.appendChild(p); }
   const presetsSec = dbgPanelEl.querySelector('.dbg-presets'); if (presetsSec) panes['Presets'].appendChild(presetsSec);
+  if (!tabs.includes('Scenario')) { tabs.push('Scenario'); const p = document.createElement('div'); p.className = 'dbg-pane'; panes['Scenario'] = p; rowsWrap.appendChild(p); }
+  const scSec = dbgPanelEl.querySelector('.dbg-scenario'); if (scSec) panes['Scenario'].appendChild(scSec);
   const showTab = (t) => { for (const tt of tabs) panes[tt].classList.toggle('on', tt === t); tabsBar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t)); };
   for (const t of tabs) { const b = document.createElement('button'); b.textContent = t; b.dataset.tab = t; b.addEventListener('click', () => showTab(t)); tabsBar.appendChild(b); }
   showTab(tabs[0]);
@@ -6711,6 +6722,17 @@ function buildDebugPanel() {
   dbgPanelEl.querySelector('#dbg-rew').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub - 5); });
   dbgPanelEl.querySelector('#dbg-fwd').addEventListener('click', () => { if (dbgCam.on) setDbgScrub(dbgCam.scrub + 5); });
   dbgPanelEl.querySelector('#dbg-shot').addEventListener('click', () => { dbgCam.shot = true; });
+  dbgPanelEl.querySelector('#dbg-step').addEventListener('click', () => { if (dbgCam.on) { dbgCam.scrub = -1; dbgCam.step = true; } }); // advance one sim tick while frozen
+  // Scenario: set LOS / down / to-go and re-line-up the play.
+  const scBind = (id, vid) => { const el = dbgPanelEl.querySelector(id), v = dbgPanelEl.querySelector(vid); if (el && v) el.addEventListener('input', () => { v.textContent = el.value; }); };
+  scBind('#dbg-sc-los', '#dbg-sc-losv'); scBind('#dbg-sc-down', '#dbg-sc-downv'); scBind('#dbg-sc-togo', '#dbg-sc-togov');
+  dbgPanelEl.querySelector('#dbg-sc-apply').addEventListener('click', () => {
+    if (dbgCam.on) toggleDebugCam(false); // unfreeze so the new play runs
+    game.los = +dbgPanelEl.querySelector('#dbg-sc-los').value;
+    game.down = +dbgPanelEl.querySelector('#dbg-sc-down').value;
+    game.firstDown = game.los + game.dir * (+dbgPanelEl.querySelector('#dbg-sc-togo').value);
+    newPlay();
+  });
   const arBtn = dbgPanelEl.querySelector('#dbg-autorot'); arBtn.addEventListener('click', () => { dbgCam.autoRotate = !dbgCam.autoRotate; arBtn.textContent = 'Auto-rotate: ' + (dbgCam.autoRotate ? 'on' : 'off'); });
   const flBtn = dbgPanelEl.querySelector('#dbg-follow'); flBtn.addEventListener('click', () => { dbgCam.follow = !dbgCam.follow; flBtn.textContent = 'Follow ball: ' + (dbgCam.follow ? 'on' : 'off'); });
   dbgPanelEl.querySelector('#dbg-scrub').addEventListener('input', (e) => { if (dbgCam.on) dbgCam.scrub = THREE.MathUtils.clamp(Math.round(+e.target.value), 0, dbgScrubMax()); });
@@ -6800,6 +6822,7 @@ function ensureViz() {
   scene.add(dbgVizLines);
 }
 function updateDbgViz() {
+  const logEl = document.getElementById('dbglog'); if (logEl) logEl.classList.toggle('hidden', !TUNE.vizLog); // event-log visibility
   const drawL = TUNE.vizColliders || TUNE.vizVectors, lbl = TUNE.vizLabels;
   ensureViz();
   const labelsEl = document.getElementById('dbgviz-labels');
@@ -6848,7 +6871,8 @@ function animate() {
   // Free debug camera: the sim is frozen; just scrub the replay buffer (rewind) and
   // drive the orbit camera, then render. Nothing in the game advances.
   if (dbgCam.on) {
-    if (dbgCam.scrub >= 0 && game.replay.frames.length) applyReplayFrame(Math.min(dbgCam.scrub, dbgScrubMax()));
+    if (dbgCam.step) { simStep(1 / 60); dbgCam.step = false; } // frame-step one tick
+    else if (dbgCam.scrub >= 0 && game.replay.frames.length) applyReplayFrame(Math.min(dbgCam.scrub, dbgScrubMax()));
     applyDebugCam();
     updateDbgViz();
     renderer.render(scene, camera);
@@ -6856,6 +6880,14 @@ function animate() {
     requestAnimationFrame(animate);
     return;
   }
+  simStep(realDt);
+  updateCamera(realDt);
+  updateDbgViz();
+  renderer.render(scene, camera);
+  if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); } // debug screenshot (clean 3D, no HUD)
+  requestAnimationFrame(animate);
+}
+function simStep(realDt) {
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
   const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
@@ -6885,11 +6917,6 @@ function animate() {
   }
 
   updateAmbience(realDt);
-  updateCamera(realDt);
-  updateDbgViz();
-  renderer.render(scene, camera);
-  if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); } // debug screenshot (clean 3D, no HUD)
-  requestAnimationFrame(animate);
 }
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
