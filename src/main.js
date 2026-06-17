@@ -1115,6 +1115,7 @@ let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
+let jabClip, kickClip, blownBackClip; // post-play scuffle (attack + knockback, animations5.glb)
 let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
@@ -1168,11 +1169,16 @@ async function loadAssets() {
   // variants below). Same rig, animation-only.
   let anim4 = null;
   try { anim4 = await loadGLB('assets/animations4.glb'); } catch (e) { console.warn('animations4 missing', e); }
+  // animations5.glb: pack-7 clips. For now only the fight clips are wired (cosmetic
+  // post-play scuffle): a jab, a flying kick, and the blown-back reaction.
+  let anim5 = null;
+  try { anim5 = await loadGLB('assets/animations5.glb'); } catch (e) { console.warn('animations5 missing', e); }
   const byName = {};
   for (const c of animGltf.animations) byName[c.name] = c;
   if (anim2) for (const c of anim2.animations) if (!byName[c.name]) byName[c.name] = c; // additive: don't override existing
   if (anim3) for (const c of anim3.animations) if (!byName[c.name]) byName[c.name] = c; // additive: dances + anger
   if (anim4) for (const c of anim4.animations) if (!byName[c.name]) byName[c.name] = c; // additive: push clips (block / battle drive)
+  if (anim5) for (const c of anim5.animations) if (!byName[c.name]) byName[c.name] = c; // additive: pack-7 fight clips
   // Strip every clip to ROTATION-ONLY: the source clips carry root motion
   // (Hips position) that translates the body during the clip and then snaps
   // back to the spawn spot ("teleport"). We drive position from the game, so
@@ -1274,6 +1280,12 @@ async function loadAssets() {
   if (pushStop) blockClips.push(inPlace(pushStop)); // one full push-and-set cycle
   if (pushWalk) for (const [a, b] of [[0, 90], [80, 170], [160, 240]]) // drive sliced into distinct shoves
     blockClips.push(inPlace(THREE.AnimationUtils.subclip(pushWalk, 'push', a, b, 30)));
+  // Post-play SCUFFLE clips (pack 7): a jab + a flying kick for the instigator and
+  // the blown-back reaction for the victim. Dynamic (the kick leaves the ground, the
+  // victim topples back), so keep vertical root motion + groundClamp at runtime.
+  jabClip = byName['Left_Jab_from_Guard'] ? inPlaceY(byName['Left_Jab_from_Guard']) : null;
+  kickClip = byName['Rising_Flying_Kick'] ? inPlaceY(byName['Rising_Flying_Kick']) : null;
+  blownBackClip = byName['Shot_and_Blown_Back'] ? inPlaceY(byName['Shot_and_Blown_Back']) : null;
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
@@ -1377,6 +1389,11 @@ function makeCharacter(team) {
     blockTS = 0.82 + Math.random() * 0.5; // per-player tempo
     actions.block = a;
   }
+  // Post-play scuffle one-shots (cosmetic): a jab / flying kick (instigator) and the
+  // blown-back reaction (victim). Any player can be drawn into a fight.
+  if (jabClip) actions.jab = oneShot(jabClip);
+  if (kickClip) actions.kick = oneShot(kickClip);
+  if (blownBackClip) actions.blownback = oneShot(blownBackClip);
   actions.idle.setEffectiveWeight(1);
   mixer.setTime(Math.random() * 4); // desync the gait so players aren't in lockstep
   actions.idle.timeScale = 0.82 + Math.random() * 0.5; // vary breathing speed per player
@@ -4197,11 +4214,47 @@ function endPlay(result, endZ) {
     // a big gain or a sack (a big play), or — so they show up regularly — an
     // occasional ordinary tackle. Otherwise straight to the next play.
     const bigPlay = Math.abs(tackleGain) >= 16;
-    if (bigHit) startReplay(true);            // low-angle slow-mo highlight
-    else if (bigPlay || Math.random() < 0.2) startReplay(false); // multi-angle from the top
+    let replayed = false;
+    if (bigHit) replayed = startReplay(true);            // low-angle slow-mo highlight
+    else if (bigPlay || Math.random() < 0.2) replayed = startReplay(false); // multi-angle from the top
+    // No replay this snap? Roll for a cosmetic post-whistle scuffle instead — it
+    // needs the live field (a replay would cut away from it).
+    if (!replayed && !game.gameOver && Math.random() < FIGHT_CHANCE)
+      startPostPlayFight(game.carrier ? game.carrier.group.position.x : 0, endZ);
   } else if ((result === 'fumble' || result === 'intercept') && Math.random() < 0.5) {
     startReplay(false); // turnovers are highlight-worthy too
   }
+}
+// Cosmetic POST-PLAY SCUFFLE: after the whistle, a nearby defender and offensive
+// player square up — the instigator throws a jab or a flying kick (pack 7) and the
+// other is blown back off his feet. No flags, no yardage; pure Blitz attitude. It
+// plays out during an extended dead-ball beat (only when no replay is showing, so
+// the camera stays live on the field).
+const FIGHT_CHANCE = 0.18; // chance of a scuffle after a no-replay tackle/OOB
+function startPostPlayFight(sx, sz) {
+  if (!jabClip && !kickClip) return false;          // pack missing
+  const spot = { x: sx, z: sz };
+  const pool = (team) => game[team]
+    .filter((c) => !c.ragdolling && !c.dancing && !c.sulk && c !== game.controlled)
+    .map((c) => [c, distXZ(px(c), spot)])
+    .filter((e) => e[1] < 9).sort((a, b) => a[1] - b[1]);
+  const defs = pool('defense'), offs = pool('offense');
+  if (!defs.length || !offs.length) return false;   // need an opposing pair nearby
+  const attacker = defs[0][0], victim = offs[0][0];
+  const ap = attacker.group.position, vp = victim.group.position;
+  // Square up: attacker faces the victim, victim faces back.
+  attacker.heading = Math.atan2(vp.x - ap.x, vp.z - ap.z);
+  victim.heading = attacker.heading + Math.PI;
+  attacker.vel.set(0, 0, 0); attacker.speed = 0;
+  // Throw the swing — a jab or a flying kick — and blow the victim back.
+  const move = (kickClip && (!jabClip || Math.random() < 0.5)) ? 'kick' : 'jab';
+  playOneShot(attacker, move, 2.2, true);
+  if (blownBackClip) playOneShot(victim, 'blownback', 2.4, true);
+  const kb = 3.2; // stagger the victim back along the punch line (the DEAD coast decays it)
+  victim.vel.set(Math.sin(attacker.heading) * kb, 0, Math.cos(attacker.heading) * kb); victim.speed = kb;
+  game.deadTimer = Math.max(game.deadTimer, 2.6); // hold the beat so the scuffle plays out
+  showBanner('SCUFFLE!', '#ff7a3a'); shake.add(0.25); hitZoom(2.2, 1.05);
+  return true;
 }
 // TD celebration: the scorer + the two nearest teammates break into their dance
 // (each player's celebrate clip was picked at build for variety).
