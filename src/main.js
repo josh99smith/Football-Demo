@@ -1492,6 +1492,12 @@ const TUNE_DEFAULTS = {
   breakTackleEase: 1.0,  // × how easy the 1-on-1 break-tackle battle is (>1 easier)
   celebChance: 0.5,      // odds a home TD triggers a stadium celebration show
   quarterLen: 90,        // seconds of game clock per quarter (applies next quarter)
+  turboMult: 1.28,       // turbo burst speed multiplier
+  onFireBoost: 1.12,     // ON FIRE offense speed multiplier
+  catchBias: 0.0,        // global nudge to catch/completion odds (+/-)
+  fatigueDrain: 1.0,     // × how fast players gas out
+  playClock: 15,         // delay-of-game seconds before the snap (applies next play)
+  swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1506,7 +1512,7 @@ try {
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
-const PLAY_CLOCK = 15;   // delay-of-game countdown before the snap (quarter length = TUNE.quarterLen)
+// Play-clock + quarter length are debug knobs (TUNE.playClock / TUNE.quarterLen).
 const game = {
   state: STATE.PRESNAP,
   offense: [], defense: [], all: [],
@@ -1516,7 +1522,7 @@ const game = {
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
-  quarter: 1, gameClock: TUNE.quarterLen, snapClock: PLAY_CLOCK, gameOver: false,
+  quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
   tackleTimer: 0, tackleSpotZ: 0, whistled: false, // ragdoll tackle: hold while physics plays the fall (whistled once per play)
@@ -2130,7 +2136,7 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // ===========================================================================
 // Steering primitives (ported from Football-Game/Steering.ts; x,z plane)
 // ===========================================================================
-const TURBO_MULT = 1.28; // turbo burst (toned down so open-field runs are catchable)
+// Turbo burst multiplier is a debug knob (TUNE.turboMult).
 // Difficulty: scales the CPU team (teamB) and a little player assist. cpuSpd =
 // CPU speed mult; cpuCatch = +/- to CPU catch odds; cpuAcc = CPU throw-error mult
 // (>1 = more errant); userBreak = your break-tackle mult.
@@ -2149,12 +2155,12 @@ const fatiguePow = (ch) => 0.6 + 0.4 * THREE.MathUtils.clamp((ch.fatigue - FAT_M
 // Contact is tiring: tackling, getting hit, wrestling a block all drain the tank
 // (floored at FAT_MIN). The more contact + running a player does, the more he wears
 // down over the drive (only partly recovered between plays — see preparePlay).
-const drainFatigue = (ch, amt) => { if (ch) ch.fatigue = Math.max(FAT_MIN, ch.fatigue - amt); };
+const drainFatigue = (ch, amt) => { if (ch) ch.fatigue = Math.max(FAT_MIN, ch.fatigue - amt * TUNE.fatigueDrain); };
 function updateFatigue(ch, dt) {
   const stam = ch.rt ? ch.rt.stamina : 0.7;          // 0..1
   const exert = ch.speed / (ch.baseSpeed || 8);      // fraction of base top speed (turbo pushes >1)
   if (exert > 0.58) {                                // sprinting/turbo drains (quadratically — turbo costs most)
-    ch.fatigue = Math.max(FAT_MIN, ch.fatigue - 0.18 * (1.5 - stam) * exert * exert * dt);
+    ch.fatigue = Math.max(FAT_MIN, ch.fatigue - 0.18 * TUNE.fatigueDrain * (1.5 - stam) * exert * exert * dt);
   } else {                                           // jogging / idle recovers (faster with stamina)
     ch.fatigue = Math.min(1, ch.fatigue + (0.1 + stam * 0.12) * dt);
   }
@@ -2469,9 +2475,9 @@ function updateOffense(dt) {
 // ===========================================================================
 function applySteer(ch, dt) {
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
-  let speed = (ch.turbo ? ch.baseSpeed * TURBO_MULT : ch.baseSpeed) * fatigueSpeed(ch);
+  let speed = (ch.turbo ? ch.baseSpeed * TUNE.turboMult : ch.baseSpeed) * fatigueSpeed(ch);
   if (ch.cpu) speed *= diff().cpuSpd; // difficulty: scale the CPU team's pace
-  if (game.onFire && ch.team === 'off') speed *= 1.12; // ON FIRE: the whole offense burns
+  if (game.onFire && ch.team === 'off') speed *= TUNE.onFireBoost; // ON FIRE: the whole offense burns
   // Chase-down burst: a defender pursuing the ball carrier in the open gets a
   // closing bonus scaled by SPEED (so a fast DB can actually run down a breakaway
   // — a thrilling chase, not an automatic TD). A late man WAY behind the carrier
@@ -3519,7 +3525,7 @@ function enterReset(teleport) {
   const face = game.dir > 0 ? 0 : Math.PI;
   cam.fwdX = Math.sin(face); cam.fwdZ = Math.cos(face);
   if (game.gameOver) {
-    game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = PLAY_CLOCK;
+    game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = TUNE.playClock;
     if (playSelectEl) playSelectEl.classList.add('hidden'); // never strand the play picker over the finale
     if (!game.finale) startFinale(); // kick off the winners' dance party
     updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
@@ -3567,7 +3573,7 @@ function updateReset(dt) {
 function finalizeReset() {
   for (const ch of game.all) { ch.group.position.set(ch.home.x, 0, ch.home.z); ch.vel.set(0, 0, 0); ch.speed = 0; ch.heading = ch.resetHeading || 0; }
   groundPlayers(); // per-play check: everyone on the field plane, feet down
-  game.state = STATE.PRESNAP; game.snapClock = PLAY_CLOCK;
+  game.state = STATE.PRESNAP; game.snapClock = TUNE.playClock;
   if (game.userOnOffense) {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
   } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
@@ -3987,7 +3993,7 @@ function updateCpuRun(dt, turboOn, actionEdge) {
   const chaser = nearestDefenderTo(px(c));
   if (chaser) { const ax = c.group.position.x - chaser.group.position.x, al = Math.abs(ax) || 1; steer = addSteer(steer, { x: ax / al, z: 0 }, 0.5); }
   c.desired = addSteer(steer, separation(c, game.offense, 2.5), 0.2); c.turbo = true;
-  if (game.controlled && !game.controlled.ragdolling && game.controlled.diveT <= 0) { const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1); controlledMove(game.controlled, dt, top); } // (the dive integrates its own momentum)
+  if (game.controlled && !game.controlled.ragdolling && game.controlled.diveT <= 0) { const top = game.controlled.baseSpeed * (turboOn ? TUNE.turboMult : 1); controlledMove(game.controlled, dt, top); } // (the dive integrates its own momentum)
   updateOffense(dt); updateDefense();
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
   aiCarrierMoves(c, game.defense, game.dir, dt); // CPU hurdles / kicks off the fence too
@@ -4067,7 +4073,7 @@ function updateReturn(dt, turboOn, fireMul) {
     if (d === r || d === game.controlled || d.ragdolling) continue;
     d.desired = seek(px(d), rp.x, rp.z + game.dir * 3); d.turbo = false;
   }
-  const top = game.controlled.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+  const top = game.controlled.baseSpeed * fireMul * (turboOn ? TUNE.turboMult : 1);
   controlledMove(game.controlled, dt, top);
   for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
   if (!userReturning) aiCarrierMoves(r, game.offense, -game.dir, dt); // CPU returner hurdles chasers / kicks off the fence
@@ -4688,6 +4694,7 @@ function tryReception() {
   const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
   let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3 + cpuAdj;
   if (game.onFire) pCatch += 0.12;
+  pCatch += TUNE.catchBias; // global completion-odds nudge (debug knob)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away (no direct pick — only off the fence)
@@ -4734,7 +4741,7 @@ function checkSack() {
 // ===========================================================================
 // Ragdoll tackles (tackle resolution ported from Football-Game/TackleEngine)
 // ===========================================================================
-const SWARM_R = 4.2;   // defenders within this of the carrier join the pile
+// Gang-tackle swarm radius is a debug knob (TUNE.swarmRadius).
 const GANG_MAX = 4;    // max bodies that latch on (wrap + drag)
 const RAGDOLL_MAX = 3; // carrier + 2 tacklers ragdoll on collapse; the rest just wrap
 
@@ -4878,7 +4885,7 @@ function beginTackle(lead, force = false) {
 
   // Gather the swarm: the lead plus the nearest defenders crashing the carrier.
   const pile = [lead, ...game.defense
-    .filter((d) => d !== lead && distXZ(px(d), cp) <= SWARM_R)
+    .filter((d) => d !== lead && distXZ(px(d), cp) <= TUNE.swarmRadius)
     .sort((a, b) => distXZ(px(a), cp) - distXZ(px(b), cp))].slice(0, GANG_MAX);
   const gangSize = pile.length;
 
@@ -5088,7 +5095,7 @@ function updateDrag(dt) {
     for (const dfn of game.defense) {
       if (d.grabbers.length >= GANG_MAX) break;
       if (dfn.ragdolling || dfn.grabbing || d.grabbers.includes(dfn)) continue;
-      if (distXZ(px(dfn), cp) > SWARM_R * 0.85) continue;
+      if (distXZ(px(dfn), cp) > TUNE.swarmRadius * 0.85) continue;
       latchGrabber(dfn, d.baseAng, d.grabbers.length);
       d.grabbers.push(dfn);
       d.dur = Math.max(d.t + 0.16, dragTakedownTime(d.grabbers, carrier)); // recompute with the bigger pile
@@ -5242,7 +5249,7 @@ function updateLoose(dt, turboOn, actionEdge) {
     } else { ch.desired = { x: 0, z: 0 }; ch.turbo = false; } // the rest hold, don't pile on
   }
   if (game.controlled) {
-    const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1);
+    const top = game.controlled.baseSpeed * (turboOn ? TUNE.turboMult : 1);
     controlledMove(game.controlled, dt, top);
     if (actionEdge) { // dive on the ball — extends your reach + recovery odds for a beat
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
@@ -6013,7 +6020,7 @@ function updatePlay(dt) {
     if (game.turboLock && game.turboMeter > 0.25) game.turboLock = false;
   }
   turboFillEl.style.height = `${Math.round(game.turboMeter * 100)}%`;
-  const fireMul = game.onFire ? 1.12 : 1;
+  const fireMul = game.onFire ? TUNE.onFireBoost : 1;
 
   if (game.state === STATE.LIVE || game.state === STATE.AIR) {
     if (game.userOnOffense) {
@@ -6029,7 +6036,7 @@ function updatePlay(dt) {
             Math.atan2(tgt.group.position.x - game.qb.group.position.x, tgt.group.position.z - game.qb.group.position.z),
             TURN_RATE * dt * 3);
         } else {
-          const top = game.qb.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+          const top = game.qb.baseSpeed * fireMul * (turboOn ? TUNE.turboMult : 1);
           controlledMove(game.qb, dt, top);
           if (pastLine(game.qb)) { enterRun(game.qb, 'Scramble! Run for it!'); audio.say('scramble'); }
         }
@@ -6040,7 +6047,7 @@ function updatePlay(dt) {
       updateOffense(dt); updateDefense();
       if (game.state === STATE.LIVE) cpuQB(dt); else { game.qb.speed = 0; game.qb.vel.set(0, 0, 0); }
       if (game.controlled) {
-        const top = game.controlled.baseSpeed * (turboOn ? TURBO_MULT : 1);
+        const top = game.controlled.baseSpeed * (turboOn ? TUNE.turboMult : 1);
         controlledMove(game.controlled, dt, top);
       }
     }
@@ -6066,7 +6073,7 @@ function updatePlay(dt) {
       if (c.tauntCd > 0) c.tauntCd -= dt;
       if (c.tauntT > 0) { c.tauntT -= dt; if (c.tauntT <= 0) game.turboMeter = Math.min(1, game.turboMeter + 0.25); } // survived the showboat -> turbo pop
       tryCageJump(c); // driven into the fence at speed -> kick off it, stay in play
-      const top = c.baseSpeed * fireMul * (turboOn ? TURBO_MULT : 1);
+      const top = c.baseSpeed * fireMul * (turboOn ? TUNE.turboMult : 1);
       controlledMove(c, dt, top);
       updateOffense(dt); updateDefense();
       for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
@@ -6416,6 +6423,12 @@ const DBG_KNOBS = [
   { key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
+  { key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
+  { key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
+  { key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
 ];
 const dbgPanelEl = document.getElementById('debugpanel');
 let dbgPanelOn = false;
