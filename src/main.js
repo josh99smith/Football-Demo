@@ -1539,6 +1539,8 @@ const TUNE_DEFAULTS = {
   masterVolume: 0.5,                               // master audio gain
   // Debug visualization overlays (0/1)
   vizColliders: 0, vizVectors: 0, vizLabels: 0,
+  // Difficulty fine-tune (multiply/offset on top of the rookie/pro/all-pro preset)
+  cpuSpdMul: 1.0, cpuCatchAdd: 0.0, cpuAccMul: 1.0, userBreakMul: 1.0,
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -2221,7 +2223,11 @@ const DIFF = {
   pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00 },
   allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82 },
 };
-const diff = () => DIFF[game.diff] || DIFF.pro;
+// Active difficulty with the debug multipliers/offsets folded in (TUNE.cpu*/userBreak*).
+const diff = () => {
+  const d = DIFF[game.diff] || DIFF.pro;
+  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul };
+};
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
 const FAT_MIN = 0.45;
@@ -6580,6 +6586,10 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'cpuSpdMul', label: 'CPU speed ×', min: 0.7, max: 1.4, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'cpuCatchAdd', label: 'CPU catch +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'cpuAccMul', label: 'CPU accuracy ×', min: 0.5, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'userBreakMul', label: 'Your break-tackle ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   // --- Colliders + sizes ---
   { tab: 'Colliders', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
@@ -6660,6 +6670,8 @@ function buildDebugPanel() {
   for (const t of tabs) { const p = document.createElement('div'); p.className = 'dbg-pane'; panes[t] = p; rowsWrap.appendChild(p); }
   for (const k of DBG_KNOBS) buildKnobRow(k, panes[k.tab]);
   const camSec = dbgPanelEl.querySelector('.dbg-cam'); if (camSec) panes['Camera'].appendChild(camSec);
+  if (!tabs.includes('Presets')) { tabs.push('Presets'); const p = document.createElement('div'); p.className = 'dbg-pane'; panes['Presets'] = p; rowsWrap.appendChild(p); }
+  const presetsSec = dbgPanelEl.querySelector('.dbg-presets'); if (presetsSec) panes['Presets'].appendChild(presetsSec);
   const showTab = (t) => { for (const tt of tabs) panes[tt].classList.toggle('on', tt === t); tabsBar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t)); };
   for (const t of tabs) { const b = document.createElement('button'); b.textContent = t; b.dataset.tab = t; b.addEventListener('click', () => showTab(t)); tabsBar.appendChild(b); }
   showTab(tabs[0]);
@@ -6702,6 +6714,25 @@ function buildDebugPanel() {
   const arBtn = dbgPanelEl.querySelector('#dbg-autorot'); arBtn.addEventListener('click', () => { dbgCam.autoRotate = !dbgCam.autoRotate; arBtn.textContent = 'Auto-rotate: ' + (dbgCam.autoRotate ? 'on' : 'off'); });
   const flBtn = dbgPanelEl.querySelector('#dbg-follow'); flBtn.addEventListener('click', () => { dbgCam.follow = !dbgCam.follow; flBtn.textContent = 'Follow ball: ' + (dbgCam.follow ? 'on' : 'off'); });
   dbgPanelEl.querySelector('#dbg-scrub').addEventListener('input', (e) => { if (dbgCam.on) dbgCam.scrub = THREE.MathUtils.clamp(Math.round(+e.target.value), 0, dbgScrubMax()); });
+  // Presets (named localStorage slots) + in-memory A/B compare.
+  const PRESETS_KEY = 'rfPresets';
+  const getPresets = () => { try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || '{}'); } catch (e) { return {}; } };
+  const putPresets = (o) => { try { localStorage.setItem(PRESETS_KEY, JSON.stringify(o)); } catch (e) { /* ignore */ } };
+  const sel = dbgPanelEl.querySelector('#dbg-preset-list');
+  const refreshPresets = () => { const o = getPresets(); sel.innerHTML = Object.keys(o).map((nm) => `<option>${nm}</option>`).join(''); };
+  const applyTune = (json) => { try { const o = JSON.parse(json); for (const k in TUNE_DEFAULTS) if (o[k] !== undefined && typeof o[k] === typeof TUNE_DEFAULTS[k]) TUNE[k] = o[k]; refreshSliders(); } catch (e) { /* ignore */ } };
+  refreshPresets();
+  dbgPanelEl.querySelector('#dbg-preset-save').addEventListener('click', () => {
+    const nm = (dbgPanelEl.querySelector('#dbg-preset-name').value || '').trim(); if (!nm) return;
+    const o = getPresets(); o[nm] = dbgTuneJSON(); putPresets(o); refreshPresets();
+  });
+  dbgPanelEl.querySelector('#dbg-preset-load').addEventListener('click', () => { const nm = sel.value; const o = getPresets(); if (o[nm]) applyTune(o[nm]); });
+  dbgPanelEl.querySelector('#dbg-preset-del').addEventListener('click', () => { const nm = sel.value; const o = getPresets(); if (o[nm]) { delete o[nm]; putPresets(o); refreshPresets(); } });
+  let abA = null, abB = null;
+  dbgPanelEl.querySelector('#dbg-setA').addEventListener('click', () => { abA = dbgTuneJSON(); });
+  dbgPanelEl.querySelector('#dbg-setB').addEventListener('click', () => { abB = dbgTuneJSON(); });
+  dbgPanelEl.querySelector('#dbg-toA').addEventListener('click', () => { if (abA) applyTune(abA); });
+  dbgPanelEl.querySelector('#dbg-toB').addEventListener('click', () => { if (abB) applyTune(abB); });
   updateDbgExport();
 }
 // Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.

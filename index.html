@@ -77,6 +77,13 @@
       <div class="dbg-actrow"><button id="dbg-rew">⏪ −5</button><button id="dbg-fwd">+5 ⏩</button><button id="dbg-shot">📷 PNG</button></div>
       <input id="dbg-scrub" type="range" min="0" max="100" value="100" aria-label="rewind">
     </div>
+    <div class="dbg-presets">
+      <div class="dbg-actrow"><input id="dbg-preset-name" placeholder="preset name" /><button id="dbg-preset-save">Save</button></div>
+      <select id="dbg-preset-list" size="4"></select>
+      <div class="dbg-actrow"><button id="dbg-preset-load">Load</button><button id="dbg-preset-del">Delete</button></div>
+      <div class="dbg-camhint">A/B compare — Set, then flip:</div>
+      <div class="dbg-actrow"><button id="dbg-setA">Set A</button><button id="dbg-setB">Set B</button><button id="dbg-toA">▶ A</button><button id="dbg-toB">▶ B</button></div>
+    </div>
     <div class="dbg-export" aria-label="current settings"></div>
     <div class="dbg-tele"></div>
   </div>
