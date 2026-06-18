@@ -1244,10 +1244,9 @@ async function loadAssets() {
   // Per-player idle / walk pools so a lineup reads as individuals (real mocap
   // variety instead of procedural arm offsets) and the huddle walk-back isn't
   // robotic. Fall back to the originals if the new pack didn't load.
-  // Idle pool = clean breathing stances only. The Idle_02/03/8 variety clips have
-  // arms-spread / taunt poses that look wrong standing on the field; Idle_10 (pack 7)
-  // is a calm settled stance, so it joins Idle_11 for per-player variety.
-  idleClips = [idleClip, byName['Idle_10'] && inPlace(byName['Idle_10'])].filter(Boolean);
+  // Idle pool = the clean breathing stance only (Idle_11). The Idle_02/03/8/10
+  // variety clips have arms-spread / off poses that look wrong standing on the field.
+  idleClips = [idleClip].filter(Boolean);
   if (!idleClips.length) idleClips = [inPlace(byName['Idle_11'])];
   // Walk pool is just the gameplay-paced Walking clip: the Casual_Walk /
   // Proud_Strut variety are leisurely cutscene gaits (~half pace) that skate
