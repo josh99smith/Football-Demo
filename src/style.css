@@ -931,13 +931,12 @@ body.replay-mode #build-badge { display: none !important; }
 #debugpanel .dbg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 #debugpanel .dbg-title { font-size: 13px; font-weight: 800; letter-spacing: 2px; color: #8effc0; }
 #debugpanel #dbg-close { background: rgba(255,255,255,0.08); border: none; color: #8effc0; font-size: 22px; line-height: 1; cursor: pointer; width: 34px; height: 34px; border-radius: 8px; }
-/* Tabs: a single horizontal scroll strip (thumb-swipe), no awkward wrap */
-#debugpanel .dbg-tabs { display: flex; flex-wrap: nowrap; gap: 5px; overflow-x: auto; margin: 0 -2px 9px; padding: 2px; scrollbar-width: none; }
-#debugpanel .dbg-tabs::-webkit-scrollbar { display: none; }
+/* Tabs: wrap so every tab is visible (no clipped/hidden tabs) */
+#debugpanel .dbg-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 9px; padding: 0; }
 #debugpanel .dbg-tabs button {
-  flex: 0 0 auto; font-family: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+  flex: 0 0 auto; font-family: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.3px;
   color: #aef9c8; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 8px; padding: 7px 12px; cursor: pointer; white-space: nowrap; min-height: 34px;
+  border-radius: 8px; padding: 6px 9px; cursor: pointer; white-space: nowrap; min-height: 32px;
 }
 #debugpanel .dbg-tabs button.on { color: #06140d; background: #8effc0; border-color: #8effc0; }
 #debugpanel .dbg-pane { display: none; }

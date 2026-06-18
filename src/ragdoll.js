@@ -417,6 +417,11 @@ export class TackleRagdoll {
   }
 
   /** Roughly at rest? (all bodies nearly stopped) */
+  // World XZ of the pelvis body — where the fallen body lies (for standing back up).
+  rootXZ() {
+    for (const seg of this.segs) if (seg.name === 'pelvis') { const t = seg.body.translation(); return { x: t.x, z: t.z }; }
+    return null;
+  }
   settled() {
     if (!this.active) return false;
     for (const seg of this.segs) {

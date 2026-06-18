@@ -1506,11 +1506,13 @@ const TUNE_DEFAULTS = {
   onFireBoost: 1.12,     // ON FIRE offense speed multiplier
   catchBias: 0.0,        // global nudge to catch/completion odds (+/-)
   fatigueDrain: 1.0,     // × how fast players gas out
+  knockdownRecover: 1.6, // s before a knocked-down defender pops up & re-pursues (0 = stay down)
   playClock: 15,         // delay-of-game seconds before the snap (applies next play)
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
   jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
+  catchHeight: 1.0,      // × the catch collider's vertical reach (height)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -2327,6 +2329,7 @@ function updateDefense() {
   for (const d of game.defense) {
     d.blocking = false; // set true again by updateBlocks only while actually locked in a block
     if (d.ragdolling || d === game.controlled) continue; // knocked down, or the player drives him
+    if (d.oneShotT > 0 && d.current === 'getup') { d.desired = { x: 0, z: 0 }; d.vel.x *= 0.8; d.vel.z *= 0.8; continue; } // getting up — hold until the clip finishes, then pursue
     if (d.blockedBy) { d.desired = { x: 0, z: 0 }; d.engaged = true; d.pursuit = false; continue; } // stuck in a block (updateBlocks holds him)
     d.engaged = false; d.pursuit = false;
     const dp = px(d);
@@ -3687,7 +3690,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -4859,7 +4862,7 @@ function passBrokenUp(msg, color, swatter, swatType) {
 // (speed/hands), scaled by player size. Drives the jump-ball contest + the viz.
 function vReach(ch) {
   const r = ch.rt; const ath = r ? (r.speed * 0.5 + r.skill * 0.3) : 0.4;
-  return (2.5 + (0.2 + ath) * 1.7) * TUNE.playerSize; // bigger players reach higher
+  return (2.5 + (0.2 + ath) * 1.7) * TUNE.playerSize * TUNE.catchHeight; // bigger players reach higher (× height knob)
 }
 function tryReception() {
   const p = ball.mesh.position;
@@ -4978,6 +4981,27 @@ function knockdownDefender(d) {
   const away = new THREE.Vector3(dx / l, 0, dz / l); // bounced off the runner
   spawnRagdoll(d, new THREE.Vector3(d.vel.x, 0, d.vel.z), away, 3.5,
     MIDPLAY_BITS[midplayBit++ % MIDPLAY_BITS.length], 'highKnock');
+  d.downKnock = true; d.downT = 0; // recoverable mid-play knockdown (gets back up — see updateKnockdownRecovery)
+}
+// A knocked-down DEFENDER isn't out of the play: once his ragdoll settles (and
+// TUNE.knockdownRecover seconds have passed) he pops back up where he fell and
+// rejoins the pursuit. Set the knob to 0 to leave them down (old behavior).
+function updateKnockdownRecovery(dt) {
+  if (!TUNE.knockdownRecover) return;
+  for (const d of game.defense) {
+    if (!d.downKnock || !d.ragdolling) { if (!d.ragdolling) d.downKnock = false; continue; }
+    d.downT = (d.downT || 0) + dt;
+    if (d.downT < TUNE.knockdownRecover) continue;
+    if (d.ragdoll && d.ragdoll.active && !d.ragdoll.settled() && d.downT < TUNE.knockdownRecover + 2) continue; // let it come to rest (cap the wait)
+    const p = d.ragdoll && d.ragdoll.active ? d.ragdoll.rootXZ() : null;
+    if (d.ragdoll) d.ragdoll.dispose();
+    d.ragdolling = false; d.downKnock = false;
+    restoreRestPose(d); if (d.mixer) d.mixer.setTime(0);
+    if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
+    d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
+    if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
+    if (d.actions.getup) playOneShot(d, 'getup', 0.95, true); // scramble up, then pursue (updateDefense holds him during the get-up)
+  }
 }
 
 // Strength + momentum break check vs the whole pile (from TackleEngine.tryBreak).
@@ -6360,7 +6384,7 @@ function updatePlay(dt) {
   }
   // Block lock-ups: hold engaged blocker/defender pairs together in the shove and
   // run the shed duel (must come before body-separation, which skips locked pairs).
-  if (game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN) updateBlocks(dt);
+  if (game.state === STATE.LIVE || game.state === STATE.AIR || game.state === STATE.RUN || game.state === STATE.RETURN) { updateBlocks(dt); updateKnockdownRecovery(dt); }
   else clearEngagements();
   // Bodies can't pass through each other in open play (the locked pile/battle keep
   // their intentional overlaps). Run after clamping so a push can't shove anyone
@@ -6654,6 +6678,7 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'cpuSpdMul', label: 'CPU speed ×', min: 0.7, max: 1.4, step: 0.02, fmt: (v) => v.toFixed(2) },
@@ -6664,6 +6689,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'catchHeight', label: 'Catch height ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'bodyFit', label: 'Body collider × (model)', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
