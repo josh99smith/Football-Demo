@@ -1512,6 +1512,9 @@ const TUNE_DEFAULTS = {
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
+  catchGrab: 0.45,       // 3D slack on the reach volume: how far OUT of reach the ball can still be grabbed (yd)
+  catchSecure: 0.22,     // ball-into-hands homing time once a catch is committed (s)
+  catchLog: false,       // log catch telemetry (gap/height/branch) to the debug event log
   jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
   catchHeight: 1.0,      // × the catch collider's vertical reach (height)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
@@ -4794,10 +4797,11 @@ function updateBall(dt) {
       for (const db of game.defense) { if (db.ragdolling) continue; const d = Math.hypot(db.group.position.x - p.x, db.group.position.z - p.z); if (d < cdD) { cdD = d; cd = db; } }
       if (cd && cdD < 4.5 && cd.armPoseT <= 0.12) { cd.heading = Math.atan2(p.x - cd.group.position.x, p.z - cd.group.position.z); cd.holdHeading = true; triggerArmAction(cd, 'reach', 0.5, p); }
     }
-    // Catchable once it has descended into reach. Resolve only when it actually
-    // hits the turf (so an overthrow flies to the back/side wall and bounces),
-    // with a safety timeout if it caroms around forever.
-    if (ball.vy < 0 && p.y < 3.6 && tryReception()) return; // start the catch high in the descent so the reach reads on time
+    // Catchable the instant it descends into someone's 3D reach volume (so a real
+    // high-point leap fires at the apex, not only below a fixed height). catchGap
+    // inside tryReception gates it — most of the descent it simply returns false.
+    // The turf/timeout fallback below still resolves an overthrow that nobody reaches.
+    if (ball.vy < 0 && p.y < 6.5 && tryReception()) return;
     if (p.y <= 0.16 || ball.airTime > ball.flightTime + 3) {
       if (tryReception()) return;
       if (ball.hitFence) { ballLooseFromAir(); return; } // a wall carom is a live loose ball, never incomplete
@@ -4834,8 +4838,12 @@ function updateBall(dt) {
 // resolves to a catch (or interception).
 function startSecure(player, isInt) {
   player.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
-  ball.mode = 'secured'; ball.catcher = player; ball.secureT = 0.24; ball.intercept = isInt;
+  ball.mode = 'secured'; ball.catcher = player; ball.secureT = Math.max(0.05, TUNE.catchSecure); ball.intercept = isInt;
   const p = ball.mesh.position;
+  if (TUNE.catchLog) {
+    const g3 = catchGap(player, p, player === ball.targetRecv);
+    dbgLogPush(`<b>${isInt ? 'INT' : 'SECURE'}</b> ${player.role || ''} · gap ${g3.toFixed(2)} · secureT ${ball.secureT.toFixed(2)}s`);
+  }
   if (isInt) {
     showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
     burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
@@ -4878,18 +4886,32 @@ function vReach(ch) {
   const r = ch.rt; const ath = r ? (r.speed * 0.5 + r.skill * 0.3) : 0.4;
   return (2.5 + (0.2 + ath) * 1.7) * TUNE.playerSize * TUNE.catchHeight; // bigger players reach higher (× height knob)
 }
+// 3D reach gap: how far the ball is OUT of a player's reachable volume — a
+// vertical capsule from his shins up to his max vertical reach (vReach), radius =
+// his horizontal arm reach. 0 = the ball is inside grabbing range; larger = how
+// far out of reach (yd). Replaces the old flat horizontal-radius test so a ball
+// sailing high over a receiver's head no longer counts as "in range".
+function catchGap(ch, ballPos, intended) {
+  const g = ch.group.position;
+  const rH = intended ? (TUNE.catchReach + 1.0) : TUNE.catchReach;   // horizontal arm reach
+  const topY = g.y + vReach(ch);                                     // highest he can reach (leap)
+  const lowY = g.y + 0.1;                                            // can't pluck it off his shoetops out of the air
+  const dH = Math.max(0, Math.hypot(ballPos.x - g.x, ballPos.z - g.z) - rH);
+  const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
+  return Math.hypot(dH, dV);
+}
 function tryReception() {
   const p = ball.mesh.position;
   const ballY = p.y;
   const high = THREE.MathUtils.clamp((ballY - 1.6) / 2.0, 0, 1); // 0 = low/chest ball, 1 = high jump ball
   const near = (ch) => Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
-  // The intended receiver gets a bigger window (the throw was aimed at him);
-  // any other receiver needs the ball right on him.
+  // The intended receiver gets a bigger window (the throw was aimed at him); any
+  // other receiver needs the ball right on him. The grab fires only once the ball
+  // is within a player's 3D reach volume (catchGap ~0), with a little slack.
   let bestR = null, dR = Infinity;
   for (const wr of game.receivers) {
-    const reach = wr === ball.targetRecv ? (TUNE.catchReach + 1.0) : TUNE.catchReach;
-    const d = near(wr);
-    if (d <= reach && d < dR) { dR = d; bestR = wr; }
+    const g = catchGap(wr, p, wr === ball.targetRecv);
+    if (g <= TUNE.catchGrab && g < dR) { dR = g; bestR = wr; }
   }
   let bestDef = null, dD = Infinity;
   for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
@@ -4899,6 +4921,7 @@ function tryReception() {
   // of the air: an interception only happens when an overthrow caroms off the
   // FENCE and a defender recovers the live loose ball (see ballLooseFromAir).
   if (!bestR) return false;
+  if (TUNE.catchLog) dbgLogPush(`<b>CATCH?</b> gap ${dR.toFixed(2)} · ballY ${ballY.toFixed(1)} · reach ${vReach(bestR).toFixed(1)} · ${bestDef && dD <= CONTEST_R ? 'contested ' + dD.toFixed(1) : 'open'}`);
 
   // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
@@ -6720,6 +6743,9 @@ const DBG_KNOBS = [
   // --- Colliders + sizes ---
   { tab: 'Colliders', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Colliders', key: 'catchGrab', label: 'Catch grab slack (yd)', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'catchSecure', label: 'Secure time (s)', min: 0.05, max: 0.6, step: 0.01, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'catchLog', label: 'Catch log', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
   { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchHeight', label: 'Catch height ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
@@ -6830,6 +6856,7 @@ function buildDebugPanel() {
   const refreshSliders = () => { for (const k of DBG_KNOBS) { dbgValEls[k.key].set(TUNE[k.key]); if (k.onChange) k.onChange(); } updateDbgExport(); };
   dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
   dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
+  { const tb = dbgPanelEl.querySelector('#dbg-throw'); if (tb) tb.addEventListener('click', dbgThrowToWR); }
   // Save: persist the current knobs to localStorage so they survive a reload.
   const saveBtn = dbgPanelEl.querySelector('#dbg-save');
   saveBtn.addEventListener('click', () => {
@@ -6916,6 +6943,24 @@ function toggleDebugPanel(on) {
   if (dbgPanelEl) dbgPanelEl.classList.toggle('hidden', !dbgPanelOn);
 }
 // Trigger a post-play scuffle on demand near the ball so the knobs can be eyeballed.
+// Catch test rig: stage a real throw to a receiver on demand so catches can be
+// iterated without running a whole play. Snaps first if we're pre-snap, then
+// throws a medium lob to the controlled receiver (or the selected one) — exercising
+// the exact catch path. Turn on TUNE.catchLog to read the per-catch telemetry.
+function dbgThrowToWR() {
+  if (!game.userOnOffense) { setStatus('Throw test: offense only'); return; }
+  const fire = () => {
+    if (!game.receivers || !game.receivers.length) { setStatus('Throw test: no receivers'); return; }
+    // Aim at whoever you're controlling if it's a receiver, else the open WR.
+    let i = game.receivers.indexOf(game.controlled);
+    if (i < 0) i = game.selected || 0;
+    game.selected = THREE.MathUtils.clamp(i, 0, game.receivers.length - 1);
+    throwBall(0.45);
+  };
+  if (game.state === STATE.PRESNAP) { snap(); setTimeout(fire, 600); } // let the route develop a beat
+  else if (game.state === STATE.LIVE) fire();
+  else setStatus('Throw test: snap a play first');
+}
 function forceScuffle() {
   const c = game.carrier || game.qb || ball.holder;
   const x = c ? c.group.position.x : 0;
@@ -6968,7 +7013,7 @@ function ensureViz() {
   scene.add(dbgVizLines);
 }
 function updateDbgViz() {
-  const logEl = document.getElementById('dbglog'); if (logEl) logEl.classList.toggle('hidden', !TUNE.vizLog); // event-log visibility
+  const logEl = document.getElementById('dbglog'); if (logEl) logEl.classList.toggle('hidden', !TUNE.vizLog && !TUNE.catchLog); // event-log visibility (event log OR catch log)
   const drawL = TUNE.vizColliders || TUNE.vizVectors, lbl = TUNE.vizLabels;
   ensureViz();
   const labelsEl = document.getElementById('dbgviz-labels');
