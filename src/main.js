@@ -1530,6 +1530,7 @@ const TUNE_DEFAULTS = {
   offenseTint: '#ffffff', defenseTint: '#ffffff', // per-team body color multiply
   skinRough: 1.0, skinMetal: 0.0,                  // player skin material
   turfTint: '#ffffff',                             // field grass color multiply
+  runLean: 1.0,                                    // × forward body lean while running (lower = subtler)
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -5688,7 +5689,7 @@ function applyLocoLife(ch, dt, spin) {
   const spd = Math.min(ch.speed, 14);
   const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4); // carve into the turn
   ch.bank += (wantBank - ch.bank) * Math.min(1, dt * 8);
-  const wantPitch = THREE.MathUtils.clamp(spd * 0.018 + (ch.turbo ? 0.1 : 0), 0, 0.42); // lean with speed
+  const wantPitch = THREE.MathUtils.clamp((spd * 0.010 + (ch.turbo ? 0.05 : 0)) * TUNE.runLean, 0, 0.28); // subtle lean with speed (× knob)
   ch.lean += (wantPitch - ch.lean) * Math.min(1, dt * 6);
   let pitch = ch.lean, roll = ch.bank;
   if (ch.speed < 0.6) { // breathing + slow weight shift while standing
@@ -6661,6 +6662,7 @@ const DBG_KNOBS = [
   { tab: 'Look', key: 'skinRough', label: 'Skin roughness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
   { tab: 'Look', key: 'skinMetal', label: 'Skin metalness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
   { tab: 'Look', key: 'turfTint', label: 'Turf tint', type: 'color', onChange: () => applyLook() },
+  { tab: 'Look', key: 'runLean', label: 'Run lean ×', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
