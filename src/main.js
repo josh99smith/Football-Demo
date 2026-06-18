@@ -1512,7 +1512,7 @@ const TUNE_DEFAULTS = {
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
   jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
-  bodyR: 0.42,           // player body-collider radius — half the min spacing (yd)
+  bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
   ballSize: 1.0,         // × visual football scale
   exposure: 1.3,         // renderer tone-mapping exposure (overall brightness)
@@ -2606,14 +2606,27 @@ function clampToField(ch) {
 // ~14 players. Ragdolls (their own physics) and the locked tackle/battle pile are
 // skipped so those intentional overlaps stay coherent. 2*TUNE.bodyR (0.84) is well
 // under TUNE.tackleReach (1.5), so contact never blocks a tackle from triggering first.
-// Player body-collider radius is TUNE.bodyR.
-// Players are 3D CAPSULES: radius TUNE.bodyR, height = the model's ~1.8yd × playerSize.
+// Players are 3D CAPSULES auto-sized to the MODEL: radius = measured shoulder
+// half-width, height = measured model height (both × playerSize × the bodyFit knob).
 // The push-apart is horizontal but gated by VERTICAL overlap, so a player leaping/
-// diving clear above another won't shove him. Standing players always overlap in Y,
-// so ground play is unchanged.
-const PLAYER_H = 1.8; // model height in world yards (SCALE normalizes the rig to this)
+// diving clear above another won't shove him. Standing players always overlap in Y.
+let BODY_R0 = 0.42, BODY_H0 = 1.95, bodyMeasured = false, _v1 = null, _v2 = null; // fit from the model at runtime
+// Fit the collider to the model's BODY: radius from shoulder-joint span (stable under
+// arm animation, unlike a full mesh AABB which catches the swinging arms), height from
+// the crown. One-time once a player is posed.
+function measureBody() {
+  const ch = game.all.find((c) => !c.ragdolling && c.model && c.upperArm && c.leftArm); if (!ch) return;
+  if (!_v1) { _v1 = new THREE.Vector3(); _v2 = new THREE.Vector3(); }
+  ch.model.updateWorldMatrix(true, true);
+  ch.upperArm.getWorldPosition(_v1); ch.leftArm.getWorldPosition(_v2); // RightArm / LeftArm shoulder joints
+  const span = Math.hypot(_v1.x - _v2.x, _v1.z - _v2.z); // shoulder width (world yd)
+  let h = 1.95; if (ch.headEnd) { ch.headEnd.getWorldPosition(_v1); if (_v1.y > 1.4) h = _v1.y; } // crown height
+  if (span > 0.1) { const sz = TUNE.playerSize || 1; BODY_R0 = Math.max(0.3, span / 2 * 1.3) / sz; BODY_H0 = h / sz; bodyMeasured = true; }
+}
+const colliderR = () => BODY_R0 * TUNE.playerSize * TUNE.bodyFit; // world-yard radius
+const colliderH = () => BODY_H0 * TUNE.playerSize;
 function resolveBodies() {
-  const a = game.all, colH = PLAYER_H * TUNE.playerSize, min = TUNE.bodyR * 2, min2 = min * min;
+  const a = game.all, colH = colliderH(), min = colliderR() * 2, min2 = min * min;
   for (let i = 0; i < a.length; i++) {
     const A = a[i]; if (A.ragdolling || A.grabbing || A.engaging || A.blockedBy) continue;
     const ap = A.group.position;
@@ -6636,7 +6649,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'catchReach', label: 'Catch reach (yd)', min: 0.6, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
-  { tab: 'Colliders', key: 'bodyR', label: 'Body collider (yd)', min: 0.1, max: 1.2, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'bodyFit', label: 'Body collider × (model)', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
   { tab: 'Colliders', key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   // --- Look / materials ---
@@ -6876,8 +6889,8 @@ function updateDbgViz() {
   if (drawL) for (const ch of game.all) {
     if (ch.ragdolling) continue; const p = ch.group.position; const def = ch.team === 'def';
     if (TUNE.vizColliders) {
-      cyl(p.x, p.z, TUNE.bodyR, 1.8 * TUNE.playerSize, 0.6, 0.6, 0.6);          // body collider (3D cylinder, gray)
-      if (ch === game.carrier) circ(p.x, p.z, TUNE.bodyR + 0.12, 0.07, 1, 0.9, 0.2); // carrier highlight
+      cyl(p.x, p.z, colliderR(), colliderH(), 0.6, 0.6, 0.6);                   // body capsule (auto-fit to model)
+      if (ch === game.carrier) circ(p.x, p.z, colliderR() + 0.12, 0.07, 1, 0.9, 0.2); // carrier highlight
       if (def) circ(p.x, p.z, TUNE.tackleReach, 0.05, 1, 0.25, 0.25);           // tackle reach (ground, red)
       else if (ch.role === 'WR' || ch.role === 'RB' || ch.role === 'TE') cyl(p.x, p.z, TUNE.catchReach, vReach(ch), 0.3, 0.8, 1); // catch volume (3D cylinder up to vertical reach, cyan)
     }
@@ -6930,6 +6943,7 @@ function animate() {
   requestAnimationFrame(animate);
 }
 function simStep(realDt) {
+  if (!bodyMeasured && game.all.length) measureBody(); // fit colliders to the posed model (once)
   // Bullet-time scales the SIM (movement, animation, ragdolls — the slow-mo
   // tackles) while the camera/shake run on real time and stay snappy.
   const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
