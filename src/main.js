@@ -2607,14 +2607,20 @@ function clampToField(ch) {
 // skipped so those intentional overlaps stay coherent. 2*TUNE.bodyR (0.84) is well
 // under TUNE.tackleReach (1.5), so contact never blocks a tackle from triggering first.
 // Player body-collider radius is TUNE.bodyR.
+// Players are 3D CAPSULES: radius TUNE.bodyR, height = the model's ~1.8yd × playerSize.
+// The push-apart is horizontal but gated by VERTICAL overlap, so a player leaping/
+// diving clear above another won't shove him. Standing players always overlap in Y,
+// so ground play is unchanged.
+const PLAYER_H = 1.8; // model height in world yards (SCALE normalizes the rig to this)
 function resolveBodies() {
-  const a = game.all, min = TUNE.bodyR * 2, min2 = min * min;
+  const a = game.all, colH = PLAYER_H * TUNE.playerSize, min = TUNE.bodyR * 2, min2 = min * min;
   for (let i = 0; i < a.length; i++) {
     const A = a[i]; if (A.ragdolling || A.grabbing || A.engaging || A.blockedBy) continue;
     const ap = A.group.position;
     for (let j = i + 1; j < a.length; j++) {
       const B = a[j]; if (B.ragdolling || B.grabbing || B.engaging || B.blockedBy) continue;
       const bp = B.group.position;
+      if (ap.y + colH < bp.y || bp.y + colH < ap.y) continue; // capsule: skip if vertical ranges don't overlap
       const dx = bp.x - ap.x, dz = bp.z - ap.z, d2 = dx * dx + dz * dz;
       if (d2 >= min2 || d2 < 1e-6) continue;
       const d = Math.sqrt(d2), pen = (min - d) * 0.5, nx = dx / d, nz = dz / d;
