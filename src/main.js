@@ -1505,6 +1505,7 @@ const TUNE_DEFAULTS = {
   turboMult: 1.28,       // turbo burst speed multiplier
   onFireBoost: 1.12,     // ON FIRE offense speed multiplier
   catchBias: 0.0,        // global nudge to catch/completion odds (+/-)
+  intChance: 1.0,        // × odds a DB picks off a contested throw the receiver couldn't haul in (0 = never)
   fatigueDrain: 1.0,     // × how fast players gas out
   knockdownRecover: 1.6, // s before a knocked-down defender pops up & re-pursues (0 = stay down)
   playClock: 15,         // delay-of-game seconds before the snap (applies next play)
@@ -4925,7 +4926,17 @@ function tryReception() {
   pCatch += TUNE.catchBias; // global completion-odds nudge (debug knob)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
-  passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true; // DB bats it away (no direct pick — only off the fence)
+
+  // The receiver couldn't bring it in. In TIGHT coverage the DB can make a play
+  // on the ball himself — a real interception — scaled by his ball skills and how
+  // glued he is, plus a vertical edge if he out-leaps the WR on a high ball.
+  // Otherwise he just bats it away.
+  let pInt = (0.08 + (dbBall - 0.5) * 0.45) * tight;                       // base: skill × tightness
+  pInt += high * THREE.MathUtils.clamp(dbReachV - rxReach, -1.5, 1.5) * 0.18 * TUNE.jumpReach; // out-jumps the WR
+  pInt *= TUNE.intChance;                                                  // global pick-odds knob
+  pInt = THREE.MathUtils.clamp(pInt, 0, 0.6);
+  if (Math.random() < pInt) { startSecure(bestDef, true); return true; }   // picked off in coverage
+  passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true;     // DB bats it away
 }
 const LUNGE_R = 2.7; // a pursuer who's closed within this DIVES to make the tackle
 function checkRunOutcome() {
@@ -6697,6 +6708,7 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'intChance', label: 'Interception odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
