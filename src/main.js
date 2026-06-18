@@ -2467,7 +2467,7 @@ function updateBlocks(dt) {
     let ax = dp.x - op.x, az = dp.z - op.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
     const mx = (op.x + dp.x) / 2, mz = (op.z + dp.z) / 2;
     const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.04;
-    const half = 0.32 + wob; // ~0.64yd apart: arms extended forward, hands lock in the middle
+    const half = 0.42 + wob; // ~0.84yd apart: arm's length, so extended hands lock on each other's chest
     op.x = mx - ax * half; op.z = mz - az * half;
     dp.x = mx + ax * half; dp.z = mz + az * half;
     o.heading = Math.atan2(ax, az); d.heading = Math.atan2(-ax, -az);
@@ -5869,11 +5869,11 @@ function applyBattleArms(ch, isTackler, w = 1) {
 function applyBlockPose(ch, w = 1) {
   if (!ch.upperArm || !ch.upperArmRest) return;
   const pump = Math.sin(performance.now() * 0.012);
-  blendBone(ch.upperArm, ch.upperArmRest, -(1.42 + pump * 0.12), w);    // upper arms up to horizontal, reaching forward
-  blendBone(ch.foreArm, ch.foreArmRest, -(0.28 + pump * 0.12), w);      // forearms nearly straight -> hands punch out to lock
-  blendBone(ch.leftArm, ch.leftArmRest, -(1.42 - pump * 0.12), w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.28 - pump * 0.12), w);
-  blendLean(ch, 0.32 + pump * 0.04, 0, w);                              // drive into the block
+  blendBone(ch.upperArm, ch.upperArmRest, -(1.3 + pump * 0.12), w);     // upper arms forward at chest height, reaching to the opponent
+  blendBone(ch.foreArm, ch.foreArmRest, -(0.5 + pump * 0.12), w);       // forearms angled in -> hands punch into his chest plate
+  blendBone(ch.leftArm, ch.leftArmRest, -(1.3 - pump * 0.12), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.5 - pump * 0.12), w);
+  blendLean(ch, 0.42 + pump * 0.04, 0, w);                              // drive hard into the block
 }
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
 // slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
@@ -5942,7 +5942,10 @@ function updateAnimation(ch, dt) {
   // Engaged block: a clip-driven PUSH (push-clip slice) overrides locomotion while
   // locked up — the blocker and the rusher he's engaged with both play it (their own
   // random version/tempo). Procedural shove pose is the fallback.
-  if (ch.blocking && ch.actions.block) want = 'block';
+  // Line blocking: churn the legs in place (the drive) while the procedural
+  // engaged-block pose punches the arms into the opponent's chest (a squared-up
+  // 1-on-1 hand-fight). The break-tackle DRIVE still uses the push clip (battle).
+  if (ch.blocking) want = 'run';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
   setClip(ch, want);
   if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
@@ -5969,7 +5972,7 @@ function updateAnimation(ch, dt) {
   else if (ball.mode === 'secured' && ch === ball.catcher) active = 'catch';
   else if (ch.throwAnimT > 0) active = 'throw';
   else if (ch.armPoseT > 0) active = 'arm';
-  else if (ch.blocking && !ch.actions.block) active = 'block'; // procedural shove = fallback only (no clip pack)
+  else if (ch.blocking) active = 'block'; // squared-up hand-fight (procedural arms + lean)
   else if (ch.sulk) active = 'sulk';
   ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
   ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
@@ -6007,7 +6010,7 @@ function updateAnimation(ch, dt) {
   // above, and the leaning gang-tackle grab clamps here. Plain locomotion just
   // sits at the calibrated height — clear any leftover lift from a finished move.
   const draggedCarrier = game.drag.active && ch === game.carrier && !ch.ragdolling; // the man being wrapped/dragged
-  const clipBlocking = (ch.blocking && ch.actions.block) || battleTackler; // push clip steps the feet -> clamp to the turf
+  const clipBlocking = battleTackler; // only the break-tackle push clip steps the feet -> clamp to the turf
   if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
 }
