@@ -1531,6 +1531,9 @@ const TUNE_DEFAULTS = {
   skinRough: 1.0, skinMetal: 0.0,                  // player skin material
   turfTint: '#ffffff',                             // field grass color multiply
   runLean: 1.0,                                    // × forward body lean while running (lower = subtler)
+  // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
+  animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
+  animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0,
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -5378,6 +5381,7 @@ function collapseDrag() {
 // Grabber pose during the drag: lean into the carrier and wrap him up (reuses the
 // tackler grapple arms), legs churning from the artificial drive speed above.
 function applyGrabLean(ch, w = 1) {
+  w *= TUNE.animGrab;
   const lean = 0.4 + Math.sin(performance.now() * 0.014) * 0.06;
   blendLean(ch, lean, 0, w);
 }
@@ -5687,15 +5691,15 @@ function applyLocoLife(ch, dt, spin) {
   ch.prevHeading = ch.heading;
   const angVel = dt > 1e-4 ? dH / dt : 0;
   const spd = Math.min(ch.speed, 14);
-  const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4); // carve into the turn
+  const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4) * TUNE.animBank; // carve into the turn
   ch.bank += (wantBank - ch.bank) * Math.min(1, dt * 8);
   const wantPitch = THREE.MathUtils.clamp((spd * 0.010 + (ch.turbo ? 0.05 : 0)) * TUNE.runLean, 0, 0.28); // subtle lean with speed (× knob)
   ch.lean += (wantPitch - ch.lean) * Math.min(1, dt * 6);
   let pitch = ch.lean, roll = ch.bank;
   if (ch.speed < 0.6) { // breathing + slow weight shift while standing
     const t = performance.now() * 0.001;
-    pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012;
-    roll += Math.sin(t * 0.7 + ch.breathPh) * 0.02;
+    pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012 * TUNE.animBreath;
+    roll += Math.sin(t * 0.7 + ch.breathPh) * 0.02 * TUNE.animBreath;
   }
   _qYaw.setFromAxisAngle(_UP, ch.heading + spin);
   _qPitch.setFromAxisAngle(_XAX, pitch);
@@ -5706,6 +5710,7 @@ function applyLocoLife(ch, dt, spin) {
 // receiver / the ball) within a natural range, so a backpedaling DB tracks his man
 // instead of staring straight back. Yaw about the head's local up axis.
 function applyHeadTrack(ch, targetPos, w, dt) {
+  w *= TUNE.animHead;
   if (!ch.headBone) return;
   const dx = targetPos.x - ch.group.position.x, dz = targetPos.z - ch.group.position.z;
   let rel = Math.atan2(dx, dz) - ch.heading;
@@ -5733,6 +5738,7 @@ function keyAngle(keys, t) {
 // launch angle (a lob lofts more than a bullet). Rig-agnostic (arm bones + a
 // small torso lean); left arm mirrors with positive angles (see applyCatchPose).
 function applyThrowPose(ch, dt, w = 1) {
+  w *= TUNE.animThrow;
   ch.throwAnimT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
@@ -5755,6 +5761,7 @@ function applyThrowPose(ch, dt, w = 1) {
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
 // ball -> arms down) so it varies with the ball/player positions.
 function applyCatchPose(ch, ballPos, dt, w = 1) {
+  w *= TUNE.animCatch;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const chestY = ch.group.position.y + 1.15;
   // Ease the reach height toward the ball each frame (instead of snapping), so a
@@ -5785,6 +5792,7 @@ function triggerArmAction(ch, type, dur, targetPos) {
   ch.armPoseTarget = targetPos ? targetPos.clone() : null;
 }
 function applyArmAction(ch, dt, bw = 1) {
+  bw *= TUNE.animArm;
   ch.armPoseT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const dur = ch.armPoseDur || 0.4;
@@ -5822,6 +5830,7 @@ function applyArmAction(ch, dt, bw = 1) {
 const _qLeanY = new THREE.Quaternion(), _qLeanX = new THREE.Quaternion();
 const _UP = new THREE.Vector3(0, 1, 0), _XAX = new THREE.Vector3(1, 0, 0);
 function applyBattleLean(ch, isTackler, w = 1) {
+  w *= TUNE.animBattle;
   const now = performance.now();
   const v = game.battle.val; // carrier's break meter (high = carrier winning)
   // A modest whole-body lean only — the dramatic fold is the WAIST bend in
@@ -5833,6 +5842,7 @@ function applyBattleLean(ch, isTackler, w = 1) {
   blendLean(ch, lean, sway, w);
 }
 function applyBattleArms(ch, isTackler, w = 1) {
+  w *= TUNE.animBattle;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = performance.now() * 0.001;
   const pump = Math.sin(t * 9);
@@ -5868,6 +5878,7 @@ function applyBattleArms(ch, isTackler, w = 1) {
 // updateBlocks), and he leans into the shove, with a churning pump so it reads as a
 // sustained, live block (legs come from the run clip underneath).
 function applyBlockPose(ch, w = 1) {
+  w *= TUNE.animBlock;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const pump = Math.sin(performance.now() * 0.012);
   blendBone(ch.upperArm, ch.upperArmRest, -(1.3 + pump * 0.12), w);     // upper arms forward at chest height, reaching to the opponent
@@ -5879,6 +5890,7 @@ function applyBlockPose(ch, w = 1) {
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
 // slumped, with a slow forlorn sway. Layered over the idle clip (after the mixer).
 function applySulkPose(ch, w = 1) {
+  w *= TUNE.animSulk;
   const t = performance.now() * 0.001;
   if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.7 * w); ch.headBone.quaternion.multiply(_tq); }
   blendBone(ch.upperArm, ch.upperArmRest, 0.2, w); blendBone(ch.foreArm, ch.foreArmRest, 0.5, w);
@@ -6663,6 +6675,17 @@ const DBG_KNOBS = [
   { tab: 'Look', key: 'skinMetal', label: 'Skin metalness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
   { tab: 'Look', key: 'turfTint', label: 'Turf tint', type: 'color', onChange: () => applyLook() },
   { tab: 'Look', key: 'runLean', label: 'Run lean ×', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  // --- Anim: procedural pose intensities (× each eased overlay) ---
+  { tab: 'Anim', key: 'animBank', label: 'Turn lean ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animBreath', label: 'Idle breathing ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Anim', key: 'animBlock', label: 'Block pose ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animBattle', label: 'Tackle/battle ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animArm', label: 'Arm moves ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animCatch', label: 'Catch reach ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animThrow', label: 'Throw pose ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animGrab', label: 'Grab/wrap ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
@@ -6712,11 +6735,17 @@ function buildKnobRow(k, pane) {
     const name = document.createElement('span'); name.textContent = k.label;
     const val = document.createElement('span'); val.className = 'dbg-val'; val.textContent = k.fmt(TUNE[k.key]);
     lab.append(name, val);
+    const slline = document.createElement('div'); slline.className = 'dbg-sl';
     const sl = document.createElement('input');
     sl.type = 'range'; sl.min = k.min; sl.max = k.max; sl.step = k.step; sl.value = TUNE[k.key];
-    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); updateDbgExport(); });
+    const commit = () => { val.textContent = k.fmt(TUNE[k.key]); if (k.onChange) k.onChange(); updateDbgExport(); };
+    sl.addEventListener('input', () => { TUNE[k.key] = parseFloat(sl.value); commit(); });
+    const step = (dir) => { const v = THREE.MathUtils.clamp(parseFloat((TUNE[k.key] + dir * k.step).toFixed(4)), k.min, k.max); TUNE[k.key] = v; sl.value = v; commit(); };
+    const bMinus = document.createElement('button'); bMinus.textContent = '−'; bMinus.addEventListener('click', () => step(-1));
+    const bPlus = document.createElement('button'); bPlus.textContent = '+'; bPlus.addEventListener('click', () => step(1));
+    slline.append(bMinus, sl, bPlus);
     dbgValEls[k.key] = { val, sl, fmt: k.fmt, set: (v) => { sl.value = v; val.textContent = k.fmt(v); } };
-    row.append(lab, sl);
+    row.append(lab, slline);
   }
   pane.appendChild(row);
 }

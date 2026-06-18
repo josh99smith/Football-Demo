@@ -917,23 +917,27 @@ body.replay-mode #build-badge { display: none !important; }
 #build-badge { cursor: pointer; pointer-events: auto; } /* tap the version badge to open the debug panel */
 #debugpanel {
   position: fixed; z-index: 60;
-  right: max(8px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top));
-  width: 250px; max-height: 86vh; overflow-y: auto;
+  right: max(6px, env(safe-area-inset-right)); top: max(6px, env(safe-area-inset-top));
+  width: min(94vw, 360px); max-height: calc(100vh - 12px); overflow-y: auto;
+  display: flex; flex-direction: column;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  color: #d9f7e6; background: rgba(8, 12, 16, 0.92);
-  border: 1px solid rgba(120, 255, 180, 0.35); border-radius: 10px;
-  padding: 10px 11px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  color: #d9f7e6; background: rgba(8, 12, 16, 0.95);
+  border: 1px solid rgba(120, 255, 180, 0.35); border-radius: 12px;
+  padding: 10px 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.55);
   pointer-events: auto; -webkit-user-select: none; user-select: none;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
 }
 #debugpanel.hidden { display: none; }
-#debugpanel .dbg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-#debugpanel .dbg-title { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #8effc0; }
-#debugpanel #dbg-close { background: none; border: none; color: #8effc0; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
-#debugpanel .dbg-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+#debugpanel .dbg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+#debugpanel .dbg-title { font-size: 13px; font-weight: 800; letter-spacing: 2px; color: #8effc0; }
+#debugpanel #dbg-close { background: rgba(255,255,255,0.08); border: none; color: #8effc0; font-size: 22px; line-height: 1; cursor: pointer; width: 34px; height: 34px; border-radius: 8px; }
+/* Tabs: a single horizontal scroll strip (thumb-swipe), no awkward wrap */
+#debugpanel .dbg-tabs { display: flex; flex-wrap: nowrap; gap: 5px; overflow-x: auto; margin: 0 -2px 9px; padding: 2px; scrollbar-width: none; }
+#debugpanel .dbg-tabs::-webkit-scrollbar { display: none; }
 #debugpanel .dbg-tabs button {
-  font-family: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.5px;
-  color: #aef9c8; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px; padding: 4px 8px; cursor: pointer;
+  flex: 0 0 auto; font-family: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+  color: #aef9c8; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; white-space: nowrap; min-height: 34px;
 }
 #debugpanel .dbg-tabs button.on { color: #06140d; background: #8effc0; border-color: #8effc0; }
 #debugpanel .dbg-pane { display: none; }
@@ -942,10 +946,16 @@ body.replay-mode #build-badge { display: none !important; }
 #debugpanel .dbg-rowcolor input[type=color] { width: 38px; height: 22px; padding: 0; border: 1px solid rgba(255,255,255,0.25); border-radius: 5px; background: none; cursor: pointer; }
 #debugpanel .dbg-rowcolor { display: flex; justify-content: space-between; align-items: center; }
 #debugpanel .dbg-rowcolor label { flex: 1; }
-#debugpanel .dbg-row { margin: 9px 0; }
-#debugpanel .dbg-row label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
-#debugpanel .dbg-row .dbg-val { color: #ffd23a; font-weight: 700; }
-#debugpanel input[type=range] { width: 100%; accent-color: #3fe08a; height: 16px; cursor: pointer; }
+#debugpanel .dbg-row { margin: 11px 0; }
+#debugpanel .dbg-row label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+#debugpanel .dbg-row .dbg-val { color: #ffd23a; font-weight: 800; font-variant-numeric: tabular-nums; }
+/* slider line: [−] [============] [+] with big thumb + finger-sized step buttons */
+#debugpanel .dbg-sl { display: flex; align-items: center; gap: 8px; }
+#debugpanel .dbg-sl button { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); color: #d9f7e6; font-size: 19px; font-weight: 700; line-height: 1; cursor: pointer; }
+#debugpanel .dbg-sl button:active { background: rgba(143,255,192,0.3); }
+#debugpanel input[type=range] { flex: 1; width: 100%; -webkit-appearance: none; appearance: none; height: 8px; border-radius: 5px; background: rgba(255,255,255,0.18); accent-color: #3fe08a; cursor: pointer; }
+#debugpanel input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #3fe08a; border: 2px solid #06140d; cursor: pointer; }
+#debugpanel input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #3fe08a; border: 2px solid #06140d; cursor: pointer; }
 #debugpanel .dbg-actions { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
 #debugpanel .dbg-actrow { display: flex; gap: 6px; }
 #debugpanel .dbg-actrow button { flex: 1; }
