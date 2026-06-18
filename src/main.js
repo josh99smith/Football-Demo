@@ -1612,7 +1612,7 @@ const ball = {
   vx: 0, vy: 0, vz: 0, g: 0, airTime: 0, flightTime: 1, startY: 1.2,
   spin: 0, spinRate: 0, hitFence: false,
   // Catch: ball homes into the catcher's hands before the play resolves.
-  catcher: null, secureT: 0, intercept: false, holder: null, intRolled: false,
+  catcher: null, secureT: 0, secureFull: 0.2, secureFrom: new THREE.Vector3(), intercept: false, holder: null, intRolled: false,
   trail: [], trailHist: [], trailHead: 0, trailCount: 0, mats: [], // glowing comet trail (sprite pool, ring-buffered history) + ball materials
 };
 function makeGlowTexture() {
@@ -2568,6 +2568,10 @@ function updateOffense(dt) {
 // Integration
 // ===========================================================================
 function applySteer(ch, dt) {
+  // Committed to a catch leap/dive: stop chasing the route and plant — let the
+  // existing velocity damp out so he carries his stride INTO the jump, then holds
+  // at the catch point while the ball homes in (instead of sliding past it).
+  if (ch.catchLeap && ch.oneShotT > 0) ch.desired = { x: 0, z: 0 };
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
   let speed = (ch.turbo ? ch.baseSpeed * TUNE.turboMult : ch.baseSpeed) * fatigueSpeed(ch);
   if (ch.cpu) speed *= diff().cpuSpd; // difficulty: scale the CPU team's pace
@@ -3694,7 +3698,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -4791,11 +4795,11 @@ function updateBall(dt) {
       const _rcv = ball.targetRecv;
       if (_rcv && !_rcv.ragdolling) {
         const rd = Math.hypot(_rcv.group.position.x - p.x, _rcv.group.position.z - p.z);
-        if (rd < 4.5 && _rcv.armPoseT <= 0.12) { _rcv.heading = Math.atan2(p.x - _rcv.group.position.x, p.z - _rcv.group.position.z); _rcv.holdHeading = true; triggerArmAction(_rcv, 'reach', 0.5, p); }
+        if (rd < 4.5 && _rcv.armPoseT <= 0.12) { _rcv.heading = Math.atan2(p.x - _rcv.group.position.x, p.z - _rcv.group.position.z); _rcv.holdHeading = true; commitCatchReach(_rcv, p); }
       }
       let cd = null, cdD = Infinity; // the contesting defender
       for (const db of game.defense) { if (db.ragdolling) continue; const d = Math.hypot(db.group.position.x - p.x, db.group.position.z - p.z); if (d < cdD) { cdD = d; cd = db; } }
-      if (cd && cdD < 4.5 && cd.armPoseT <= 0.12) { cd.heading = Math.atan2(p.x - cd.group.position.x, p.z - cd.group.position.z); cd.holdHeading = true; triggerArmAction(cd, 'reach', 0.5, p); }
+      if (cd && cdD < 4.5 && cd.armPoseT <= 0.12) { cd.heading = Math.atan2(p.x - cd.group.position.x, p.z - cd.group.position.z); cd.holdHeading = true; commitCatchReach(cd, p); }
     }
     // Catchable the instant it descends into someone's 3D reach volume (so a real
     // high-point leap fires at the apex, not only below a fixed height). catchGap
@@ -4808,8 +4812,10 @@ function updateBall(dt) {
       ball.mode = 'rest'; endPlay('incomplete', game.los);
     }
   } else if (ball.mode === 'secured') {
-    // Home the ball INTO the catcher's hands over a short beat so you see it
-    // get tucked away, then resolve the catch / interception.
+    // Glide the ball INTO the catcher's hands over a short beat so you see it get
+    // tucked away — eased from where it was when the catch committed to the (moving)
+    // hand, on a smoothstep keyed to elapsed time (NOT a per-frame fraction), so it
+    // arrives smoothly instead of snapping even on long frames / a leaping catch.
     const c = ball.catcher;
     let tx, ty, tz;
     if (c && c.handBone) {
@@ -4817,14 +4823,18 @@ function updateBall(dt) {
       c.handBone.getWorldPosition(_hips);
       tx = _hips.x; ty = Math.max(0.9, _hips.y); tz = _hips.z;
     } else { const gp = c.group.position; tx = gp.x; ty = 1.2; tz = gp.z; }
-    const k = THREE.MathUtils.clamp(dt / Math.max(0.0001, ball.secureT), 0, 1);
+    ball.secureT -= dt;
+    const prog = THREE.MathUtils.clamp(1 - ball.secureT / Math.max(0.0001, ball.secureFull), 0, 1);
+    const e = prog * prog * (3 - 2 * prog); // smoothstep ease-in/out
     const p = ball.mesh.position;
-    p.x += (tx - p.x) * k; p.y += (ty - p.y) * k; p.z += (tz - p.z) * k;
+    p.x = THREE.MathUtils.lerp(ball.secureFrom.x, tx, e);
+    p.y = THREE.MathUtils.lerp(ball.secureFrom.y, ty, e);
+    p.z = THREE.MathUtils.lerp(ball.secureFrom.z, tz, e);
     ball.spin += ball.spinRate * 0.5 * dt;
     ball.mesh.rotation.set(0, c ? c.heading : 0, 0.35); // settle into a tuck
-    ball.secureT -= dt;
     if (ball.secureT <= 0) {
       p.set(tx, ty, tz);
+      if (c) { c.oneShotT = 0; c.catchLeap = false; } // end the leap clip; transition to the run/return
       if (ball.intercept) {
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
@@ -4837,12 +4847,13 @@ function updateBall(dt) {
 // Begin the secure phase: the ball homes into the catcher's hands before it
 // resolves to a catch (or interception).
 function startSecure(player, isInt) {
-  player.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball
+  if (!player.catchLeap) player.heading = Math.atan2(ball.vx, ball.vz); // turn to the ball (a committed leap already faces it)
   ball.mode = 'secured'; ball.catcher = player; ball.secureT = Math.max(0.05, TUNE.catchSecure); ball.intercept = isInt;
+  ball.secureFull = ball.secureT; ball.secureFrom.copy(ball.mesh.position); // anchor the eased glide-in
   const p = ball.mesh.position;
   if (TUNE.catchLog) {
     const g3 = catchGap(player, p, player === ball.targetRecv);
-    dbgLogPush(`<b>${isInt ? 'INT' : 'SECURE'}</b> ${player.role || ''} · gap ${g3.toFixed(2)} · secureT ${ball.secureT.toFixed(2)}s`);
+    dbgLogPush(`<b>${isInt ? 'INT' : 'SECURE'}</b> ${player.role || ''} · gap ${g3.toFixed(2)} · ${player.catchLeap ? 'leaping' : 'standing'} · secureT ${ball.secureT.toFixed(2)}s`);
   }
   if (isInt) {
     showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
@@ -4850,13 +4861,15 @@ function startSecure(player, isInt) {
   } else {
     audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
-    // Leaping reception: only a genuine high grab (ball well above the chest, must
-    // jump for it) or a real extension/dive (had to reach far) plays the leap clip.
-    // A routine chest catch just uses the procedural secure pose — otherwise the
-    // leap fired on ordinary catches and played out a jump AFTER the ball was in.
-    const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
-    const high = p.y > player.group.position.y + 1.9;
-    if (player.actions.divecatch && (reach > 1.9 || high)) playOneShot(player, 'divecatch', 0.6, true);
+    // Leaping reception: if the body is ALREADY in an anticipatory leap (fired during
+    // the descent, see updateBall), don't restart a clip — the hands track the ball
+    // over it. Otherwise, a genuine late high grab / far extension that wasn't
+    // anticipated still gets a (shorter) leap so it doesn't look flat-footed.
+    if (!player.catchLeap) {
+      const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
+      const high = p.y > player.group.position.y + 1.9;
+      if (player.actions.divecatch && (reach > 1.9 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; }
+    }
   }
 }
 function passBrokenUp(msg, color, swatter, swatType) {
@@ -4871,7 +4884,7 @@ function passBrokenUp(msg, color, swatter, swatType) {
   const p = ball.mesh.position;
   // Procedural reaction on the player who made the play on the ball: a defender
   // bats it down (swat), a receiver lunges and can't hang on (reach).
-  if (swatter) { swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
+  if (swatter) { swatter.catchLeap = false; swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
   endPlay('incomplete', game.los); // endPlay blows the whistle
@@ -4899,6 +4912,24 @@ function catchGap(ch, ballPos, intended) {
   const dH = Math.max(0, Math.hypot(ballPos.x - g.x, ballPos.z - g.z) - rH);
   const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
   return Math.hypot(dH, dV);
+}
+// Anticipatory catch reach (Phase 3): as the ball drops toward a player, commit
+// the catch ANIMATION BEFORE the grab resolves so the body is already up/extended
+// when the ball arrives (instead of leaping AFTER the catch). A genuine high or
+// far ball whose arrival is imminent fires the leap/dive clip once and tracks the
+// ball with the arm overlay (see updateAnimation's catchLeap path); routine
+// chest-height balls just use the procedural two-hand reach.
+function commitCatchReach(ch, ballPos) {
+  const g = ch.group.position;
+  const high = ballPos.y > g.y + 1.9;                                   // must go up for it
+  const far = Math.hypot(ballPos.x - g.x, ballPos.z - g.z) > 1.7;       // full extension/dive
+  const imminent = catchGap(ch, ballPos, ch === ball.targetRecv) < 1.4;  // arrival is close (~within a leap)
+  if (imminent && (high || far) && ch.actions.divecatch && !ch.catchLeap && ch.oneShotT <= 0) {
+    playOneShot(ch, 'divecatch', 0.7, true); // leap/extend now; secures mid-clip
+    ch.catchLeap = true;
+  } else if (!ch.catchLeap) {
+    triggerArmAction(ch, 'reach', 0.5, ballPos); // standing two-hand reach
+  }
 }
 function tryReception() {
   const p = ball.mesh.position;
@@ -6005,6 +6036,12 @@ function updateAnimation(ch, dt) {
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
     ch.mixer.update(dt);
+    // Anticipatory CATCH leap: overlay the ball-tracking reach ON TOP of the leap
+    // clip so the hands actually meet the ball (the clip sells the jump/extension,
+    // the overlay locks the arms to the ball) while it's still in the air / homing.
+    if (ch.catchLeap && (ball.mode === 'flying' || ball.mode === 'secured') && ch === (ball.catcher || ball.targetRecv)) {
+      applyCatchPose(ch, ball.mesh.position, dt, 0.85);
+    }
     groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
     return;          // motion; lift the root so no joint sinks through the turf
   }
