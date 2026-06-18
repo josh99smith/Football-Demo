@@ -1499,6 +1499,7 @@ const TUNE_DEFAULTS = {
   staggerDur: 0.4,       // broken-tackle ("BROKE IT!") hit-stagger length (s)
   fumbleChance: 1.0,     // × on the base fumble odds on a hit
   breakTackleEase: 1.0,  // × how easy the 1-on-1 break-tackle battle is (>1 easier)
+  battleChance: 0.6,     // odds a lone 1-on-1 hit kicks off a break-tackle battle (vs a plain tackle)
   celebChance: 0.5,      // odds a home TD triggers a stadium celebration show
   quarterLen: 90,        // seconds of game clock per quarter (applies next quarter)
   turboMult: 1.28,       // turbo burst speed multiplier
@@ -1594,7 +1595,7 @@ const game = {
   // Blitz systems: draining turbo meter, ON FIRE after 3 straight TDs.
   turboMeter: 1, turboLock: false, onFire: false, fireCount: 0,
   playClock: 0, lastBreak: -10,
-  battle: { val: 0.5, timer: 0, tackler: null, cd: 0, flash: 0 },
+  battle: { val: 0.5, timer: 0, tackler: null, cd: 0, flash: 0, playCount: 0 },
   throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
   throwArmed: false, // a throw only arms on a fresh press in LIVE (not the snap press)
 };
@@ -3686,7 +3687,7 @@ function preparePlay(teleport) {
   if (!Number.isFinite(game.los)) game.los = THREE.MathUtils.clamp(0, OWN_GOAL_Z + 1, GOAL_Z - 1);
   if (!Number.isFinite(game.firstDown)) game.firstDown = game.los + game.dir * FIRST_DOWN_YDS;
   if (!game.gameOver && game.gameClock <= 0) advanceQuarter();
-  battleEl.classList.add('hidden'); game.battle.tackler = null;
+  battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false;
@@ -5037,7 +5038,8 @@ function tryBreak(carrier, pile) {
 const BATTLE_TIME = 2.6;     // seconds before it resolves on whoever leads
 const BATTLE_SOLO_R = 2.6;   // a hit is a 1-on-1 (battle) if no other defender is this close
 const BATTLE_TAP = 0.095;    // meter toward break per mash
-const BATTLE_CPU = 0.24;     // meter drift/s toward the tackle
+const BATTLE_CPU = 0.27;     // meter drift/s toward the tackle
+const BATTLE_RAMP = 0.22;    // each repeat battle in one play is this much harder (drag ×, start ↓)
 const battleEl = document.getElementById('battle');
 const battleFill = document.getElementById('battle-fill');
 const battleDiv = document.getElementById('battle-div');
@@ -5048,8 +5050,12 @@ battleEl.addEventListener('mousedown', () => { input.battleMash++; });
 
 function startBattle(tackler, hard = false) {
   const b = game.battle;
-  // A big committed hit starts you further behind (harder to break out of).
-  b.val = hard ? 0.4 : 0.52; b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
+  // Each successive battle in the SAME play is harder: you start further behind.
+  b.playCount++;
+  const ramp = (b.playCount - 1) * BATTLE_RAMP; // 0 on the first battle of the play
+  // A big committed hit starts you further behind (harder to break out of), and
+  // every repeat in the play shaves a bit more off your starting meter.
+  b.val = Math.max(0.2, (hard ? 0.36 : 0.48) - ramp * 0.07); b.timer = BATTLE_TIME; b.tackler = tackler; b.flash = 0;
   game.state = STATE.BATTLE;
   // The carrier drives DOWNFIELD; the tackler meets him head-on, so they're
   // squared up face-to-face (the tackler is placed in front in updateBattle).
@@ -5101,7 +5107,8 @@ function updateBattle(dt) {
   // cuts both — a gassed man loses the wrestle — and the struggle itself tires them.
   const tklPow = (0.4 + (b.tackler.rt ? b.tackler.rt.tackle : 0.6)) * fatiguePow(b.tackler);
   const carPow = (0.4 + (game.carrier.rt ? game.carrier.rt.strength : 0.7)) * fatiguePow(game.carrier);
-  b.val -= (BATTLE_CPU / TUNE.breakTackleEase) * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8); // ease>1 = easier to break
+  const ramp = 1 + Math.max(0, b.playCount - 1) * BATTLE_RAMP; // repeat battles in a play drag harder
+  b.val -= (BATTLE_CPU * ramp / TUNE.breakTackleEase) * dt * THREE.MathUtils.clamp(tklPow / carPow, 0.6, 1.8); // ease>1 = easier to break
   drainFatigue(b.tackler, 0.07 * dt); drainFatigue(game.carrier, 0.07 * dt);
   b.val = THREE.MathUtils.clamp(b.val, 0, 1);
 
@@ -5165,7 +5172,7 @@ function beginTackle(lead, force = false) {
   // genuine swarm (someone already in your lap) can't be broken this way.
   const helpers = game.defense.reduce((n, d) =>
     n + (d !== lead && !d.ragdolling && distXZ(px(d), cp) <= BATTLE_SOLO_R ? 1 : 0), 0);
-  if (!force && game.userOnOffense && helpers === 0 && game.battle.cd <= 0) {
+  if (!force && game.userOnOffense && helpers === 0 && game.battle.cd <= 0 && Math.random() < TUNE.battleChance) {
     startBattle(lead, big);
     return;
   }
@@ -6684,6 +6691,7 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'battleChance', label: 'Battle trigger odds', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
   { tab: 'Gameplay', key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
