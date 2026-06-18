@@ -4707,6 +4707,19 @@ function updateBall(dt) {
       else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
       return;
     }
+    // In a chest-to-chest contact (break-tackle battle / wrap-drag), the carry hand
+    // is braced INTO the opponent, which buries the ball between the two bodies. Tuck
+    // it against the carrier's off-side at chest height, pulled back from the tackler,
+    // so it stays visible (matches the off-arm cradle in applyBattleArms).
+    const contact = (game.state === STATE.BATTLE && h === game.carrier) || (game.drag.active && h === game.carrier);
+    if (contact) {
+      const p = h.group.position;
+      _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));   // toward the tackler
+      _r.set(Math.cos(h.heading), 0, -Math.sin(h.heading));  // right of facing
+      ball.mesh.position.set(p.x - _f.x * 0.16 - _r.x * 0.24, 1.45, p.z - _f.z * 0.16 - _r.z * 0.24);
+      ball.mesh.rotation.set(0.3, h.heading, 0.45); // cradled low on the off arm
+      return;
+    }
     if (h.handBone) {
       // Tuck the ball into the carrier's hand: follow the hand bone (so it
       // swings with the run cycle), nudged toward the body and chest height.
@@ -4999,7 +5012,7 @@ function updateKnockdownRecovery(dt) {
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
     if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
-    if (d.actions.getup) playOneShot(d, 'getup', 0.95, true); // scramble up, then pursue (updateDefense holds him during the get-up)
+    if (d.actions.getup) playOneShot(d, 'getup', 1.5, true); // play the full get-up clip (fit to 1.5s), held during it, then pursue
   }
 }
 
