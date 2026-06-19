@@ -1233,6 +1233,7 @@ const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
+let charAltTemplate = null; // optional alternate player-team model (Contact-rig compatible), toggled by TUNE.altModel
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let backLClip, backRClip; // backpedal locomotion (left/right drift)
 // Variety + new-move clips from the merged Meshy packs (animations2/3.glb).
@@ -1243,7 +1244,7 @@ let vaultClips = []; // hurdle pool (per-player variety, animations2/5.glb)
 let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
 let jabClip, kickClip, blownBackClip; // post-play scuffle (attack + knockback, animations5.glb)
 let hitReactClip; // broken-tackle stagger (Hit_in_Back_While_Running, animations5.glb)
-let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0;
+let SCALE = 1, GROUND_Y = 0, DEF_SCALE = 1, DEF_GROUND_Y = 0, ALT_SCALE = 1, ALT_GROUND_Y = 0;
 
 function measureBoneSpan(root) {
   root.updateWorldMatrix(true, true);
@@ -1265,6 +1266,9 @@ async function loadAssets() {
   // offense model (tinted) if it's missing.
   let defGltf = null;
   try { defGltf = await loadGLB('assets/character_def.glb'); } catch (e) { console.warn('Defense model missing', e); }
+  // Optional alternate model for the player's team (same 24-bone rig, so our clips
+  // drive it). Toggled live by TUNE.altModel (Look tab) — see makeCharacter/applyModelChoice.
+  try { charAltTemplate = (await loadGLB('assets/character_alt.glb')).scene; } catch (e) { console.warn('alt model missing', e); }
   loadingText.textContent = 'Loading animations…';
   const animGltf = await loadGLB('assets/animations.glb');
   loadingText.textContent = 'Starting physics…';
@@ -1426,6 +1430,10 @@ async function loadAssets() {
     DEF_SCALE = 1.8 / dr.span;
     DEF_GROUND_Y = -(dr.lo * DEF_SCALE - 0.05);
   } else { DEF_SCALE = SCALE; DEF_GROUND_Y = GROUND_Y; }
+  if (charAltTemplate) { // normalize the alternate model to the same height as our players
+    const ar = measureBoneSpan(charAltTemplate);
+    ALT_SCALE = 1.8 / ar.span; ALT_GROUND_Y = -(ar.lo * ALT_SCALE - 0.05);
+  } else { ALT_SCALE = SCALE; ALT_GROUND_Y = GROUND_Y; }
 }
 
 function makeCharacter(team) {
@@ -1437,9 +1445,10 @@ function makeCharacter(team) {
   // attaches its head/helmet exactly like the offense. If that model is missing,
   // fall back to cloning the offense and tinting it blue.
   const useBlue = isDef && defTemplate;
-  const model = cloneSkeleton(useBlue ? defTemplate : charTemplate);
-  model.scale.multiplyScalar(isDef ? DEF_SCALE : SCALE);
-  model.position.y = isDef ? DEF_GROUND_Y : GROUND_Y;
+  const useAlt = !isDef && TUNE.altModel && charAltTemplate; // alternate model for the player's (offense) team
+  const model = cloneSkeleton(useAlt ? charAltTemplate : (useBlue ? defTemplate : charTemplate));
+  model.scale.multiplyScalar(useAlt ? ALT_SCALE : (isDef ? DEF_SCALE : SCALE));
+  model.position.y = useAlt ? ALT_GROUND_Y : (isDef ? DEF_GROUND_Y : GROUND_Y);
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false; o.userData.isBody = true;
@@ -1571,7 +1580,7 @@ function makeCharacter(team) {
   }
 
   return {
-    group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
+    group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, altModel: useAlt,
     upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
@@ -1659,6 +1668,7 @@ const TUNE_DEFAULTS = {
   lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
   lightFloodColor: '#fff4d6',    // floodlight color
   playerGlow: 0.35,      // player skin self-illumination (1 = fully self-lit, 0 = scene-lit only)
+  altModel: 0,           // 0 = default model for your team; 1 = the alternate character_alt.glb model
   // Look / materials
   offenseTint: '#ffffff', defenseTint: '#ffffff', // per-team body color multiply
   skinRough: 1.0, skinMetal: 0.0,                  // player skin material
@@ -7202,6 +7212,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
   { tab: 'Colliders', key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   // --- Look / materials ---
+  { tab: 'Look', key: 'altModel', label: 'Your-team model', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'alt' : 'default'), onChange: () => applyModelChoice() },
   { tab: 'Look', key: 'offenseTint', label: 'Offense tint', type: 'color', onChange: () => applyLook() },
   { tab: 'Look', key: 'defenseTint', label: 'Defense tint', type: 'color', onChange: () => applyLook() },
   { tab: 'Look', key: 'skinRough', label: 'Skin roughness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
@@ -7526,9 +7537,33 @@ function applyPlayerSize() {
   for (const ch of game.all) {
     if (!ch.model) continue;
     const isDef = ch.team === 'def';
-    ch.model.scale.setScalar((isDef ? DEF_SCALE : SCALE) * m);
-    ch.model.position.y = (isDef ? DEF_GROUND_Y : GROUND_Y) * m; // keep the feet on the ground
+    const base = ch.altModel ? ALT_SCALE : (isDef ? DEF_SCALE : SCALE);
+    const gy = ch.altModel ? ALT_GROUND_Y : (isDef ? DEF_GROUND_Y : GROUND_Y);
+    ch.model.scale.setScalar(base * m);
+    ch.model.position.y = gy * m; // keep the feet on the ground
   }
+}
+// Swap the player team's model to/from the alternate (TUNE.altModel). Same rig, so
+// it's a full rebuild of both teams (cheap) preserving score/clock/possession; the
+// shared animation clips drive the new mesh by bone name. Idempotent — only rebuilds
+// when the choice actually changed (so opening the panel doesn't respawn everyone).
+let _appliedAltModel = false;
+function applyModelChoice() {
+  const want = !!TUNE.altModel && !!charAltTemplate;
+  if (want === _appliedAltModel) return; // no change
+  _appliedAltModel = want;
+  if (!game.all || !game.all.length) return; // not spawned yet (initial spawn already honors the flag)
+  // Tear down the current player models (keep benches as-is).
+  for (const ch of game.all) {
+    if (ch.ragdoll) { try { ch.ragdoll.dispose(); } catch (e) { /* ignore */ } }
+    if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group);
+  }
+  clearRagdolls();
+  spawnTeams();              // rebuilds game.teamA/teamB/all + setupPossession (uses the new flag)
+  if (TUNE.playerSize !== 1) applyPlayerSize();
+  try { applyLook(); } catch (e) { /* ignore */ }
+  try { buildPortraits(); } catch (e) { /* ignore */ } // refresh the post-play card art
+  enterReset(true);          // place everyone on the field, lined up
 }
 function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
@@ -7770,6 +7805,7 @@ function startGame() {
 }
 loadAssets().then(() => {
   spawnTeams(); spawnBench(); makeBall();
+  _appliedAltModel = !!TUNE.altModel && !!charAltTemplate; // initial spawn already honored the saved flag
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   buildPortraits(); // pre-render the posed card art for both teams
