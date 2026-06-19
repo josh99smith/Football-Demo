@@ -7732,7 +7732,7 @@ function startLoop() { if (_loopStarted) return; _loopStarted = true; animate();
 // Background music: full on the title menu, ducked under live play. Browsers
 // block audio until a gesture, so the bed kicks in on the first tap/key and we
 // ride the gain down at kickoff rather than restarting the track.
-const MUSIC_URL = 'assets/music/fourth_down_riot.wav';
+const MUSIC_URL = 'assets/music/fourth_down_riot.mp3';
 const MENU_MUSIC_GAIN = 0.4;
 const GAME_MUSIC_GAIN = 0.12;
 let _musicPrimed = false;
