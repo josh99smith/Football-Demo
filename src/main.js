@@ -2629,10 +2629,14 @@ function updateBlocks(dt) {
     // both play the shove pose; the rusher is stuck. (Locked pairs are skipped by
     // the body-separation pass, so they're allowed to overlap into real contact.)
     const op = o.group.position, dp = d.group.position;
-    let ax = dp.x - op.x, az = dp.z - op.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
+    let ax = dp.x - op.x, az = dp.z - op.z; let al = Math.hypot(ax, az);
+    // Too close to read a reliable facing (a tiny/zero gap) — keep the blocker's
+    // current heading as the axis instead of normalizing near-zero noise (which
+    // would spin them in a circle). Otherwise normalize the real separation.
+    if (al < 0.05) { ax = Math.sin(o.heading); az = Math.cos(o.heading); al = 1; } else { ax /= al; az /= al; }
     const mx = (op.x + dp.x) / 2, mz = (op.z + dp.z) / 2;
     const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.04;
-    const half = TUNE.gapBlock + wob; // half the chest-to-chest gap (Contact Lab)
+    const half = Math.max(0.08, TUNE.gapBlock + wob); // half the chest-to-chest gap; floored so it never crosses 0 (flip/spin)
     const px2 = az, pz2 = -ax; // perpendicular, for the defender's lateral offset
     op.x = mx - ax * half; op.z = mz - az * half;
     dp.x = mx + ax * half + px2 * TUNE.latBlock; dp.z = mz + az * half + pz2 * TUNE.latBlock;
@@ -5505,7 +5509,7 @@ function updateBattle(dt) {
   c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
   // Locked CHEST TO CHEST: the tackler is driven right up onto the carrier (a real
   // wrap-up, not a stand-off at arm's length) — see applyBattleArms / applyBattleLean.
-  const half = TUNE.gapBattle + wob;
+  const half = Math.max(0.08, TUNE.gapBattle + wob); // floored so a closed gap never flips the tackler in front/behind
   const tk = b.tackler.group.position;
   const rx = Math.cos(ang), rz = -Math.sin(ang); // right of facing, for the lateral offset
   tk.x = c.x + sa * half + rx * TUNE.latBattle; tk.z = c.z + ca * half + rz * TUNE.latBattle;
@@ -5762,7 +5766,8 @@ function updateDrag(dt) {
   // Latch grabbers around him, easing into their slot and churning to drive him.
   for (const t of d.grabbers) {
     if (t.ragdolling) continue;
-    const tx = cp.x + Math.sin(t.grabSlot) * TUNE.gapGrab, tz = cp.z + Math.cos(t.grabSlot) * TUNE.gapGrab;
+    const grad = Math.max(0.12, TUNE.gapGrab); // floored so grabbers don't collapse onto the carrier's point
+    const tx = cp.x + Math.sin(t.grabSlot) * grad, tz = cp.z + Math.cos(t.grabSlot) * grad;
     const k = Math.min(1, dt * 12);
     t.group.position.x += (tx - t.group.position.x) * k;
     t.group.position.z += (tz - t.group.position.z) * k;
@@ -7159,11 +7164,11 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'jamYards', label: 'Coverage jam (yd)', min: 0, max: 15, step: 1, fmt: (v) => v.toFixed(0) },
   // --- Contact spacing (also editable visually in the Contact Lab) ---
-  { tab: 'Contact', key: 'gapBattle', label: 'Battle gap (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'gapBattle', label: 'Battle gap (yd)', min: 0.05, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Contact', key: 'latBattle', label: 'Battle lateral (yd)', min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
-  { tab: 'Contact', key: 'gapBlock', label: 'Block gap (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'gapBlock', label: 'Block gap (yd)', min: 0.05, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Contact', key: 'latBlock', label: 'Block lateral (yd)', min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
-  { tab: 'Contact', key: 'gapGrab', label: 'Wrap/drag radius (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'gapGrab', label: 'Wrap/drag radius (yd)', min: 0.12, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuSpdMul', label: 'CPU speed ×', min: 0.7, max: 1.4, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuCatchAdd', label: 'CPU catch +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuAccMul', label: 'CPU accuracy ×', min: 0.5, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
