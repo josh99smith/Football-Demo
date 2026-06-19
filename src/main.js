@@ -7,6 +7,13 @@ import { BUILD } from './build.js';
 import { AudioManager } from './audio.js';
 
 const audio = new AudioManager();
+// Suspend all audio when the tab/app is backgrounded (mobile keeps the music bed
+// playing under another app otherwise); resume when it's foregrounded again.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => audio.setHidden(document.hidden));
+  window.addEventListener('pagehide', () => audio.setHidden(true));   // iOS Safari app-switch
+  window.addEventListener('pageshow', () => audio.setHidden(false));
+}
 
 // Build/version badge (corner of screen).
 {
