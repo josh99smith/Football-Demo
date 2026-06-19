@@ -273,13 +273,14 @@ export class AudioManager {
     if (!this.voEnabled || this.muted) return;
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     if (!force && now < this._voCd) return;
-    this._voCd = now + 1100; // ~1.1s gate so calls don't trample each other
-    if (swell) this.swell(swell);
-    // Real clip path.
+    // Real clip path — only arm the cooldown + swell once we know audio fires,
+    // so a no-op call (not ready / still decoding) can't mute the next call.
     const clips = this.vo[event];
-    if (clips && clips.length) {
+    if (this.ready && clips && clips.length) {
       const b = clips[(Math.random() * clips.length) | 0];
-      if (b && this.ready) {
+      if (b) {
+        this._voCd = now + 1100; // ~1.1s gate so calls don't trample each other
+        if (swell) this.swell(swell);
         const src = this.ctx.createBufferSource(); src.buffer = b;
         const g = this.ctx.createGain(); g.gain.value = 0.95;
         src.connect(g); g.connect(this.master); src.start(this.t);
@@ -295,6 +296,8 @@ export class AudioManager {
       const u = new SpeechSynthesisUtterance(lines[(Math.random() * lines.length) | 0]);
       const v = this._voice(); if (v) u.voice = v;
       u.rate = 1.05; u.pitch = 0.8; u.volume = 0.9;
+      this._voCd = now + 1100;
+      if (swell) this.swell(swell);
       synth.speak(u);
     } catch (e) { /* speech unavailable — silent */ }
   }
