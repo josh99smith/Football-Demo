@@ -2392,55 +2392,30 @@ function benchReact() {
     playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
   }
 }
-// Pre-game show: a chorus line of dancers at midfield (the 50). They use the
-// player model and the looping dance clips (each picks its own, for variety) — pure
-// cosmetics (NOT in game.all). At the first snap they jog off to the nearest
-// sideline so they never stand in live play (see updateCheer).
+// Pre-game cinematic cast: a chorus line of dancers at midfield (the 50). They use
+// the player model and the looping dance clips (each picks its own, for variety).
+// Pure cosmetics (NOT in game.all) and spawned HIDDEN — they're only shown during
+// the pregame cinematic (see startCinematic), never on the field during play.
 const CHEER_N = 8;
 function spawnCheer() {
-  game.cheer = []; game.cheerCleared = false;
+  game.cheer = [];
   const span = 22; // width of the line across midfield
   for (let i = 0; i < CHEER_N; i++) {
     const ch = makeCharacter('off');
     const x = CHEER_N > 1 ? (i - (CHEER_N - 1) / 2) * (span / (CHEER_N - 1)) : 0;
-    ch.isCheer = true; ch.cheerState = 'perform';
-    ch.cheerSide = x >= 0 ? 1 : -1; // which sideline to clear to
-    ch.group.position.set(x, 0, 0); // midfield (the 50-yard line)
-    ch.heading = Math.PI;           // face the near sideline / camera
+    ch.isCheer = true;
+    ch.group.position.set(x, 0, 0); // midfield (the 50-yard line), in a line
+    ch.heading = Math.PI;           // face the home sideline
     ch.group.rotation.set(0, ch.heading, 0);
+    ch.group.visible = false;       // shown only during the cinematic
     setClip(ch, 'dance');
     if (ch.active) { ch.active.time = Math.random() * (ch.active.getClip().duration || 1); ch.active.timeScale = 0.9 + Math.random() * 0.3; } // desync the routine
     game.cheer.push(ch);
   }
 }
-function updateCheer(dt) {
-  if (!game.cheer || !game.cheer.length) return;
-  // First snap of the game: send the dancers off to their nearest sideline.
-  if (!game.cheerCleared) {
-    const s = game.state;
-    if (s && s !== STATE.PRESNAP && s !== STATE.RESET && s !== STATE.REPLAY) {
-      game.cheerCleared = true;
-      for (const ch of game.cheer) ch.cheerState = 'exit';
-    }
-  }
-  for (const ch of game.cheer) {
-    const p = ch.group.position;
-    if (ch.cheerState === 'exit') {                       // jog off to the sideline
-      const tx = ch.cheerSide * (HALF_W + 3.5), dx = tx - p.x;
-      if (Math.abs(dx) > 0.4) {
-        p.x += Math.sign(dx) * Math.min(Math.abs(dx), 8 * dt);
-        ch.heading = ch.cheerSide > 0 ? Math.PI / 2 : -Math.PI / 2; // face the way out
-        setClip(ch, 'run');
-      } else {                                            // arrived: turn back in and keep dancing
-        ch.cheerState = 'sideline';
-        ch.heading = ch.cheerSide > 0 ? -Math.PI / 2 : Math.PI / 2; // face the field
-        setClip(ch, 'dance');
-      }
-    } else {
-      setClip(ch, 'dance');
-    }
-    ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0;
-  }
+function updateCheer(dt) { // just advance the dance (positions are fixed during the cinematic)
+  if (!game.cheer) return;
+  for (const ch of game.cheer) { ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0; }
 }
 // Assign offense (ball) / defense (cover) roles based on who has the ball,
 // using the Blitz personnel formations. game.receivers = eligibles in `elig`
@@ -7094,6 +7069,100 @@ function driveSpecialCam(sp, dt) {
   sun.position.set(o.x + 40, 70, o.z + 20); sun.target.position.set(o.x, 0, o.z);
 }
 
+// ===========================================================================
+// Pre-game cinematic: the cheerleader chorus line dances at midfield while the
+// camera makes a few broadcast moves. Skippable. Plays once when the game starts,
+// then hands off to the normal kickoff (newPlay) behind a fade.
+// ===========================================================================
+const CINE_LERP = THREE.MathUtils.lerp;
+const _cse = (u) => u * u * (3 - 2 * u); // smoothstep ease
+// Each shot: a duration + fn(u)->{ p:[x,y,z] camera, l:[x,y,z] look, fov }. The
+// dancers stand in a line on z=0 (x ~ ±11), facing -Z (the home sideline), so the
+// "front" shots come from negative Z. 25s total across four moves with hard cuts.
+const CINE_SHOTS = [
+  { dur: 7, fn: (u) => ({ p: [CINE_LERP(-19, 19, u), 2.2, -13], l: [CINE_LERP(-6, 6, u), 1.6, 0], fov: 50 }) },                 // low tracking dolly across the line
+  { dur: 6, fn: (u) => { const a = Math.PI * 0.18 + u * Math.PI * 0.64; return { p: [Math.sin(a) * 17, 4.6, -Math.cos(a) * 17], l: [0, 1.7, 0], fov: 46 }; } }, // slow orbit
+  { dur: 6, fn: (u) => ({ p: [CINE_LERP(7, 1.5, _cse(u)), CINE_LERP(2.2, 13, _cse(u)), CINE_LERP(-12, -23, _cse(u))], l: [0, 1.5, 0], fov: 52 }) }, // crane up + pull back
+  { dur: 6, fn: (u) => ({ p: [CINE_LERP(2.5, 0.4, _cse(u)), 1.5, CINE_LERP(-19, -8.5, _cse(u))], l: [0, 1.7, 0], fov: CINE_LERP(54, 40, _cse(u)) }) }, // hero push-in
+];
+const CINE_DUR = CINE_SHOTS.reduce((s, x) => s + x.dur, 0);
+const _cineLookV = new THREE.Vector3();
+const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q']; // gameplay UI hidden during the cinematic
+let _cineSkipEl = null, _cineSkipFn = null;
+function setGroups(list, v) { if (!list) return; for (const ch of list) if (ch.group) ch.group.visible = v; }
+function setCineHud(hidden) { for (const id of CINE_HIDE_HUD) { const el = document.getElementById(id); if (el) el.style.visibility = hidden ? 'hidden' : ''; } }
+function showCineSkip() {
+  if (!_cineSkipEl) {
+    _cineSkipEl = document.createElement('div');
+    _cineSkipEl.id = 'cineSkip'; _cineSkipEl.textContent = 'SKIP ▸';
+    Object.assign(_cineSkipEl.style, {
+      position: 'fixed', right: '22px', bottom: '20px', zIndex: 70, padding: '9px 18px',
+      font: '700 13px/1 system-ui,Segoe UI,sans-serif', letterSpacing: '.14em', color: '#fff',
+      background: 'rgba(0,0,0,.42)', border: '1px solid rgba(255,255,255,.55)', borderRadius: '999px',
+      cursor: 'pointer', userSelect: 'none', backdropFilter: 'blur(2px)',
+    });
+    document.body.appendChild(_cineSkipEl);
+  }
+  _cineSkipEl.style.display = 'block';
+  _cineSkipFn = () => endCinematic();
+  _cineSkipEl.addEventListener('click', _cineSkipFn);
+  // Defer the window-wide skip listeners a beat so the KICK OFF tap/key that
+  // launched the cinematic doesn't instantly dismiss it.
+  setTimeout(() => {
+    if (!game.cinematic) return;
+    window.addEventListener('keydown', _cineSkipFn);
+    window.addEventListener('pointerdown', _cineSkipFn);
+  }, 250);
+}
+function hideCineSkip() {
+  if (_cineSkipEl) _cineSkipEl.style.display = 'none';
+  if (_cineSkipFn) {
+    window.removeEventListener('keydown', _cineSkipFn);
+    window.removeEventListener('pointerdown', _cineSkipFn);
+    if (_cineSkipEl) _cineSkipEl.removeEventListener('click', _cineSkipFn);
+    _cineSkipFn = null;
+  }
+}
+function startCinematic() {
+  game.cinematic = { t: 0 };
+  setGroups(game.all, false); setGroups(game.bench, false); // clear the field — dancers only
+  if (ball.mesh) ball.mesh.visible = false;
+  if (losLine) losLine.visible = false; if (firstDownLine) firstDownLine.visible = false;
+  setGroups(game.cheer, true);                               // bring on the chorus line
+  setCineHud(true);                                          // clean broadcast frame (no gameplay HUD)
+  sun.position.set(40, 70, 20); sun.target.position.set(0, 0, 0); sun.target.updateMatrixWorld();
+  driveCineCam(0);                                           // frame shot 1 before the first render
+  showCineSkip();
+}
+function driveCineCam(t) {
+  let acc = 0, shot = CINE_SHOTS[CINE_SHOTS.length - 1], u = 1;
+  for (const s of CINE_SHOTS) { if (t < acc + s.dur) { shot = s; u = (t - acc) / s.dur; break; } acc += s.dur; }
+  const o = shot.fn(THREE.MathUtils.clamp(u, 0, 1));
+  camera.position.set(o.p[0], o.p[1], o.p[2]);
+  _cineLookV.set(o.l[0], o.l[1], o.l[2]); camera.lookAt(_cineLookV);
+  if (o.fov) { camera.fov = o.fov; camera.updateProjectionMatrix(); }
+}
+function updateCinematic(dt) {
+  const c = game.cinematic; if (!c) return;
+  c.t += dt;
+  updateCheer(dt);
+  driveCineCam(c.t);
+  if (c.t >= CINE_DUR) endCinematic();
+}
+function endCinematic() {
+  if (!game.cinematic) return;
+  game.cinematic = null;
+  hideCineSkip();
+  if (cutEl) cutEl.style.opacity = '1';                      // hard black hides the swap to gameplay
+  setGroups(game.cheer, false);                             // dancers off the field for good
+  setGroups(game.all, true); setGroups(game.bench, true);
+  setCineHud(false);                                        // restore the gameplay HUD
+  if (ball.mesh) ball.mesh.visible = true;
+  camera.fov = 55; camera.updateProjectionMatrix();
+  newPlay();                                                // kick off the real game
+  game.cut.phase = 'in'; game.cut.t = 0; game.cut.mid = null; // fade back in (driven by updateCut in simStep)
+}
+
 // Hide a perimeter WALL whenever the camera is on its OUTSIDE (the far side from
 // the field), so a wall can never block the view of the players. The chain-link
 // FENCE/cage is never hidden — we always see it. This runs every frame (live and
@@ -7779,6 +7848,14 @@ function animate() {
     requestAnimationFrame(animate);
     return;
   }
+  // Pre-game cinematic: dancers + broadcast camera, no sim. Skippable.
+  if (game.cinematic) {
+    updateCinematic(realDt);
+    renderer.render(scene, camera);
+    if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); }
+    requestAnimationFrame(animate);
+    return;
+  }
   simStep(realDt);
   updateCamera(realDt);
   updateDbgViz();
@@ -7798,7 +7875,6 @@ function simStep(realDt) {
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateFenceBlood(realDt); // blood runs down the fence (real-time, ignores slow-mo)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
-  updateCheer(realDt);     // pre-game dancers at midfield, then on the sidelines (real-time)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
   updateCageGates(realDt); // cage gates swing open between plays
@@ -7913,7 +7989,7 @@ function startGame() {
   const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
   if (tagOff) tagOff.textContent = TEAMS.home.abbr;
   if (tagDef) tagDef.textContent = TEAMS.away.abbr;
-  newPlay();
+  startCinematic(); // pregame dancer cinematic; hands off to newPlay() when it ends/skips
   startLoop();
 }
 loadAssets().then(async () => {
