@@ -1576,6 +1576,7 @@ const TUNE_DEFAULTS = {
   knockdownRecover: 1.6, // s before a knocked-down defender pops up & re-pursues (0 = stay down)
   playClock: 15,         // delay-of-game seconds before the snap (applies next play)
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
+  jamYards: 5,           // coverage may JAM a route runner within this many yds of the LOS; past it, no body-blocking (illegal contact) — they can only cover
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
   catchGrab: 0.45,       // 3D slack on the reach volume: how far OUT of reach the ball can still be grabbed (yd)
@@ -2708,6 +2709,22 @@ function measureBody() {
 }
 const colliderR = () => BODY_R0 * TUNE.playerSize * TUNE.bodyFit; // world-yard radius
 const colliderH = () => BODY_H0 * TUNE.playerSize;
+// Illegal-contact rule: past the jam zone, a coverage defender may not BODY-BLOCK a
+// route runner (WR/RB running his route, not the ball carrier). Within TUNE.jamYards
+// of the LOS a jam (contact) is allowed; beyond it the receiver runs through. Only
+// during the pass phase, and never to the ball carrier or to pass rushers/linemen.
+function coverageNoContact(A, B) {
+  if (game.state !== STATE.LIVE && game.state !== STATE.AIR) return false;
+  let off, def;
+  if (A.team === 'off' && B.team === 'def') { off = A; def = B; }
+  else if (B.team === 'off' && A.team === 'def') { off = B; def = A; }
+  else return false;
+  if (off === game.carrier) return false;                 // the ball carrier can always be hit
+  if (!off.route || off.job !== 'route') return false;    // must be actively running a route (not a blocker/QB)
+  if (def.job === 'rush' || def.role === 'DL') return false; // rushers aren't covering — keep the pocket solid
+  const rel = game.dir * (off.group.position.z - game.los); // yards downfield of the LOS
+  return rel > TUNE.jamYards;                              // past the jam zone: let him run his route
+}
 function resolveBodies() {
   const a = game.all, colH = colliderH(), min = colliderR() * 2, min2 = min * min;
   for (let i = 0; i < a.length; i++) {
@@ -2717,6 +2734,7 @@ function resolveBodies() {
       const B = a[j]; if (B.ragdolling || B.grabbing || B.engaging || B.blockedBy) continue;
       const bp = B.group.position;
       if (ap.y + colH < bp.y || bp.y + colH < ap.y) continue; // capsule: skip if vertical ranges don't overlap
+      if (coverageNoContact(A, B)) continue;                  // coverage can't impede a route past the jam zone
       const dx = bp.x - ap.x, dz = bp.z - ap.z, d2 = dx * dx + dz * dz;
       if (d2 >= min2 || d2 < 1e-6) continue;
       const d = Math.sqrt(d2), pen = (min - d) * 0.5, nx = dx / d, nz = dz / d;
@@ -6885,6 +6903,7 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'jamYards', label: 'Coverage jam (yd)', min: 0, max: 15, step: 1, fmt: (v) => v.toFixed(0) },
   { tab: 'Gameplay', key: 'cpuSpdMul', label: 'CPU speed ×', min: 0.7, max: 1.4, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuCatchAdd', label: 'CPU catch +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuAccMul', label: 'CPU accuracy ×', min: 0.5, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
