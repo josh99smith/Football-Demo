@@ -30,14 +30,24 @@ const VO_LINES = {
   lose:      ['Tough loss out there.', 'Not their night.', 'They left it all on the field.'],
 };
 const VO_CLIPS = {
-  bigHit:   ['assets/vo/bigHit1.mp3', 'assets/vo/bigHit2.mp3', 'assets/vo/bigHit3.mp3',
-             'assets/vo/bigHit4.mp3', 'assets/vo/bigHit5.mp3', 'assets/vo/bigHit6.mp3'],
-  dirtyHit: ['assets/vo/dirtyHit1.mp3', 'assets/vo/dirtyHit2.mp3', 'assets/vo/dirtyHit3.mp3',
-             'assets/vo/dirtyHit4.mp3', 'assets/vo/dirtyHit5.mp3', 'assets/vo/dirtyHit6.mp3'],
-  gang:     ['assets/vo/gang1.mp3', 'assets/vo/gang2.mp3', 'assets/vo/gang3.mp3',
-             'assets/vo/gang4.mp3', 'assets/vo/gang5.mp3', 'assets/vo/gang6.mp3'],
-  td:       ['assets/vo/td1.mp3', 'assets/vo/td2.mp3', 'assets/vo/td3.mp3',
-             'assets/vo/td4.mp3', 'assets/vo/td5.mp3', 'assets/vo/td6.mp3'],
+  bigHit:    ['assets/vo/bigHit1.mp3', 'assets/vo/bigHit2.mp3', 'assets/vo/bigHit3.mp3',
+              'assets/vo/bigHit4.mp3', 'assets/vo/bigHit5.mp3', 'assets/vo/bigHit6.mp3'],
+  dirtyHit:  ['assets/vo/dirtyHit1.mp3', 'assets/vo/dirtyHit2.mp3', 'assets/vo/dirtyHit3.mp3',
+              'assets/vo/dirtyHit4.mp3', 'assets/vo/dirtyHit5.mp3', 'assets/vo/dirtyHit6.mp3'],
+  gang:      ['assets/vo/gang1.mp3', 'assets/vo/gang2.mp3', 'assets/vo/gang3.mp3',
+              'assets/vo/gang4.mp3', 'assets/vo/gang5.mp3', 'assets/vo/gang6.mp3'],
+  td:        ['assets/vo/td1.mp3', 'assets/vo/td2.mp3', 'assets/vo/td3.mp3', 'assets/vo/td4.mp3',
+              'assets/vo/td5.mp3', 'assets/vo/td6.mp3', 'assets/vo/td7.mp3', 'assets/vo/td8.mp3',
+              'assets/vo/td9.mp3', 'assets/vo/td10.mp3', 'assets/vo/td11.mp3', 'assets/vo/td12.mp3',
+              'assets/vo/td13.mp3', 'assets/vo/td14.mp3', 'assets/vo/td15.mp3', 'assets/vo/td16.mp3',
+              'assets/vo/td17.mp3'],
+  fumble:    ['assets/vo/fumble1.mp3', 'assets/vo/fumble2.mp3', 'assets/vo/fumble3.mp3', 'assets/vo/fumble4.mp3',
+              'assets/vo/fumble5.mp3', 'assets/vo/fumble6.mp3', 'assets/vo/fumble7.mp3', 'assets/vo/fumble8.mp3'],
+  firstDown: ['assets/vo/firstDown1.mp3', 'assets/vo/firstDown2.mp3', 'assets/vo/firstDown3.mp3', 'assets/vo/firstDown4.mp3',
+              'assets/vo/firstDown5.mp3', 'assets/vo/firstDown6.mp3', 'assets/vo/firstDown7.mp3', 'assets/vo/firstDown8.mp3'],
+  sack:      ['assets/vo/sack1.mp3', 'assets/vo/sack2.mp3', 'assets/vo/sack3.mp3',
+              'assets/vo/sack4.mp3', 'assets/vo/sack5.mp3', 'assets/vo/sack6.mp3'],
+  scramble:  ['assets/vo/scramble1.mp3', 'assets/vo/scramble2.mp3', 'assets/vo/scramble3.mp3', 'assets/vo/scramble4.mp3'],
 };
 export class AudioManager {
   constructor() {

@@ -116,10 +116,11 @@ create; any event left out of `VO_CLIPS` keeps using the synth fallback, and any
 single missing file is skipped gracefully.
 
 ## Progress
-- ✅ **Recorded & wired (round 1):** `bigHit`, `dirtyHit`, `gang`, `td` — each
-  has 6 clips in `assets/vo/` (3 lines × 2 takes), registered in `VO_CLIPS`.
-- ⬜ **Still on the synth fallback:** `fumble`, `pick`, `safety`, `onFire`,
-  `firstDown`, `sack`, `scramble`, `win`, `lose`.
+- ✅ **Recorded & wired:** `bigHit` (6), `dirtyHit` (6), `gang` (6), `td` (17),
+  `fumble` (8), `firstDown` (8), `sack` (6), `scramble` (4) — clips in
+  `assets/vo/`, all registered in `VO_CLIPS`. Some takes ad-lib extra calls
+  (e.g. "Chain Gang!", "Give that man six points!"), which become bonus variants.
+- ⬜ **Still on the synth fallback:** `pick`, `safety`, `onFire`, `win`, `lose`.
 
 ### How clips are prepared
 Source recordings can bundle an event's lines into one file (with a short pause
