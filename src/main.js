@@ -1534,7 +1534,7 @@ function makeCharacter(team) {
   // clips are rotation-only they never restore positions, so we snap bones
   // back to rest when the ragdoll is cleared (else the lower body stays under
   // the field and the next hit snapshots a broken pose).
-  let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null;
+  let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null, leftHandBone = null;
   let headBone = null, headEnd = null, spineBone = null;
   const restPose = [];
   model.traverse((o) => {
@@ -1544,6 +1544,7 @@ function makeCharacter(team) {
       if (o.name === 'RightForeArm') foreArm = o;
       if (o.name === 'LeftArm') leftArm = o;
       if (o.name === 'LeftForeArm') leftForeArm = o;
+      if (o.name === 'LeftHand') leftHandBone = o;
       if (o.name === 'Head') headBone = o;
       if (o.name === 'head_end') headEnd = o;
       if (o.name === 'Spine01' || (!spineBone && o.name === 'Spine')) spineBone = o; // waist bend (battle/block)
@@ -1653,7 +1654,7 @@ function makeCharacter(team) {
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, mScale, mGroundY,
-    upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
+    upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest, leftHandBone,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet, headFix, bones: restPose.map((e) => e[0]), // bone list for replay capture
@@ -1731,6 +1732,7 @@ const TUNE_DEFAULTS = {
   catchWindow: 1.4,      // 3D gap (yd) at which the user-catch timing window opens as the ball drops in
   userCatchBonus: 0.18,  // max catch-odds bonus added for a well-timed user catch
   racBoost: 1.18,        // × baseSpeed burst out of a RAC (catch-in-stride) reception (YAC)
+  catchIK: 1.0,          // Phase 4: weight of the 2-bone hand IK that lands the hands on the ball (0 = off)
   possCatch: 0.12,       // POSSESSION style: flat catch-odds bonus (secure, lowest drop), no YAC
   aggContest: 0.16,      // AGGRESSIVE style: bonus to CONTESTED catches (high-point win)
   aggSecurity: 0.10,     // AGGRESSIVE style: penalty to UNCONTESTED catches (riskier hands)
@@ -6568,6 +6570,46 @@ function applyThrowPose(ch, dt, w = 1) {
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
 // ball -> arms down) so it varies with the ball/player positions.
+// Phase 4 — Hand IK to the ball. A light two-bone CCD solver (aim the shoulder so
+// the hand points at the ball, then bend the elbow to reach it) run AFTER the
+// procedural catch pose, so the hands actually converge on the ball instead of just
+// approximating by angle. World-space, so it's robust to the rig's bone roll.
+const _ikBp = new THREE.Vector3(), _ikHp = new THREE.Vector3(), _ikCur = new THREE.Vector3(), _ikDes = new THREE.Vector3();
+const _ikQw = new THREE.Quaternion(), _ikQb = new THREE.Quaternion(), _ikBw = new THREE.Quaternion(), _ikPar = new THREE.Quaternion();
+function ik2(arm, fore, hand, target, w) {
+  if (!arm || !fore || !hand || w <= 0.01) return;
+  for (let pass = 0; pass < 2; pass++) {            // pass 0 = shoulder aim, pass 1 = elbow reach
+    const bone = pass === 0 ? arm : fore;
+    _ikBp.setFromMatrixPosition(bone.matrixWorld);
+    _ikHp.setFromMatrixPosition(hand.matrixWorld);
+    const cl = _ikCur.subVectors(_ikHp, _ikBp).length(); if (cl < 1e-4) continue; _ikCur.multiplyScalar(1 / cl);
+    const dl = _ikDes.subVectors(target, _ikBp).length(); if (dl < 1e-4) continue; _ikDes.multiplyScalar(1 / dl);
+    _ikQw.setFromUnitVectors(_ikCur, _ikDes);        // world rotation that aims the hand at the ball
+    _ikQb.identity().slerp(_ikQw, w);                // blend in by weight
+    bone.getWorldQuaternion(_ikBw); _ikBw.premultiply(_ikQb);
+    const par = bone.parent;
+    if (par) { par.getWorldQuaternion(_ikPar); bone.quaternion.copy(_ikPar.invert().multiply(_ikBw)); }
+    else bone.quaternion.copy(_ikBw);
+    bone.updateMatrixWorld(true);                    // refresh the subtree for the next pass
+  }
+}
+function ikHandsToBall(ch, target, twoHand, w) {
+  if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
+  w = Math.min(1, w * TUNE.catchIK);
+  ch.group.updateWorldMatrix(true, true);            // fresh world matrices for the posed arm chain
+  const dx = target.x - ch.group.position.x, dz = target.z - ch.group.position.z;
+  const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
+  const right = side >= 0;
+  const pa = right ? ch.upperArm : ch.leftArm, pf = right ? ch.foreArm : ch.leftForeArm, ph = right ? ch.handBone : ch.leftHandBone;
+  ik2(pa, pf, ph, target, w);
+  if (twoHand) ik2(right ? ch.leftArm : ch.upperArm, right ? ch.leftForeArm : ch.foreArm, right ? ch.leftHandBone : ch.handBone, target, w * 0.9);
+}
+// The live ball target for a hand reach: only while this player is actually playing
+// the ball in the air (or securing it). Null otherwise (no IK on idle arms).
+function catchBallTarget(ch) {
+  if ((ball.mode === 'flying' || ball.mode === 'secured') && (ch === ball.catcher || ch === ball.targetRecv)) return ball.mesh.position;
+  return null;
+}
 function applyCatchPose(ch, ballPos, dt, w = 1) {
   w *= TUNE.animCatch;
   if (!ch.upperArm || !ch.upperArmRest) return;
@@ -6596,6 +6638,8 @@ function applyCatchPose(ch, ballPos, dt, w = 1) {
   blendBone(ch.foreArm, ch.foreArmRest, -0.55 * (side >= 0 ? 1 : 1 - oneH * 0.7), w);
   blendBone(ch.leftArm, ch.leftArmRest, leftReach, w);
   blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55 * (side < 0 ? 1 : 1 - oneH * 0.7), w);
+  // Phase 4: refine the posed arms so the hand(s) actually land on the ball.
+  ikHandsToBall(ch, ballPos, oneH < 0.5, w);
 }
 // Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
 // poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
@@ -6637,6 +6681,9 @@ function applyArmAction(ch, dt, bw = 1) {
     blendBone(ch.foreArm, ch.foreArmRest, -0.5 * w, bw);
     blendBone(ch.leftArm, ch.leftArmRest, reach * w, bw);
     blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5 * w, bw);
+    // Phase 4: IK the in-stride reach onto the LIVE ball so the hands meet it.
+    const ikT = catchBallTarget(ch);
+    if (ikT) ikHandsToBall(ch, ikT, true, bw * w);
   }
 }
 // Ball-security threat: how imminent is contact on the ball carrier (0 none .. 1
@@ -7692,6 +7739,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'catchLog', label: 'Catch log', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
   { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchHeight', label: 'Catch height ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'catchIK', label: 'Hand IK', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'bodyFit', label: 'Body collider × (model)', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
@@ -8322,6 +8370,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
