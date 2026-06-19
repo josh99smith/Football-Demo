@@ -29,7 +29,16 @@ const VO_LINES = {
   win:       ['That\'s the ballgame!', 'Final whistle — what a win!', 'Your champions!'],
   lose:      ['Tough loss out there.', 'Not their night.', 'They left it all on the field.'],
 };
-const VO_CLIPS = { /* event: ['assets/vo/<event>1.mp3', ...] — add real clips here */ };
+const VO_CLIPS = {
+  bigHit:   ['assets/vo/bigHit1.mp3', 'assets/vo/bigHit2.mp3', 'assets/vo/bigHit3.mp3',
+             'assets/vo/bigHit4.mp3', 'assets/vo/bigHit5.mp3', 'assets/vo/bigHit6.mp3'],
+  dirtyHit: ['assets/vo/dirtyHit1.mp3', 'assets/vo/dirtyHit2.mp3', 'assets/vo/dirtyHit3.mp3',
+             'assets/vo/dirtyHit4.mp3', 'assets/vo/dirtyHit5.mp3', 'assets/vo/dirtyHit6.mp3'],
+  gang:     ['assets/vo/gang1.mp3', 'assets/vo/gang2.mp3', 'assets/vo/gang3.mp3',
+             'assets/vo/gang4.mp3', 'assets/vo/gang5.mp3', 'assets/vo/gang6.mp3'],
+  td:       ['assets/vo/td1.mp3', 'assets/vo/td2.mp3', 'assets/vo/td3.mp3',
+             'assets/vo/td4.mp3', 'assets/vo/td5.mp3', 'assets/vo/td6.mp3'],
+};
 export class AudioManager {
   constructor() {
     this.ctx = null; this.ready = false; this.master = null; this.noiseBuf = null;

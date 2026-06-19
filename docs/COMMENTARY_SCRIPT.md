@@ -114,3 +114,16 @@ const VO_CLIPS = {
 You don't have to generate every variant — list only the files you actually
 create; any event left out of `VO_CLIPS` keeps using the synth fallback, and any
 single missing file is skipped gracefully.
+
+## Progress
+- ✅ **Recorded & wired (round 1):** `bigHit`, `dirtyHit`, `gang`, `td` — each
+  has 6 clips in `assets/vo/` (3 lines × 2 takes), registered in `VO_CLIPS`.
+- ⬜ **Still on the synth fallback:** `fumble`, `pick`, `safety`, `onFire`,
+  `firstDown`, `sack`, `scramble`, `win`, `lose`.
+
+### How clips are prepared
+Source recordings can bundle an event's lines into one file (with a short pause
+between each); they're sliced on silence into one clip per line and re-encoded to
+tight mono MP3. The filename's event prefix (e.g. "Big Hit…", "Touchdown…") maps
+to the `VO_CLIPS` key, and clips are numbered sequentially across takes
+(`bigHit1`–`bigHit6`).
