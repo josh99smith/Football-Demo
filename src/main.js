@@ -796,6 +796,72 @@ function makeFieldLine(color) {
 const losLine = makeFieldLine(0xff3a30);
 const firstDownLine = makeFieldLine(0xffe14a);
 
+// ---- Coach-cam play art: the called play's routes drawn flat on the turf during
+// pre-snap (toggled by the PLAY ART button), so you can read the concept before
+// the snap. Route ribbons + a start dot + an arrowhead, the same colors as the
+// play-call screen's SVG (RB green, WR yellow, QB blue). ----------------------
+const coachArt = new THREE.Group(); coachArt.visible = false; scene.add(coachArt);
+function clearCoachArt() {
+  for (const c of coachArt.children) { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }
+  coachArt.clear();
+}
+// A flat ribbon lying on the turf along an XZ polyline (pts: {x,z}), so a route
+// reads from the low broadcast camera. width in yards.
+function routeRibbon(pts, color, width) {
+  const half = width * 0.5, n = pts.length, pos = [], idx = [];
+  for (let i = 0; i < n; i++) {
+    let dx = 0, dz = 0;
+    if (i > 0) { dx += pts[i].x - pts[i - 1].x; dz += pts[i].z - pts[i - 1].z; }
+    if (i < n - 1) { dx += pts[i + 1].x - pts[i].x; dz += pts[i + 1].z - pts[i].z; }
+    const l = Math.hypot(dx, dz) || 1, px = -dz / l * half, pz = dx / l * half;
+    pos.push(pts[i].x + px, 0.09, pts[i].z + pz, pts[i].x - px, 0.09, pts[i].z - pz);
+    if (i < n - 1) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
+  return new THREE.Mesh(g, m);
+}
+// A flat arrowhead on the turf at tip, pointing along dir {x,z}.
+function routeArrow(tip, dir, color, size) {
+  const l = Math.hypot(dir.x, dir.z) || 1, fx = dir.x / l, fz = dir.z / l, px = -fz, pz = fx;
+  const bx = tip.x - fx * size, bz = tip.z - fz * size;
+  const pos = [tip.x, 0.1, tip.z, bx + px * size * 0.6, 0.1, bz + pz * size * 0.6, bx - px * size * 0.6, 0.1, bz - pz * size * 0.6];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex([0, 1, 2]);
+  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide });
+  return new THREE.Mesh(g, m);
+}
+// A small disc marker flat on the turf (route start / QB spot).
+function routeDot(x, z, color, r) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 18),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, 0.085, z); return m;
+}
+function buildCoachArt() {
+  if (!game.userOnOffense || !game.receivers) return;
+  const play = PLAYS[game.playIndex] || PLAYS[0];
+  game.receivers.forEach((r, e) => {
+    const sp = r.group.position;
+    const wpts = play.route(e, r.align.x, game.los);
+    const pts = [{ x: sp.x, z: sp.z }, ...wpts.map((w) => ({ x: w.x, z: w.z }))];
+    const col = r.role === 'RB' ? 0x7cfca0 : 0xffd54a;
+    coachArt.add(routeRibbon(pts, col, 0.45));
+    coachArt.add(routeDot(sp.x, sp.z, 0xffffff, 0.42));
+    const a = pts[pts.length - 1], b = pts[pts.length - 2] || a;
+    coachArt.add(routeArrow(a, { x: a.x - b.x, z: a.z - b.z }, col, 1.1));
+  });
+  if (game.qb) { const q = game.qb.group.position; coachArt.add(routeDot(q.x, q.z, 0xbfe3ff, 0.5)); }
+}
+let coachSig = '';
+function updateCoachArt() {
+  const showIt = game.coachCam && game.state === STATE.PRESNAP && game.userOnOffense && !game.choosing && !game.gameOver;
+  if (!showIt) { if (coachArt.visible || coachArt.children.length) { clearCoachArt(); coachArt.visible = false; coachSig = ''; } return; }
+  const sig = `${game.playIndex}|${game.los.toFixed(1)}|${game.dir}`;
+  if (sig !== coachSig || !coachArt.children.length) { clearCoachArt(); buildCoachArt(); coachSig = sig; }
+  coachArt.visible = true;
+}
+
 // Floating target arrow that hovers over the selected receiver.
 const targetArrow = (() => {
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.8, 4),
@@ -1592,6 +1658,7 @@ const game = {
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
+  coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -2781,6 +2848,13 @@ function saveCanvasPNG() {
 const actionBtn = document.getElementById('action-btn');
 const actionLabel = document.getElementById('action-label');
 const turboBtn = document.getElementById('turbo-btn');
+const coachBtn = document.getElementById('coach-btn');
+if (coachBtn) coachBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  game.coachCam = !game.coachCam;
+  coachBtn.classList.toggle('on', game.coachCam);
+  updateCoachArt();
+});
 // Two-button scheme: TURBO + one contextual ACTION button. (Desktop keeps the
 // optional Q/E/F shortcuts for explicit spin/dive/pitch.)
 (function buttons() {
@@ -3206,6 +3280,8 @@ function setAction(label, hot = false) {
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
+  // PLAY ART (coach cam): only callable pre-snap on offense, before the snap.
+  if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && onO && !game.choosing && !game.gameOver));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) { setAction(game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
   else if (s === STATE.LIVE) { setAction(onO ? 'THROW' : 'SWITCH'); show(turboBtn); }
@@ -6530,6 +6606,7 @@ function updatePlay(dt) {
 
   updateReticles(); // single authority for all on-field rings (visibility + position)
   updateNameTags();
+  updateCoachArt(); // pre-snap play-art overlay (PLAY ART button)
   // Target arrow bobs over the selected receiver while you're picking a throw.
   const showArrow = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
   targetArrow.visible = showArrow;

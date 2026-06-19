@@ -511,6 +511,29 @@ body.replay-mode #fps { display: none !important; }
 .fs-btn:active { transform: scale(0.9); }
 .fs-btn.on { background: rgba(255, 213, 74, 0.85); color: #1b2a1f; }
 
+/* ---------- Coach cam / PLAY ART toggle (pre-snap only) ---------- */
+.coach-btn {
+  position: fixed;
+  top: max(30px, calc(env(safe-area-inset-top) + 26px)); /* below the FPS readout, top-left */
+  left: max(12px, env(safe-area-inset-left));
+  padding: 8px 11px;
+  border-radius: 11px;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.04em;
+  color: #fff; white-space: nowrap;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(6px);
+  z-index: 24;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  font-family: inherit;
+}
+.coach-btn:active { transform: scale(0.92); }
+.coach-btn.on { background: rgba(255, 213, 74, 0.9); color: #1b2a1f; border-color: rgba(255, 213, 74, 0.9); }
+.coach-btn.hidden { display: none; }
+body.replay-mode .coach-btn { visibility: hidden; }
+
 /* ---------- Skip / Sim controls ---------- */
 #simbar {
   position: fixed;
