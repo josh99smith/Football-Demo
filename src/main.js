@@ -1734,6 +1734,11 @@ const TUNE_DEFAULTS = {
   possCatch: 0.12,       // POSSESSION style: flat catch-odds bonus (secure, lowest drop), no YAC
   aggContest: 0.16,      // AGGRESSIVE style: bonus to CONTESTED catches (high-point win)
   aggSecurity: 0.10,     // AGGRESSIVE style: penalty to UNCONTESTED catches (riskier hands)
+  // Phase 3 — contested catches as physics (gate flag for all Phase-3 behavior).
+  contestPhysics: true,  // a contested breakup can TIP the ball LIVE + jarring-hit risk on contested catches
+  tipChance: 0.5,        // fraction of contested breakups that tip into a live loose ball (vs a clean incompletion)
+  catchHitRisk: 0.55,    // added fumble probability on the jarring hit right after an EXPOSED contested catch (× style)
+  catchExposeTime: 0.7,  // s a receiver stays exposed to a jarring hit after a contested catch
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -4144,7 +4149,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -5426,6 +5431,13 @@ function startSecure(player, isInt) {
   if (isInt) {
     showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
     burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
+    // Phase 3 defender high-point: a DB who picks a high/extended ball and isn't
+    // already leaping gets a genuine high-point grab clip (not just a flat snag).
+    if (!player.catchLeap) {
+      const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
+      const high = p.y > player.group.position.y + 1.8;
+      if (player.actions.divecatch && (reach > 1.7 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; player.catchPlant = true; }
+    }
   } else {
     audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
@@ -5619,7 +5631,16 @@ function tryReception() {
   if (game.onFire) pCatch += 0.12;
   pCatch += TUNE.catchBias + userBonus + userContest; // global nudge + user-catch timing/style bonus (+ aggressive contest edge)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
-  if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
+  if (Math.random() < pCatch) {
+    // Possession-vs-hit (Phase 3): a contested catch leaves the receiver exposed to a
+    // jarring hit; the risk scales with the user's chosen style (POSSESSION most
+    // exposed — he planted and secured; RAC least — caught in stride).
+    if (TUNE.contestPhysics && _uc && _uc.on && _uc.armed && bestR === _uc.recv) {
+      bestR.catchExposed = TUNE.catchExposeTime;
+      bestR.catchExposeRisk = _uc.style === 'poss' ? 1.0 : _uc.style === 'agg' ? 0.7 : 0.35;
+    }
+    startSecure(bestR, false); return true; // contested grab
+  }
 
   // The receiver couldn't bring it in. In TIGHT coverage the DB can make a play
   // on the ball himself — a real interception — scaled by his ball skills and how
@@ -5632,6 +5653,9 @@ function tryReception() {
   pInt *= TUNE.intChance;                                                  // global pick-odds knob
   pInt = THREE.MathUtils.clamp(pInt, 0, 0.6);
   if (Math.random() < pInt) { startSecure(bestDef, true); return true; }   // picked off in coverage
+  // Phase 3: the swat can TIP it live (ball as a physics object) instead of always a
+  // scripted incompletion — a tipped ball is then up for grabs by either team.
+  if (TUNE.contestPhysics && Math.random() < TUNE.tipChance) { ballTippedLoose(bestDef); return true; }
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true;     // DB bats it away
 }
 const LUNGE_R = 2.7; // a pursuer who's closed within this DIVES to make the tackle
@@ -5844,6 +5868,7 @@ function updateBattle(dt) {
 function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
+  if (carrier.catchExposed > 0) force = true; // Phase 3: a hit right after a contested catch is a committed, jarring shot (no juke/battle out of it)
   if (game.play && game.defense.includes(lead)) game.play.tackler = lead; // box score: credit the tackle
   if (!physics || !TUNE.ragdolls) { endPlay('tackle', cp.z); return; } // no physics / ragdolls off: instant whistle
 
@@ -5858,7 +5883,7 @@ function beginTackle(lead, force = false) {
   const hl = Math.hypot(hitX, hitZ) || 1;
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
-  const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
+  let big = lead.turbo || closing > 8; // Blitz: most square hits are violent (Phase 3 may force it on an exposed catch)
   const gang = gangSize >= 3;
   if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
 
@@ -5914,7 +5939,11 @@ function beginTackle(lead, force = false) {
   // tackles pop it more often — and a hit while TAUNTING strips it every time
   // (that's the risk of showboating). The carrier goes down and the ball pops
   // free for a live scramble (see startFumble) instead of the play ending.
-  if (carrier.tauntT > 0 || Math.random() < ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance) {
+  // A receiver hit RIGHT after a contested catch (Phase 3) is jarring + exposed: the
+  // ball pops loose far more often, scaled by the catch style he chose.
+  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance;
+  if (carrier.catchExposed > 0) { fProb += TUNE.catchHitRisk * (carrier.catchExposeRisk || 0.5); big = true; carrier.catchExposed = 0; }
+  if (carrier.tauntT > 0 || Math.random() < fProb) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
@@ -6160,6 +6189,26 @@ function ballLooseFromAir() {
   ctrlRing.visible = true; selRing.visible = false;
   showBanner('OFF THE FENCE!', '#7fe0ff'); audio.fence(0.6); shake.add(0.15);
   setStatus('Loose ball — recover it!'); updateButtons();
+}
+// Phase 3: a defender's swat doesn't always kill the play — it can TIP the ball,
+// popping it live off the deflection point so either team can scramble for it (a
+// defense recovery counts as the interception, like a fence carom).
+function ballTippedLoose(deflector) {
+  const p = ball.mesh.position;
+  game.state = STATE.LOOSE; game.looseTimer = 5.0;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null;
+  ball.fromFence = true; ball.g = 24; ball.grabCd = 0.45; game.looseCrowdT = 0; // defense recovery = INT; let it bounce first
+  const ang = Math.random() * Math.PI * 2, sp = 4 + Math.random() * 5; // small random pop off the tip
+  ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 4 + Math.random() * 3;
+  ball.spin = 0; ball.spinRate = 16;
+  setFumbleGlow(true); landRing.visible = false;
+  if (deflector) { deflector.catchLeap = false; deflector.catchPlant = false; deflector.heading = Math.atan2(p.x - deflector.group.position.x, p.z - deflector.group.position.z); triggerArmAction(deflector, 'swat', 0.4, p); }
+  burst(p.x, Math.max(0.5, p.y), p.z, 0xdfe7ff, 12, 7); shake.add(0.18);
+  if (game.userCatch) game.userCatch.on = false;
+  selRing.visible = false; selRing.scale.set(1, 1, 1); hideCatchRow();
+  game.controlled = nearestTeamToBall(game.teamA); ctrlRing.visible = true;
+  showBanner('TIPPED!', '#9fd0ff'); audio.fence(0.45);
+  setStatus('Tipped — it\'s live!'); updateButtons();
 }
 function startFumble(carrier, hitX, hitZ) {
   if (game.tally) game.tally.fumbles++;
@@ -7113,6 +7162,7 @@ function updatePlay(dt) {
       if (c.jukeTimer > 0) c.jukeTimer -= dt;
       if (c.jukeCd > 0) c.jukeCd -= dt;
       if (c.spinT > 0) c.spinT -= dt;
+      if (c.catchExposed > 0) c.catchExposed -= dt; // exposure after a contested catch fades fast
       if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
       if (c.tauntCd > 0) c.tauntCd -= dt;
       if (c.tauntT > 0) { c.tauntT -= dt; if (c.tauntT <= 0) game.turboMeter = Math.min(1, game.turboMeter + 0.25); } // survived the showboat -> turbo pop
@@ -7616,6 +7666,9 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'possCatch', label: 'Possession bonus', min: 0, max: 0.4, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'aggContest', label: 'Aggressive contest+', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'aggSecurity', label: 'Aggressive risk−', min: 0, max: 0.4, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'contestPhysics', label: 'Contest physics', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Gameplay', key: 'tipChance', label: 'Tipped-ball chance', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'catchHitRisk', label: 'Contest-catch fumble', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
@@ -8269,6 +8322,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
