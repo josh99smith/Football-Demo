@@ -7,6 +7,13 @@ import { BUILD } from './build.js';
 import { AudioManager } from './audio.js';
 
 const audio = new AudioManager();
+// Suspend all audio when the tab/app is backgrounded (mobile keeps the music bed
+// playing under another app otherwise); resume when it's foregrounded again.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => audio.setHidden(document.hidden));
+  window.addEventListener('pagehide', () => audio.setHidden(true));   // iOS Safari app-switch
+  window.addEventListener('pageshow', () => audio.setHidden(false));
+}
 
 // Build/version badge (corner of screen).
 {
@@ -1233,6 +1240,13 @@ const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
+let BASE_HEAD_REST = null; // default rig's Head rest quaternion (clips are authored for it)
+// Pull a template's Head bone rest-pose rotation (used to retarget alt-model heads).
+function headRestOf(scene) {
+  let q = null;
+  if (scene) scene.traverse((o) => { if (o.isBone && o.name === 'Head') q = o.quaternion.clone(); });
+  return q;
+}
 // Player-team model registry. Index 0 = the default model; each alt is appended at
 // load (skipped if its .glb is missing). Entry: { name, template, helmet|null, scale,
 // groundY }. TUNE.altModel indexes it; each alt gets its OWN helmet (or none yet).
@@ -1429,6 +1443,10 @@ async function loadAssets() {
   const raw = measureBoneSpan(charTemplate);
   SCALE = 1.8 / raw.span;
   GROUND_Y = -(raw.lo * SCALE - 0.05);
+  // The shared animation clips were authored for the DEFAULT rig's Head bind.
+  // Capture it so alt models (whose Head bone can be bound at a very different
+  // angle) can retarget the head and not stare straight up — see ch.headFix.
+  BASE_HEAD_REST = headRestOf(charTemplate);
   if (defTemplate) {
     const dr = measureBoneSpan(defTemplate);
     DEF_SCALE = 1.8 / dr.span;
@@ -1517,6 +1535,18 @@ function makeCharacter(team) {
   const leftArmRest = leftArm ? leftArm.quaternion.clone() : null;
   const leftForeArmRest = leftForeArm ? leftForeArm.quaternion.clone() : null;
   const spineRest = spineBone ? spineBone.quaternion.clone() : null;
+  // Head retarget: alt models bind the Head bone at a different angle than the
+  // shared clips assume, so without this their heads pitch to the sky. headFix maps
+  // the base-rig head pose onto THIS model's rest (applied after each mixer update).
+  // ~identity (left null) for the default/defense rigs, which share the base bind.
+  let headFix = null;
+  if (headBone && BASE_HEAD_REST) {
+    // K = baseRest^-1 * altRest, POST-multiplied onto each clip pose so the head
+    // deforms like the base rig the clips were authored for (skin is relative to
+    // THIS model's inverse bind). headBone.quaternion here is still the bind rest.
+    const c = BASE_HEAD_REST.clone().invert().multiply(headBone.quaternion);
+    if (Math.abs(c.w) < 0.99995) headFix = c; // only when this model's bind differs (> ~0.6 deg)
+  }
   const mixer = new THREE.AnimationMixer(model);
   const mk = (clip) => {
     const a = mixer.clipAction(clip);
@@ -1606,7 +1636,7 @@ function makeCharacter(team) {
     upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet, bones: restPose.map((e) => e[0]), // bone list for replay capture
+    headBone, headEnd, helmet, headFix, bones: restPose.map((e) => e[0]), // bone list for replay capture
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -2332,7 +2362,7 @@ function setupBench(ch, lane, i) {
 function updateBench(dt) {
   if (!game.bench) return;
   for (const ch of game.bench) {
-    if (ch.oneShotT > 0) { ch.oneShotT -= dt; ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0; continue; }
+    if (ch.oneShotT > 0) { ch.oneShotT -= dt; ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0; continue; }
     const p = ch.group.position; let moving = false;
     ch.emoteCd -= dt;
     if (ch.benchWait > 0) { ch.benchWait -= dt; ch.heading = ch.faceField; }
@@ -2352,7 +2382,7 @@ function updateBench(dt) {
       ch.emoteCd = 7 + Math.random() * 9; ch.heading = ch.faceField;
     }
     setClip(ch, moving ? 'walk' : 'idle');
-    ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0;
+    ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0;
   }
 }
 // Both benches erupt (e.g. on a touchdown).
@@ -6239,6 +6269,13 @@ function applyLocoLife(ch, dt, spin) {
 // Head-on-a-swivel: ease the head bone to look toward a world target (the nearest
 // receiver / the ball) within a natural range, so a backpedaling DB tracks his man
 // instead of staring straight back. Yaw about the head's local up axis.
+// Advance a character's animation, then retarget its head onto this model's bind
+// (no-op for the default/defense rigs). Every live mixer.update goes through here
+// so alt-model heads stay level no matter which pose branch ran.
+function stepMixer(ch, dt) {
+  ch.mixer.update(dt);
+  if (ch.headFix && ch.headBone) ch.headBone.quaternion.multiply(ch.headFix);
+}
 function applyHeadTrack(ch, targetPos, w, dt) {
   w *= TUNE.animHead;
   if (!ch.headBone) return;
@@ -6493,8 +6530,8 @@ function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   // End-of-game finale: winners loop a real dance, losers loop an anger/tantrum
   // clip. (Falls through to idle + the procedural sulk pose if the clips are missing.)
-  if (ch.dancing && ch.actions.dance) { setClip(ch, 'dance'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
-  if (ch.sulk && ch.actions.sulk) { setClip(ch, 'sulk'); ch.group.rotation.set(0, ch.heading, 0); ch.mixer.update(dt); groundClamp(ch); return; }
+  if (ch.dancing && ch.actions.dance) { setClip(ch, 'dance'); ch.group.rotation.set(0, ch.heading, 0); stepMixer(ch, dt); groundClamp(ch); return; }
+  if (ch.sulk && ch.actions.sulk) { setClip(ch, 'sulk'); ch.group.rotation.set(0, ch.heading, 0); stepMixer(ch, dt); groundClamp(ch); return; }
   const inBattle = game.state === STATE.BATTLE && (ch === game.carrier || ch === game.battle.tackler);
   // The break-tackle (1-on-1) DEFENDER drives in with the push clip; the carrier
   // keeps the procedural brace/wrap. (Falls back to the run+battle pose if no pack.)
@@ -6502,7 +6539,7 @@ function updateAnimation(ch, dt) {
   if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
-    ch.mixer.update(dt);
+    stepMixer(ch, dt);
     // Anticipatory CATCH leap: overlay the ball-tracking reach ON TOP of the leap
     // clip so the hands actually meet the ball (the clip sells the jump/extension,
     // the overlay locks the arms to the ball) while it's still in the air / homing.
@@ -6555,7 +6592,7 @@ function updateAnimation(ch, dt) {
   // blend on top of this with their own eased weights.
   const spin = (!inBattle && !grabbing && ch.spinT > 0) ? (1 - ch.spinT / SPIN_DUR) * Math.PI * 2 : 0;
   applyLocoLife(ch, dt, spin);
-  ch.mixer.update(dt);
+  stepMixer(ch, dt);
   // Procedural overlays blend in/out via per-character weights, so a pose fades
   // smoothly over the locomotion clip instead of snapping on/off in one frame.
   // Pick the single active overlay (priority order); its weight eases toward 1
@@ -7515,7 +7552,7 @@ const _labMid = new THREE.Vector3();
 function labPose(ch, want, dt) {
   setClip(ch, ch.actions[want] ? want : 'run');
   ch.group.rotation.set(0, ch.heading, 0);
-  ch.mixer.update(dt);
+  stepMixer(ch, dt);
 }
 const LAB_CONTACTS = [
   { name: 'BREAK-TACKLE BATTLE', keys: ['gapBattle', 'latBattle'],

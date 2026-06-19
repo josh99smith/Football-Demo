@@ -119,7 +119,22 @@ export class AudioManager {
         this.startAmbience();
       } catch (e) { /* no audio — game still runs */ }
     }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (this.ctx && this.ctx.state === 'suspended' && !this._hidden) this.ctx.resume();
+  }
+
+  // Pause/resume ALL audio when the page is backgrounded. Mobile keeps the
+  // AudioContext running when you switch apps, so without this the music bed
+  // (and any cue) keeps playing under another app. Driven by visibilitychange.
+  setHidden(hidden) {
+    this._hidden = hidden;
+    try {
+      if (hidden) {
+        if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
+        if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
+      } else if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume();
+      }
+    } catch (e) { /* audio may be unavailable — ignore */ }
   }
 
   get t() { return this.ctx.currentTime; }
