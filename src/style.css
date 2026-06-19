@@ -283,6 +283,36 @@ html, body {
 .action-btn.active { transform: scale(0.92); filter: brightness(1.15); }
 .action-btn.hidden { display: none; }
 
+/* ---------- Catch-style chooser (shown only during a user pass in flight) ------ */
+.catch-row {
+  position: fixed;
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(170px, calc(env(safe-area-inset-bottom) + 112px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  z-index: 21;
+}
+.catch-row.hidden { display: none; }
+.catch-btn {
+  padding: 11px 16px;
+  border-radius: 22px;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.52);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  min-width: 116px;
+  text-align: center;
+  touch-action: none;
+  transition: transform 0.08s, box-shadow 0.12s;
+}
+.catch-btn.hot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 14px rgba(255, 210, 60, 0.55); }
+.catch-btn.armed { background: var(--accent); color: #1b2a1f; border-color: #fff; }
+.catch-btn.active { transform: scale(0.94); }
+
 .mini-btn {
   position: fixed;
   right: max(150px, calc(env(safe-area-inset-right) + 150px));
@@ -630,6 +660,7 @@ body.replay-mode #playresult,
 body.replay-mode #joystick,
 body.replay-mode .action-btn,
 body.replay-mode .mini-btn,
+body.replay-mode .catch-row,
 body.replay-mode #fs-btn,
 body.replay-mode #build-badge { display: none !important; }
 /* Black fade overlay for the cuts between camera angles (opacity driven by JS).
@@ -1205,7 +1236,7 @@ body.replay-mode .replay-btn { display: none !important; }
 
 /* ---------- Contact Lab (two-player contact-pose / spacing editor) ---------- */
 body.lab-mode #hud, body.lab-mode #joystick, body.lab-mode .action-btn,
-body.lab-mode .mini-btn, body.lab-mode #simbar, body.lab-mode #fs-btn,
+body.lab-mode .mini-btn, body.lab-mode .catch-row, body.lab-mode #simbar, body.lab-mode #fs-btn,
 body.lab-mode #coach-btn, body.lab-mode #userstats, body.lab-mode #replay-btn,
 body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel {

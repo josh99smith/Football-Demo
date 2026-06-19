@@ -1731,6 +1731,9 @@ const TUNE_DEFAULTS = {
   catchWindow: 1.4,      // 3D gap (yd) at which the user-catch timing window opens as the ball drops in
   userCatchBonus: 0.18,  // max catch-odds bonus added for a well-timed user catch
   racBoost: 1.18,        // × baseSpeed burst out of a RAC (catch-in-stride) reception (YAC)
+  possCatch: 0.12,       // POSSESSION style: flat catch-odds bonus (secure, lowest drop), no YAC
+  aggContest: 0.16,      // AGGRESSIVE style: bonus to CONTESTED catches (high-point win)
+  aggSecurity: 0.10,     // AGGRESSIVE style: penalty to UNCONTESTED catches (riskier hands)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -3060,7 +3063,7 @@ function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null };
 
 // Floating joystick: it spawns under your thumb wherever you first touch the LEFT
 // half of the screen (so you never have to find a fixed pad), and tracks from
@@ -3212,6 +3215,18 @@ function updateUserStatsHUD() {
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
+  // Catch-style buttons (shown only during a user pass in flight): tap to make the
+  // grab in that style. Edge press → input.catchEdge, consumed in updateUserCatch.
+  const cpress = (el, style) => {
+    if (!el) return;
+    const go = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); input.catchEdge = style; };
+    const up = (e) => { if (e) e.preventDefault(); el.classList.remove('active'); };
+    el.addEventListener('touchstart', go, { passive: false }); el.addEventListener('touchend', up, { passive: false }); el.addEventListener('touchcancel', up);
+    el.addEventListener('mousedown', go); window.addEventListener('mouseup', up);
+  };
+  cpress(document.getElementById('catch-rac'), 'rac');
+  cpress(document.getElementById('catch-poss'), 'poss');
+  cpress(document.getElementById('catch-agg'), 'agg');
   // Skip / sim controls (tap fires on press; trigger once).
   const tap = (el, fn) => {
     if (!el) return;
@@ -3394,9 +3409,9 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
-    if (e.code === 'Space') input.actionEdge = true;
-    if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
-    if (e.code === 'KeyE') input.diveEdge = true;   // stiff arm
+    if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
+    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
+    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
@@ -3620,6 +3635,16 @@ function setAction(label, hot = false) {
   if (actionLabel) actionLabel.textContent = label; else actionBtn.textContent = label;
   actionBtn.classList.toggle('hot', hot);
 }
+// Catch-style chooser (Phase 1): three buttons shown while a user pass is in flight.
+// They light HOT when the ball is catchable and highlight the style you armed.
+const catchRowEl = document.getElementById('catch-row');
+const catchBtns = { rac: document.getElementById('catch-rac'), poss: document.getElementById('catch-poss'), agg: document.getElementById('catch-agg') };
+function showCatchRow(hot, armedStyle) {
+  if (!catchRowEl) return;
+  catchRowEl.classList.remove('hidden');
+  for (const k in catchBtns) { const b = catchBtns[k]; if (!b) continue; b.classList.toggle('hot', hot); b.classList.toggle('armed', armedStyle === k); }
+}
+function hideCatchRow() { if (catchRowEl) catchRowEl.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
@@ -4596,8 +4621,9 @@ function throwBall(power) {
   ball.mode = 'flying';
   // Arm the user catch on your own pass (the human makes the play on his receiver).
   game.userCatch = (TUNE.userCatch && game.userOnOffense && recv && !recv.cpu)
-    ? { on: true, open: false, armed: false, buffered: false, score: 0, recv }
+    ? { on: true, open: false, armed: false, buffered: null, style: 'rac', score: 0, recv }
     : { on: false };
+  if (!game.userCatch.on) hideCatchRow();
   if (game.play) { game.play.passer = game.qb; game.play.target = recv; game.play.viaPass = true; } // box score: the throw
   game.state = STATE.AIR; selRing.visible = false;
   // Procedural throwing motion, varied by the throw: face the target and let
@@ -5367,7 +5393,7 @@ function updateBall(dt) {
         if (Math.hypot(c.vel.x, c.vel.z) < 2) { const fwd = game.dir > 0 ? 0 : Math.PI, sp = c.baseSpeed * 0.5; c.vel.set(Math.sin(fwd) * sp, 0, Math.cos(fwd) * sp); }
       }
       if (ball.intercept) {
-        if (game.userCatch) game.userCatch.on = false; // clear the user-catch cue on a pick
+        if (game.userCatch) game.userCatch.on = false; hideCatchRow(); // clear the user-catch cue on a pick
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
         if (game.tally) game.tally.picks++;
@@ -5375,10 +5401,12 @@ function updateBall(dt) {
       } else {
         ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; }
         if (game.userOnOffense) creditUserStat('catches', 'CATCH');
-        // RAC (Phase 1): a user catch-in-stride bursts downfield instead of dead-stopping.
+        // RAC (Phase 1): a catch-in-stride bursts downfield instead of dead-stopping
+        // (possession/aggressive intentionally kill momentum — they planted/secured).
         const uc = game.userCatch;
-        if (uc && uc.on && uc.armed && c === uc.recv) { const h = c.heading, sp = c.baseSpeed * TUNE.racBoost; c.vel.set(Math.sin(h) * sp, 0, Math.cos(h) * sp); c.speed = sp; }
+        if (uc && uc.on && uc.armed && uc.style === 'rac' && c === uc.recv) { const h = c.heading, sp = c.baseSpeed * TUNE.racBoost; c.vel.set(Math.sin(h) * sp, 0, Math.cos(h) * sp); c.speed = sp; }
         if (uc) uc.on = false;
+        hideCatchRow();
         enterRun(c, 'Caught it! Run!');
       }
     }
@@ -5428,7 +5456,7 @@ function passBrokenUp(msg, color, swatter, swatType) {
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
   if (game.userCatch) game.userCatch.on = false; // clear the user-catch cue on an incompletion
-  selRing.visible = false; selRing.scale.set(1, 1, 1);
+  selRing.visible = false; selRing.scale.set(1, 1, 1); hideCatchRow();
   endPlay('incomplete', game.los); // endPlay blows the whistle
 }
 
@@ -5455,30 +5483,30 @@ function catchGap(ch, ballPos, intended) {
   const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
   return Math.hypot(dH, dV);
 }
-// Phase 1 (RAC) + Phase 2 cue: while a pass is in the air to the USER's receiver,
-// a timing window opens as the ball drops into reach. Pressing the action button
-// ("CATCH" / Space) in the window arms a catch-in-stride — it overrides the auto
-// style in commitCatchReach (keep momentum, no plant), layers a timing bonus onto
-// tryReception, and bursts downfield out of the secure (YAC). CPU receivers and the
-// user's non-targeted WRs are untouched (they auto-resolve exactly as before).
-function updateUserCatch(actionEdge) {
+// Phase 1 (3 catch styles) + Phase 2 cue: while a pass is in the air to the USER's
+// receiver, a timing window opens as the ball drops into reach. Choose how to attack
+// it — RAC (catch in stride, keep momentum, biggest YAC) / POSSESSION (secure,
+// safest, no YAC) / AGGRESSIVE (high-point leap, wins contests, riskier). The armed
+// style overrides commitCatchReach and layers modifiers onto tryReception; CPU
+// receivers and your non-targeted WRs are untouched (they auto-resolve as before).
+function updateUserCatch(catchEdge) {
   const uc = game.userCatch; if (!uc || !uc.on) return;
   const recv = uc.recv;
-  if (!recv || recv.ragdolling || ball.mode !== 'flying') { selRing.visible = false; return; }
+  if (!recv || recv.ragdolling || ball.mode !== 'flying') { selRing.visible = false; hideCatchRow(); return; }
   const p = ball.mesh.position;
   const gap = catchGap(recv, p, true);
   const descending = ball.vy < 0;
   const open = descending && gap < TUNE.catchWindow; // catchable now
-  if (actionEdge) { // press: arm RAC; timing credit scales with how close the ball is
-    uc.armed = true;
+  if (catchEdge) { // press: arm a style; timing credit scales with how close the ball is
+    uc.armed = true; uc.style = catchEdge;
     const q = 1 - THREE.MathUtils.clamp((gap - TUNE.catchGrab) / Math.max(0.1, TUNE.catchWindow - TUNE.catchGrab), 0, 1);
     uc.score = Math.max(uc.score, descending ? q : 0);
-    if (!descending) uc.buffered = true; // tapped early -> honor it the instant the window opens
+    if (!descending) uc.buffered = uc.style; // tapped early -> honor it the instant the window opens
   }
-  if (open && uc.buffered) { uc.armed = true; uc.score = Math.max(uc.score, 0.6); uc.buffered = false; }
+  if (open && uc.buffered) { uc.armed = true; uc.style = uc.buffered; uc.score = Math.max(uc.score, 0.6); uc.buffered = null; }
   uc.open = open;
-  // Cue: light the CATCH button hot + pulse the receiver's ring when catchable.
-  setAction('CATCH', open || uc.armed);
+  // Cue: light the style buttons hot + pulse the receiver's ring when catchable.
+  showCatchRow(open, uc.armed ? uc.style : null);
   if (open || uc.armed) {
     selRing.visible = true;
     selRing.position.set(recv.group.position.x, 0.03, recv.group.position.z);
@@ -5507,12 +5535,18 @@ function commitCatchReach(ch, ballPos) {
   const low = ballPos.y < g.y + 0.95;            // around the knees/shins
   const running = ch.speed > 4.5;
   ch.catchPlant = false;
-  // RAC (Phase 1): a user-armed catch-in-stride forces the procedural reach (keep
-  // momentum, no planted leap/scoop) — smallest reach, biggest YAC.
-  const racStride = game.userCatch && game.userCatch.on && game.userCatch.armed && ch === game.userCatch.recv;
-  if (!racStride && (high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+  // Phase 1 style override on the user's targeted receiver: RAC/POSSESSION catch in
+  // stride (procedural reach, no planted leap — keep momentum); AGGRESSIVE forces the
+  // high-point leap (max vertical reach) even on a catchable ball.
+  const uc = game.userCatch;
+  const armed = (uc && uc.on && uc.armed && ch === uc.recv) ? uc.style : null;
+  const inStride = armed === 'rac' || armed === 'poss';
+  const forceLeap = armed === 'agg';
+  if (forceLeap && ch.actions.divecatch && ch.oneShotT <= 0) {
     playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
-  } else if (!racStride && low && running && ch.actions.scoop && ch.oneShotT <= 0) {
+  } else if (!inStride && (high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+    playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
+  } else if (!inStride && low && running && ch.actions.scoop && ch.oneShotT <= 0) {
     playOneShot(ch, 'scoop', 0.55, true); ch.catchLeap = true; ch.catchStyle = 'scoop'; // low pickup on the run — no plant
   } else {
     ch.catchStyle = (running && ballPos.y > g.y + 1.45) ? 'overshoulder' : 'standing';
@@ -5551,10 +5585,17 @@ function tryReception() {
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
   const rxReach = vReach(bestR); // vertical reach (standing + leap)
   const cpuAdj = bestR.cpu ? diff().cpuCatch : 0; // difficulty: nudge CPU catch odds
-  // User catch (Phase 1): a well-timed press on YOUR receiver layers a bonus on top
-  // of the AI odds. No press = baseline (nothing regresses); CPU receivers = 0.
-  const userBonus = (game.userCatch && game.userCatch.on && game.userCatch.armed && bestR === game.userCatch.recv)
-    ? game.userCatch.score * TUNE.userCatchBonus : 0;
+  // User catch (Phase 1): a well-timed press on YOUR receiver layers a style-based
+  // bonus on top of the AI odds. No press = baseline (nothing regresses); CPU = 0.
+  //   userBonus  — added to both clean and contested catch odds
+  //   userContest— added to CONTESTED odds only (aggressive high-point edge)
+  let userBonus = 0, userContest = 0;
+  const _uc = game.userCatch;
+  if (_uc && _uc.on && _uc.armed && bestR === _uc.recv) {
+    userBonus = _uc.score * TUNE.userCatchBonus;
+    if (_uc.style === 'poss') userBonus += TUNE.possCatch;                        // secure: flat catch bonus, lowest drop
+    else if (_uc.style === 'agg') { userContest = TUNE.aggContest; userBonus -= TUNE.aggSecurity; } // wins contests, riskier on easy balls
+  }
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
     let base = 0.84 + rxSkill * 0.14 + cpuAdj + userBonus;
@@ -5576,7 +5617,7 @@ function tryReception() {
   pCatch += high * THREE.MathUtils.clamp(rxReach - dbReachV, -1.5, 1.5) * 0.35 * TUNE.jumpReach;
   if (ballY > rxReach) pCatch -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // over the receiver's reach
   if (game.onFire) pCatch += 0.12;
-  pCatch += TUNE.catchBias + userBonus; // global completion-odds nudge + user-catch timing bonus
+  pCatch += TUNE.catchBias + userBonus + userContest; // global nudge + user-catch timing/style bonus (+ aggressive contest edge)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
 
@@ -6968,6 +7009,7 @@ const turboFillEl = document.getElementById('turbo-fill');
 // ===========================================================================
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
+  const catchEdge = input.catchEdge; input.catchEdge = null; // user-catch style press (rac/poss/agg)
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
@@ -7004,7 +7046,7 @@ function updatePlay(dt) {
     // On defense, the action button switches you to the defender nearest the ball.
     if (actionEdge && !game.userOnOffense && (game.state === STATE.LIVE || game.state === STATE.AIR)) switchDefender();
     // On your own pass in flight, the action button is the CATCH (Phase 1 RAC).
-    else if (game.userOnOffense && game.state === STATE.AIR && game.userCatch && game.userCatch.on) updateUserCatch(actionEdge);
+    else if (game.userOnOffense && game.state === STATE.AIR && game.userCatch && game.userCatch.on) updateUserCatch(catchEdge);
   }
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
@@ -7571,6 +7613,9 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'catchWindow', label: 'Catch window (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'userCatchBonus', label: 'User catch bonus', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'racBoost', label: 'RAC burst ×', min: 1, max: 1.6, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'possCatch', label: 'Possession bonus', min: 0, max: 0.4, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'aggContest', label: 'Aggressive contest+', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'aggSecurity', label: 'Aggressive risk−', min: 0, max: 0.4, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
@@ -8224,6 +8269,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
