@@ -1234,6 +1234,7 @@ const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, 
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
 let charAltTemplate = null; // optional alternate player-team model (Contact-rig compatible), toggled by TUNE.altModel
+let helmetAltTemplate = null; // optional helmet for the alternate model (assets/helmet_alt.glb); none until provided
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let backLClip, backRClip; // backpedal locomotion (left/right drift)
 // Variety + new-move clips from the merged Meshy packs (animations2/3.glb).
@@ -1279,6 +1280,10 @@ async function loadAssets() {
   // Team helmets (static meshes attached to each head).
   try { helmetOffTemplate = (await loadGLB('assets/helmet_off.glb')).scene; } catch (e) { console.warn('off helmet missing', e); }
   try { helmetDefTemplate = (await loadGLB('assets/helmet_def.glb')).scene; } catch (e) { console.warn('def helmet missing', e); }
+  // Per-model helmet for the alternate character (drop in assets/helmet_alt.glb). The
+  // original helmet is fit to the original head, so the alt model goes bare-headed
+  // until its own helmet is provided.
+  try { helmetAltTemplate = (await loadGLB('assets/helmet_alt.glb')).scene; } catch (e) { /* none yet — alt model is bare-headed */ }
   try { footballTemplate = (await loadGLB('assets/football.glb')).scene; } catch (e) { console.warn('football model missing', e); }
   // Imported stadium props (corner light towers + perimeter graffiti walls).
   try { towerTemplate = (await loadGLB('assets/lighttower.glb')).scene; } catch (e) { console.warn('light tower missing', e); }
@@ -1551,9 +1556,10 @@ function makeCharacter(team) {
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
   // Local transform compensates for the bone's tiny world scale.
   let helmet = null;
-  // Both teams wear the red helmet head model (helmetOffTemplate); the blue
-  // helmet is kept only as a fallback if the red one fails to load.
-  const helmetScene = helmetOffTemplate || helmetDefTemplate;
+  // The original models wear the original helmet (helmetOffTemplate; blue is a
+  // fallback). The alternate model gets its OWN helmet (helmetAltTemplate) — and
+  // none until that's provided, since the original helmet doesn't fit it.
+  const helmetScene = useAlt ? helmetAltTemplate : (helmetOffTemplate || helmetDefTemplate);
   if (headBone) headBone.scale.setScalar(HEAD_SCALE); // Blitz-style big head (both teams)
   if (helmetScene && headBone && headEnd) {
     model.updateWorldMatrix(true, true);
