@@ -5869,7 +5869,7 @@ function startFumble(carrier, hitX, hitZ) {
   setFumbleGlow(true);
   game.controlled = nearestTeamToBall(game.teamA); // scramble with your team
   ctrlRing.visible = true; selRing.visible = false;
-  showBanner('FUMBLE!!!', '#ff3a2a'); audio.bigHit(); audio.groan();
+  showBanner('FUMBLE!!!', '#ff3a2a'); audio.bigHit(); audio.groan(); audio.say('fumble', { force: true, swell: 0.6 });
   shake.add(0.6); timeScale.bulletTime(0.2, 0.4, 0.8); hitZoom(1.0);
   burst(cp.x, 1.1, cp.z, 0xffd23a, 20, 9);
   setStatus('FUMBLE — recover it!'); updateButtons();
