@@ -7533,25 +7533,53 @@ window.addEventListener('resize', () => {
 
 // ---- Start menu: the matchup + both rosters, gates the kickoff ----------------
 const startMenuEl = document.getElementById('startmenu');
-function rosterCardHTML(side) {
+// One team's side of the VS screen: big italic name, team OVR, top-3 stars, a giant
+// faded logo watermark. side = 'home' | 'away'.
+function teamSideHTML(side) {
   const t = TEAMS[side];
-  let rows = '';
-  for (const p of t.players) rows += `<div class="sm-row"><b class="sm-pos">${p.pos}</b><span class="sm-pname">${p.name}</span><i class="sm-ovr">${ovr(p.r)}</i></div>`;
-  const badge = t.logo ? `<img class="sm-badge" src="${t.logo}" alt="" />` : `<div class="sm-badge sm-badgefill" style="background:${t.color}"></div>`;
-  return `<div class="sm-team" style="--tc:${t.color}">
-    <div class="sm-thead">${badge}<div class="sm-tname">${t.name}</div><div class="sm-tsub">${side === 'home' ? 'HOME' : 'AWAY'}</div></div>
-    <div class="sm-roster">${rows}</div></div>`;
+  const ranked = [...t.players].sort((a, b) => ovr(b.r) - ovr(a.r));
+  const tovr = Math.round(t.players.reduce((s, p) => s + ovr(p.r), 0) / t.players.length);
+  const stars = ranked.slice(0, 3).map((p) =>
+    `<li><b>${p.pos}</b><span>${p.name}</span><i>${ovr(p.r)}</i></li>`).join('');
+  const logo = t.logo ? `<img class="sm-logo" src="${t.logo}" alt="" />` : '';
+  return `<div class="sm-side sm-${side}" style="--tc:${t.color}">
+    ${logo}
+    <div class="sm-sideinner">
+      <div class="sm-tag">${side === 'home' ? '◤ HOME' : 'AWAY ◢'}</div>
+      <div class="sm-tname">${t.name}</div>
+      <div class="sm-ovr"><span>OVR</span><b>${tovr}</b></div>
+      <ul class="sm-stars">${stars}</ul>
+    </div>
+  </div>`;
 }
 function buildStartMenu() {
   if (!startMenuEl) return;
+  startMenuEl.style.setProperty('--home', TEAMS.home.color);
+  startMenuEl.style.setProperty('--away', TEAMS.away.color);
   const diffBtns = ['rookie', 'pro', 'allpro'].map((k) =>
     `<button class="sm-diff${game.diff === k ? ' on' : ''}" data-diff="${k}">${DIFF[k].label}</button>`).join('');
   startMenuEl.innerHTML = `
-    <div class="sm-title">REAPERS FOOTBALL</div>
-    <div class="sm-matchup">${rosterCardHTML('home')}<span class="sm-vs">VS</span>${rosterCardHTML('away')}</div>
-    <div class="sm-difflabel">DIFFICULTY</div>
-    <div class="sm-diffs">${diffBtns}</div>
-    <button id="sm-start" class="sm-start">START&nbsp;GAME&nbsp;▸</button>`;
+    <div class="sm-bg"></div>
+    <div class="sm-seam"></div>
+    <div class="sm-grit"></div>
+    <div class="sm-content">
+      <div class="sm-head">
+        <div class="sm-kicker">▰&nbsp; 7-ON-7 ARCADE FOOTBALL &nbsp;▰</div>
+        <h1 class="sm-title">REAPERS <span>FOOTBALL</span></h1>
+      </div>
+      <div class="sm-versus">
+        ${teamSideHTML('home')}
+        <div class="sm-vsbadge"><span>VS</span></div>
+        ${teamSideHTML('away')}
+      </div>
+      <div class="sm-foot">
+        <div class="sm-diffwrap">
+          <div class="sm-difflabel">DIFFICULTY</div>
+          <div class="sm-diffs">${diffBtns}</div>
+        </div>
+        <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+      </div>
+    </div>`;
   startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
     game.diff = el.dataset.diff;
     startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b === el));
