@@ -2362,6 +2362,56 @@ function benchReact() {
     playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
   }
 }
+// Pre-game show: a chorus line of dancers at midfield (the 50). They use the
+// player model and the looping dance clips (each picks its own, for variety) — pure
+// cosmetics (NOT in game.all). At the first snap they jog off to the nearest
+// sideline so they never stand in live play (see updateCheer).
+const CHEER_N = 8;
+function spawnCheer() {
+  game.cheer = []; game.cheerCleared = false;
+  const span = 22; // width of the line across midfield
+  for (let i = 0; i < CHEER_N; i++) {
+    const ch = makeCharacter('off');
+    const x = CHEER_N > 1 ? (i - (CHEER_N - 1) / 2) * (span / (CHEER_N - 1)) : 0;
+    ch.isCheer = true; ch.cheerState = 'perform';
+    ch.cheerSide = x >= 0 ? 1 : -1; // which sideline to clear to
+    ch.group.position.set(x, 0, 0); // midfield (the 50-yard line)
+    ch.heading = Math.PI;           // face the near sideline / camera
+    ch.group.rotation.set(0, ch.heading, 0);
+    setClip(ch, 'dance');
+    if (ch.active) { ch.active.time = Math.random() * (ch.active.getClip().duration || 1); ch.active.timeScale = 0.9 + Math.random() * 0.3; } // desync the routine
+    game.cheer.push(ch);
+  }
+}
+function updateCheer(dt) {
+  if (!game.cheer || !game.cheer.length) return;
+  // First snap of the game: send the dancers off to their nearest sideline.
+  if (!game.cheerCleared) {
+    const s = game.state;
+    if (s && s !== STATE.PRESNAP && s !== STATE.RESET && s !== STATE.REPLAY) {
+      game.cheerCleared = true;
+      for (const ch of game.cheer) ch.cheerState = 'exit';
+    }
+  }
+  for (const ch of game.cheer) {
+    const p = ch.group.position;
+    if (ch.cheerState === 'exit') {                       // jog off to the sideline
+      const tx = ch.cheerSide * (HALF_W + 3.5), dx = tx - p.x;
+      if (Math.abs(dx) > 0.4) {
+        p.x += Math.sign(dx) * Math.min(Math.abs(dx), 8 * dt);
+        ch.heading = ch.cheerSide > 0 ? Math.PI / 2 : -Math.PI / 2; // face the way out
+        setClip(ch, 'run');
+      } else {                                            // arrived: turn back in and keep dancing
+        ch.cheerState = 'sideline';
+        ch.heading = ch.cheerSide > 0 ? -Math.PI / 2 : Math.PI / 2; // face the field
+        setClip(ch, 'dance');
+      }
+    } else {
+      setClip(ch, 'dance');
+    }
+    ch.group.rotation.y = ch.heading; ch.mixer.update(dt); ch.group.position.y = 0;
+  }
+}
 // Assign offense (ball) / defense (cover) roles based on who has the ball,
 // using the Blitz personnel formations. game.receivers = eligibles in `elig`
 // order (WR L / slot / R, then RB).
@@ -7711,6 +7761,7 @@ function simStep(realDt) {
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateFenceBlood(realDt); // blood runs down the fence (real-time, ignores slow-mo)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
+  updateCheer(realDt);     // pre-game dancers at midfield, then on the sidelines (real-time)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
   updateCageGates(realDt); // cage gates swing open between plays
@@ -7833,7 +7884,7 @@ loadAssets().then(async () => {
   // teams come up wearing it (otherwise the default loads instantly and it'd swap in late).
   const savedIdx = THREE.MathUtils.clamp(TUNE.altModel | 0, 0, Math.max(0, PLAYER_MODELS.length - 1));
   if (savedIdx > 0) { try { await ensurePlayerModel(savedIdx); } catch (e) { /* fall back to default */ } }
-  spawnTeams(); spawnBench(); makeBall();
+  spawnTeams(); spawnBench(); spawnCheer(); makeBall();
   _appliedModelIdx = savedIdx; // initial spawn honored the saved index
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
