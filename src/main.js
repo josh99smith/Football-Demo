@@ -2568,10 +2568,11 @@ function updateOffense(dt) {
 // Integration
 // ===========================================================================
 function applySteer(ch, dt) {
-  // Committed to a catch leap/dive: stop chasing the route and plant — let the
-  // existing velocity damp out so he carries his stride INTO the jump, then holds
-  // at the catch point while the ball homes in (instead of sliding past it).
-  if (ch.catchLeap && ch.oneShotT > 0) ch.desired = { x: 0, z: 0 };
+  // Committed to a planted catch (an aerial leap/dive): stop chasing the route and
+  // plant — let velocity damp so he carries his stride INTO the jump, then holds at
+  // the catch point. In-stride styles (scoop / standing / over-the-shoulder) are NOT
+  // planted, so they keep their momentum and the catch flows straight into the run.
+  if (ch.catchPlant && ch.oneShotT > 0) ch.desired = { x: 0, z: 0 };
   const dx = ch.desired.x, dz = ch.desired.z, len = Math.hypot(dx, dz);
   let speed = (ch.turbo ? ch.baseSpeed * TUNE.turboMult : ch.baseSpeed) * fatigueSpeed(ch);
   if (ch.cpu) speed *= diff().cpuSpd; // difficulty: scale the CPU team's pace
@@ -3698,7 +3699,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -4834,7 +4835,13 @@ function updateBall(dt) {
     ball.mesh.rotation.set(0, c ? c.heading : 0, 0.35); // settle into a tuck
     if (ball.secureT <= 0) {
       p.set(tx, ty, tz);
-      if (c) { c.oneShotT = 0; c.catchLeap = false; } // end the leap clip; transition to the run/return
+      if (c) {
+        c.oneShotT = 0; c.catchLeap = false; c.catchPlant = false; // end the leap clip; transition to the run/return
+        // Flow into the run: a planted leap/dive lands nearly stopped, so give him a
+        // downfield push so he doesn't dead-stop; an in-stride catch keeps its own
+        // momentum untouched.
+        if (Math.hypot(c.vel.x, c.vel.z) < 2) { const fwd = game.dir > 0 ? 0 : Math.PI, sp = c.baseSpeed * 0.5; c.vel.set(Math.sin(fwd) * sp, 0, Math.cos(fwd) * sp); }
+      }
       if (ball.intercept) {
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
@@ -4868,7 +4875,7 @@ function startSecure(player, isInt) {
     if (!player.catchLeap) {
       const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
       const high = p.y > player.group.position.y + 1.9;
-      if (player.actions.divecatch && (reach > 1.9 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; }
+      if (player.actions.divecatch && (reach > 1.9 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; player.catchPlant = true; }
     }
   }
 }
@@ -4884,7 +4891,7 @@ function passBrokenUp(msg, color, swatter, swatType) {
   const p = ball.mesh.position;
   // Procedural reaction on the player who made the play on the ball: a defender
   // bats it down (swat), a receiver lunges and can't hang on (reach).
-  if (swatter) { swatter.catchLeap = false; swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
+  if (swatter) { swatter.catchLeap = false; swatter.catchPlant = false; swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
   endPlay('incomplete', game.los); // endPlay blows the whistle
@@ -4913,22 +4920,34 @@ function catchGap(ch, ballPos, intended) {
   const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
   return Math.hypot(dH, dV);
 }
-// Anticipatory catch reach (Phase 3): as the ball drops toward a player, commit
-// the catch ANIMATION BEFORE the grab resolves so the body is already up/extended
-// when the ball arrives (instead of leaping AFTER the catch). A genuine high or
-// far ball whose arrival is imminent fires the leap/dive clip once and tracks the
-// ball with the arm overlay (see updateAnimation's catchLeap path); routine
-// chest-height balls just use the procedural two-hand reach.
+// Anticipatory catch reach (Phase 3) + catch-style selection (Phase 4): as the
+// ball drops toward a player, commit the catch ANIMATION BEFORE the grab resolves
+// so the body is already up/extended/scooping when the ball arrives (instead of
+// reacting after). The STYLE is read from the geometry:
+//   leap   — high or far ball: jump/extend (divecatch clip), planted (jumps in place)
+//   scoop  — low ball on the run: a low running pickup (scoop clip), IN STRIDE
+//   overshoulder / standing — procedural two-hand reach, IN STRIDE (keeps running)
+// catchLeap = a catch clip is playing and the arm overlay should track the ball.
+// catchPlant = freeze his steering (only the aerial leap jumps in place); in-stride
+// styles keep their route momentum so the catch flows into the run.
 function commitCatchReach(ch, ballPos) {
+  if (ch.catchLeap) return; // already committed this play
+  const imminent = catchGap(ch, ballPos, ch === ball.targetRecv) < 1.4; // arrival is close
+  if (!imminent) { if (ch.armPoseT <= 0.12) triggerArmAction(ch, 'reach', 0.5, ballPos); return; }
   const g = ch.group.position;
-  const high = ballPos.y > g.y + 1.9;                                   // must go up for it
-  const far = Math.hypot(ballPos.x - g.x, ballPos.z - g.z) > 1.7;       // full extension/dive
-  const imminent = catchGap(ch, ballPos, ch === ball.targetRecv) < 1.4;  // arrival is close (~within a leap)
-  if (imminent && (high || far) && ch.actions.divecatch && !ch.catchLeap && ch.oneShotT <= 0) {
-    playOneShot(ch, 'divecatch', 0.7, true); // leap/extend now; secures mid-clip
-    ch.catchLeap = true;
-  } else if (!ch.catchLeap) {
-    triggerArmAction(ch, 'reach', 0.5, ballPos); // standing two-hand reach
+  const horiz = Math.hypot(ballPos.x - g.x, ballPos.z - g.z);
+  const high = ballPos.y > g.y + 1.9;            // must go up for it
+  const far = horiz > 1.7;                        // full extension
+  const low = ballPos.y < g.y + 0.95;            // around the knees/shins
+  const running = ch.speed > 4.5;
+  ch.catchPlant = false;
+  if ((high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+    playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
+  } else if (low && running && ch.actions.scoop && ch.oneShotT <= 0) {
+    playOneShot(ch, 'scoop', 0.55, true); ch.catchLeap = true; ch.catchStyle = 'scoop'; // low pickup on the run — no plant
+  } else {
+    ch.catchStyle = (running && ballPos.y > g.y + 1.45) ? 'overshoulder' : 'standing';
+    triggerArmAction(ch, 'reach', 0.5, ballPos); // procedural reach, keeps running
   }
 }
 function tryReception() {
@@ -5876,7 +5895,14 @@ function applyCatchPose(ch, ballPos, dt, w = 1) {
   // fast-moving ball is tracked smoothly and the hands settle as it's secured.
   const want = THREE.MathUtils.clamp(1.0 + (ballPos.y - chestY) * 1.1, 0.15, 2.4);
   ch.catchRaise += (want - ch.catchRaise) * Math.min(1, dt * 14);
-  const raise = ch.catchRaise;
+  let raise = ch.catchRaise;
+  // Over-the-shoulder deep ball: hands stay high and reaching, with a slight
+  // backward arch and the head turned up to find it — the signature deep-ball look.
+  if (ch.catchStyle === 'overshoulder') {
+    raise = Math.max(raise, 1.85);
+    blendLean(ch, -0.12, 0, w);          // gentle backward arch
+    applyHeadTrack(ch, ballPos, 0.8, dt); // eyes up on the ball
+  }
   // Two-hand vs one-hand: how far the ball is off to a side (in the catcher's own
   // frame) decides whether both hands meet it (centered) or he stabs with the near
   // arm while the off arm trails (a wide reach). side > 0 = ball to his right.
