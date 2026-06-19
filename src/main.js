@@ -4965,13 +4965,18 @@ function tryReception() {
   }
   let bestDef = null, dD = Infinity;
   for (const db of game.defense) { if (db.ragdolling) continue; const d = near(db); if (d < dD) { dD = d; bestDef = db; } }
+  // How well the covering defender can actually PLAY the ball in 3D (1 = right at
+  // it, →0 = it's out of his reach — over his head / past his dive). A DB draped on
+  // the WR but a step short of the ball can't contest it like one who's there.
+  const defGap = bestDef ? catchGap(bestDef, p, false) : Infinity;
+  const reachF = THREE.MathUtils.clamp(1 - defGap / Math.max(0.6, TUNE.catchReach), 0, 1);
 
   const dbBall = bestDef && bestDef.rt ? bestDef.rt.skill : 0.55; // DB ball skills (hands/timing)
   // No receiver in catching range — keep it flying. Defenders never pick it out
   // of the air: an interception only happens when an overthrow caroms off the
   // FENCE and a defender recovers the live loose ball (see ballLooseFromAir).
   if (!bestR) return false;
-  if (TUNE.catchLog) dbgLogPush(`<b>CATCH?</b> gap ${dR.toFixed(2)} · ballY ${ballY.toFixed(1)} · reach ${vReach(bestR).toFixed(1)} · ${bestDef && dD <= CONTEST_R ? 'contested ' + dD.toFixed(1) : 'open'}`);
+  if (TUNE.catchLog) dbgLogPush(`<b>CATCH?</b> gap ${dR.toFixed(2)} · ballY ${ballY.toFixed(1)} · reach ${vReach(bestR).toFixed(1)} · ${bestDef && dD <= CONTEST_R ? 'contested ' + dD.toFixed(1) + ' (reach ' + reachF.toFixed(2) + ')' : 'open'}`);
 
   // A receiver is in reach. Uncontested = a clean grab; great hands rarely drop.
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
@@ -4987,7 +4992,9 @@ function tryReception() {
 
   // Contested: catch odds fall as coverage tightens, lifted by the receiver's
   // hands and lowered by the defender's coverage skill; picks scale with the DB.
-  const tight = 1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1); // 0 loose .. 1 glued
+  // Tightness is gated by the defender's 3D reach (reachF) — a man who can't get to
+  // the ball barely contests it, so a WR who out-leaps a short DB just takes it.
+  const tight = (1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1)) * (0.35 + 0.65 * reachF); // 0 loose .. 1 glued+reaching
   let pCatch = THREE.MathUtils.lerp(0.80, 0.25, tight) + (rxSkill - 0.8) * 0.6 - (dbBall - 0.6) * 0.3 + cpuAdj;
   // Vertical contest: on a HIGH ball, the player who out-reaches the other wins it
   // (a tall/leaping WR beats a short DB on a jump ball, and vice-versa). Neutral on
@@ -5002,10 +5009,12 @@ function tryReception() {
 
   // The receiver couldn't bring it in. In TIGHT coverage the DB can make a play
   // on the ball himself — a real interception — scaled by his ball skills and how
-  // glued he is, plus a vertical edge if he out-leaps the WR on a high ball.
-  // Otherwise he just bats it away.
-  let pInt = (0.08 + (dbBall - 0.5) * 0.45) * tight;                       // base: skill × tightness
-  pInt += high * THREE.MathUtils.clamp(dbReachV - rxReach, -1.5, 1.5) * 0.18 * TUNE.jumpReach; // out-jumps the WR
+  // glued he is, plus a vertical edge if he out-leaps the WR on a high ball. A pick
+  // requires him to actually BE at the ball (reachF, no floor), so a man a step
+  // short bats it away at best instead of magically picking it. Otherwise: swat.
+  const tightPick = (1 - THREE.MathUtils.clamp(dD / CONTEST_R, 0, 1)) * reachF;
+  let pInt = (0.08 + (dbBall - 0.5) * 0.45) * tightPick;                   // base: skill × glued-and-reaching
+  pInt += high * THREE.MathUtils.clamp(dbReachV - rxReach, -1.5, 1.5) * 0.18 * TUNE.jumpReach * reachF; // out-jumps the WR
   pInt *= TUNE.intChance;                                                  // global pick-odds knob
   pInt = THREE.MathUtils.clamp(pInt, 0, 0.6);
   if (Math.random() < pInt) { startSecure(bestDef, true); return true; }   // picked off in coverage
