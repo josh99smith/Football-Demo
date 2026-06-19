@@ -1265,7 +1265,7 @@ let backLClip, backRClip; // backpedal locomotion (left/right drift)
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
 // Pregame cinematic: a dedicated cheerleader model (its OWN rig + bundled clips).
-let cheerTemplate = null, cheerWalkClip = null, cheerScale = 1, cheerGroundY = 0;
+let cheerTemplate = null, cheerClips = null, cheerScale = 1, cheerGroundY = 0;
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let vaultClips = []; // hurdle pool (per-player variety, animations2/5.glb)
 let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
@@ -1411,16 +1411,23 @@ async function loadAssets() {
     .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
   sulkClips = ['Angry_To_Tantrum_Sit', 'Angry_Stomp', 'Angry_Ground_Stomp']
     .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
-  // Pregame cheerleader: its own model + bundled clips. Use the "Walking_Woman"
-  // clip (the woman walk) for the cinematic, frozen in place (inPlaceY) so the line
-  // marches without drifting. Height-normalized like the players.
+  // Pregame cheerleader: its own model + bundled clips. They walk into formation
+  // (Walking_Woman), DANCE the pop/boom dances, then walk off. All frozen in place
+  // (inPlaceY) — the group is translated manually for locomotion. Height-normalized.
   try {
     const cg = await loadGLB('assets/cheerleader.glb');
     cheerTemplate = cg.scene;
-    const wc = (cg.animations || []).find((a) => a.name === 'Walking_Woman') || (cg.animations || [])[0];
-    cheerWalkClip = wc ? inPlaceY(wc) : null;
+    const an = {}; (cg.animations || []).forEach((a) => { an[a.name] = a; });
+    cheerClips = {
+      walk: inPlaceY(an['Walking_Woman'] || an['Walking'] || (cg.animations || [])[0]),
+      dances: ['Boom_Dance', 'Bubble_Dance', 'Cherish_Pop_Dance', 'Love_You_Pop_Dance', 'Superlove_Pop_Dance']
+        .map((n) => an[n] && inPlaceY(an[n])).filter(Boolean),
+    };
     const cr = measureBoneSpan(cheerTemplate); cheerScale = 1.8 / cr.span; cheerGroundY = -(cr.lo * cheerScale - 0.05);
-  } catch (e) { console.warn('cheerleader model missing', e); cheerTemplate = null; }
+    // The model ships fully self-lit (emissive). Dim that so the dramatic stage
+    // spotlights actually sculpt them (they keep a soft glow so they're never black).
+    cheerTemplate.traverse((o) => { if (o.isMesh && o.material) { o.material.emissiveIntensity = 0.38; o.material.needsUpdate = true; } });
+  } catch (e) { console.warn('cheerleader model missing', e); cheerTemplate = null; cheerClips = null; }
   // Diving catch, loose-ball scoop, hurdle vault, cage wall-jump — all leave the
   // ground, so keep root vertical motion (inPlaceY) + groundClamp at runtime.
   diveCatchClip = byName['Leap_Right_and_Catch']
@@ -2408,14 +2415,24 @@ function benchReact() {
     playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
   }
 }
-// Pre-game cinematic cast: a chorus line of cheerleaders at midfield (the 50),
-// using the dedicated cheerleader model + its "Walking_Woman" clip (marching in
-// place). Pure cosmetics (NOT in game.all) and spawned HIDDEN — shown only during
+// Pre-game cinematic cast: a chorus line of cheerleaders that walk on to a line at
+// midfield (the 50), DANCE (the model's pop/boom dances), then walk off to the
+// sidelines. Pure cosmetics (NOT in game.all), spawned HIDDEN — shown only during
 // the pregame cinematic (see startCinematic), never on the field during play.
 const CHEER_N = 8;
+const CHEER_ENTER_Z = 11;   // they start downfield and walk toward camera into the line at z=0
+const CHEER_T_DANCE = 4;    // walked in + dancing by ~4s
+const CHEER_T_EXIT = 19;    // start walking off at ~19s (cinematic is 25s)
+const CHEER_WALK_SPD = 3.1, CHEER_EXIT_SPD = 5.0;
+function cheerAction(mixer, clip) { const a = mixer.clipAction(clip); a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true; a.setEffectiveWeight(0); a.play(); return a; }
+function setCheerClip(ch, name) {
+  if (ch.cur === name || !ch.acts[name]) return;
+  const nx = ch.acts[name]; nx.reset(); nx.setEffectiveWeight(1);
+  nx.crossFadeFrom(ch.acts[ch.cur], 0.3, false); nx.play(); ch.cur = name;
+}
 function spawnCheer() {
   game.cheer = [];
-  if (!cheerTemplate || !cheerWalkClip) return; // no model -> no cinematic cast
+  if (!cheerTemplate || !cheerClips || !cheerClips.walk || !cheerClips.dances.length) return; // no model -> no cast
   const span = 22; // width of the line across midfield
   for (let i = 0; i < CHEER_N; i++) {
     const model = cloneSkeleton(cheerTemplate);
@@ -2424,19 +2441,38 @@ function spawnCheer() {
     model.position.y = cheerGroundY;
     const group = new THREE.Group(); group.add(model); scene.add(group);
     const x = CHEER_N > 1 ? (i - (CHEER_N - 1) / 2) * (span / (CHEER_N - 1)) : 0;
-    group.position.set(x, 0, 0); // midfield (the 50-yard line), in a line
-    group.rotation.y = Math.PI;  // face the home sideline
-    group.visible = false;       // shown only during the cinematic
+    group.position.set(x, 0, CHEER_ENTER_Z); // start downfield, walk in toward the line
+    group.rotation.y = Math.PI;              // face the home sideline / camera
+    group.visible = false;                   // shown only during the cinematic
     const mixer = new THREE.AnimationMixer(model);
-    const act = mixer.clipAction(cheerWalkClip);
-    act.setLoop(THREE.LoopRepeat, Infinity); act.timeScale = 0.9 + Math.random() * 0.3; act.play();
-    mixer.update(Math.random() * 2); // desync so the line isn't in lockstep
-    game.cheer.push({ group, model, mixer, isCheer: true, heading: Math.PI });
+    const acts = { walk: cheerAction(mixer, cheerClips.walk), dance: cheerAction(mixer, cheerClips.dances[(Math.random() * cheerClips.dances.length) | 0]) };
+    acts.walk.setEffectiveWeight(1);
+    mixer.update(Math.random() * 1.5); // desync so the line isn't in lockstep
+    game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter' });
   }
 }
-function updateCheer(dt) { // just advance the walk (positions are fixed during the cinematic)
+// Choreography, driven by the cinematic clock: walk in -> dance -> walk off.
+function updateCheer(dt) {
   if (!game.cheer) return;
-  for (const ch of game.cheer) { ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0; }
+  const t = game.cinematic ? game.cinematic.t : 1e9;
+  for (const ch of game.cheer) {
+    const p = ch.group.position;
+    if (ch.phase === 'enter') {                            // walk forward to the line (z=0)
+      const dz = 0 - p.z;
+      if (t >= CHEER_T_DANCE || Math.abs(dz) < 0.15) { p.z = 0; ch.phase = 'dance'; }
+      else { p.z += Math.sign(dz) * Math.min(Math.abs(dz), CHEER_WALK_SPD * dt); }
+      ch.heading = Math.PI; setCheerClip(ch, 'walk');
+    } else if (ch.phase === 'dance') {                     // hold the line and dance
+      if (t >= CHEER_T_EXIT) ch.phase = 'exit';
+      else { ch.heading = Math.PI; setCheerClip(ch, 'dance'); }
+    }
+    if (ch.phase === 'exit') {                             // walk off to the nearest sideline
+      const tx = ch.side * (HALF_W + 3), dx = tx - p.x;
+      if (Math.abs(dx) > 0.2) p.x += Math.sign(dx) * Math.min(Math.abs(dx), CHEER_EXIT_SPD * dt);
+      ch.heading = ch.side > 0 ? Math.PI / 2 : -Math.PI / 2; setCheerClip(ch, 'walk');
+    }
+    ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0;
+  }
 }
 // Assign offense (ball) / defense (cover) roles based on who has the ball,
 // using the Blitz personnel formations. game.receivers = eligibles in `elig`
@@ -7107,6 +7143,7 @@ const CINE_SHOTS = [
   { dur: 6, fn: (u) => ({ p: [CINE_LERP(2.5, 0.4, _cse(u)), 1.5, CINE_LERP(-19, -8.5, _cse(u))], l: [0, 1.7, 0], fov: CINE_LERP(54, 40, _cse(u)) }) }, // hero push-in
 ];
 const CINE_DUR = CINE_SHOTS.reduce((s, x) => s + x.dur, 0);
+const CINE_SPOT_COLS = [0xfff2e0, 0xffd9a0, 0xbcd2ff]; // stage spotlight tints (warm key + amber/cool)
 const _cineLookV = new THREE.Vector3();
 const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q']; // gameplay UI hidden during the cinematic
 let _cineSkipEl = null, _cineSkipFn = null;
@@ -7151,9 +7188,29 @@ function startCinematic() {
   if (losLine) losLine.visible = false; if (firstDownLine) firstDownLine.visible = false;
   setGroups(game.cheer, true);                               // bring on the chorus line
   setCineHud(true);                                          // clean broadcast frame (no gameplay HUD)
+  // Dramatic staging: crush the arena to near-black and pool stage spotlights on
+  // the line (reuses the prewarmed celebration spotlights, so no shader stall).
+  setCelebLights(true);
+  if (strobe) strobe.intensity = 0;                          // no red strobe — just the spots
+  applyArenaDim(0.9);
+  for (let i = 0; i < sweepLights.length; i++) {
+    const L = sweepLights[i];
+    const bx = (i - (sweepLights.length - 1) / 2) * 9;       // spread the beams across the line
+    L.position.set(bx * 0.6, 33, -7); L.angle = Math.PI / 8; L.penumbra = 0.6; L.distance = 160; L.decay = 1.0;
+    L.color.setHex(CINE_SPOT_COLS[i % CINE_SPOT_COLS.length]); L.intensity = 46;
+    L.target.position.set(bx, 1, 0); L.target.updateMatrixWorld();
+  }
   sun.position.set(40, 70, 20); sun.target.position.set(0, 0, 0); sun.target.updateMatrixWorld();
   driveCineCam(0);                                           // frame shot 1 before the first render
   showCineSkip();
+}
+function driveCineLights(t) { // gentle stage sweep + pulse on the spotlights
+  for (let i = 0; i < sweepLights.length; i++) {
+    const L = sweepLights[i];
+    const bx = (i - (sweepLights.length - 1) / 2) * 9;
+    L.target.position.set(bx + Math.sin(t * 0.9 + i * 2.1) * 3.5, 1, 0); L.target.updateMatrixWorld();
+    L.intensity = 44 + Math.sin(t * 3 + i) * 6;
+  }
 }
 function driveCineCam(t) {
   let acc = 0, shot = CINE_SHOTS[CINE_SHOTS.length - 1], u = 1;
@@ -7168,6 +7225,7 @@ function updateCinematic(dt) {
   c.t += dt;
   updateCheer(dt);
   driveCineCam(c.t);
+  driveCineLights(c.t);
   if (c.t >= CINE_DUR) endCinematic();
 }
 function endCinematic() {
@@ -7178,6 +7236,8 @@ function endCinematic() {
   setGroups(game.cheer, false);                             // dancers off the field for good
   setGroups(game.all, true); setGroups(game.bench, true);
   setCineHud(false);                                        // restore the gameplay HUD
+  applyLighting();                                          // un-dim the arena (back to night baseline)
+  for (const L of sweepLights) L.intensity = 0; setCelebLights(false); // drop the stage spots
   if (ball.mesh) ball.mesh.visible = true;
   camera.fov = 55; camera.updateProjectionMatrix();
   newPlay();                                                // kick off the real game
