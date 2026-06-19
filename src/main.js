@@ -6166,7 +6166,10 @@ function applyHeadTrack(ch, targetPos, w, dt) {
   const want = THREE.MathUtils.clamp(rel, -1.1, 1.1) * w; // clamp to a believable neck range
   ch.headYaw += (want - ch.headYaw) * Math.min(1, dt * 10);
   _tq.setFromAxisAngle(_YAX, ch.headYaw);
-  ch.headBone.quaternion.multiply(_tq);
+  // Yaw about the parent (neck) up axis, NOT the head bone's own local +Y: the
+  // head is bound ~47° tilted about X, so a local-space yaw pitches the face up.
+  // Pre-multiplying swivels the head's current facing about world up — level.
+  ch.headBone.quaternion.premultiply(_tq);
   ch.headBone.updateMatrixWorld(true);
 }
 // Smoothstep interpolation across [t,value] keyframes (t ascending in 0..1).
