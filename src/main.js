@@ -1632,11 +1632,11 @@ const TUNE_DEFAULTS = {
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
   jamYards: 5,           // coverage may JAM a route runner within this many yds of the LOS; past it, no body-blocking (illegal contact) — they can only cover
   // Contact spacing (the gap/offset where two players MEET) — tuned in the Contact Lab.
-  gapBattle: 0.4,        // break-tackle: how far the tackler stands off the carrier (yd)
+  gapBattle: 1.49,       // break-tackle: how far the tackler stands off the carrier (yd)
   latBattle: 0.0,        // break-tackle: tackler lateral offset (yd)
-  gapBlock: 0.42,        // engaged block: half the chest-to-chest gap (yd)
+  gapBlock: 1.49,        // engaged block: half the chest-to-chest gap (yd)
   latBlock: 0.0,         // engaged block: defender lateral offset (yd)
-  gapGrab: 0.5,          // wrap/gang drag: how far each grabber rings the carrier (yd)
+  gapGrab: 1.5,          // wrap/gang drag: how far each grabber rings the carrier (yd)
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
   catchGrab: 0.45,       // 3D slack on the reach volume: how far OUT of reach the ball can still be grabbed (yd)
