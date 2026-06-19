@@ -796,68 +796,122 @@ function makeFieldLine(color) {
 const losLine = makeFieldLine(0xff3a30);
 const firstDownLine = makeFieldLine(0xffe14a);
 
-// ---- Coach-cam play art: the called play's routes drawn flat on the turf during
-// pre-snap (toggled by the PLAY ART button), so you can read the concept before
-// the snap. Route ribbons + a start dot + an arrowhead, the same colors as the
-// play-call screen's SVG (RB green, WR yellow, QB blue). ----------------------
+// ---- Coach-cam play art: the called play drawn flat on the turf during pre-snap
+// (toggled by the PLAY ART button) so you can read it before the snap. OFFENSE =
+// route ribbons (WR yellow, RB green, QB blue); DEFENSE = each man's assignment
+// (rush red, man-cover blue, zone green, QB-spy yellow). Big, bright (toneMapped
+// off so the colors pop), bold (a dark outline backing under each line). --------
 const coachArt = new THREE.Group(); coachArt.visible = false; scene.add(coachArt);
+const COACH_Y = 0.09; // sit just above the turf
 function clearCoachArt() {
   for (const c of coachArt.children) { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }
   coachArt.clear();
 }
-// A flat ribbon lying on the turf along an XZ polyline (pts: {x,z}), so a route
-// reads from the low broadcast camera. width in yards.
-function routeRibbon(pts, color, width) {
+function coachMat(color, opacity) {
+  return new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+}
+// A flat ribbon lying on the turf along an XZ polyline (pts: {x,z}). width in yards.
+function makeRibbon(pts, color, width, opacity, y) {
   const half = width * 0.5, n = pts.length, pos = [], idx = [];
   for (let i = 0; i < n; i++) {
     let dx = 0, dz = 0;
     if (i > 0) { dx += pts[i].x - pts[i - 1].x; dz += pts[i].z - pts[i - 1].z; }
     if (i < n - 1) { dx += pts[i + 1].x - pts[i].x; dz += pts[i + 1].z - pts[i].z; }
     const l = Math.hypot(dx, dz) || 1, px = -dz / l * half, pz = dx / l * half;
-    pos.push(pts[i].x + px, 0.09, pts[i].z + pz, pts[i].x - px, 0.09, pts[i].z - pz);
+    pos.push(pts[i].x + px, y, pts[i].z + pz, pts[i].x - px, y, pts[i].z - pz);
     if (i < n - 1) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
-  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
-  return new THREE.Mesh(g, m);
+  return new THREE.Mesh(g, coachMat(color, opacity));
+}
+// A bold route line: a dark outline backing with the bright color on top.
+function addLine(pts, color, width) {
+  coachArt.add(makeRibbon(pts, 0x05080a, width + 0.22, 0.6, COACH_Y));          // outline (bolder)
+  coachArt.add(makeRibbon(pts, color, width, 0.98, COACH_Y + 0.01));            // bright fill
 }
 // A flat arrowhead on the turf at tip, pointing along dir {x,z}.
-function routeArrow(tip, dir, color, size) {
+function makeArrow(tip, dir, color, size, opacity, y) {
   const l = Math.hypot(dir.x, dir.z) || 1, fx = dir.x / l, fz = dir.z / l, px = -fz, pz = fx;
   const bx = tip.x - fx * size, bz = tip.z - fz * size;
-  const pos = [tip.x, 0.1, tip.z, bx + px * size * 0.6, 0.1, bz + pz * size * 0.6, bx - px * size * 0.6, 0.1, bz - pz * size * 0.6];
+  const pos = [tip.x, y, tip.z, bx + px * size * 0.62, y, bz + pz * size * 0.62, bx - px * size * 0.62, y, bz - pz * size * 0.62];
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex([0, 1, 2]);
-  const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide });
-  return new THREE.Mesh(g, m);
+  return new THREE.Mesh(g, coachMat(color, opacity));
 }
-// A small disc marker flat on the turf (route start / QB spot).
-function routeDot(x, z, color, r) {
-  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 18),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }));
-  m.rotation.x = -Math.PI / 2; m.position.set(x, 0.085, z); return m;
+function addArrow(tip, dir, color, size) {
+  coachArt.add(makeArrow(tip, dir, 0x05080a, size + 0.3, 0.6, COACH_Y + 0.011)); // outline
+  coachArt.add(makeArrow(tip, dir, color, size, 0.98, COACH_Y + 0.021));         // bright
 }
-function buildCoachArt() {
-  if (!game.userOnOffense || !game.receivers) return;
+// A disc marker flat on the turf (route start / player spot), with a dark rim.
+function addDot(x, z, color, r) {
+  const rim = new THREE.Mesh(new THREE.CircleGeometry(r + 0.12, 20), coachMat(0x05080a, 0.6));
+  rim.rotation.x = -Math.PI / 2; rim.position.set(x, COACH_Y, z); coachArt.add(rim);
+  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 20), coachMat(color, 0.98));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, COACH_Y + 0.012, z); coachArt.add(m);
+}
+// A zone-coverage ring (an annulus) flat on the turf to mark the area a man drops to.
+function addRing(x, z, r, color) {
+  const m = new THREE.Mesh(new THREE.RingGeometry(r - 0.28, r, 28), coachMat(color, 0.85));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, COACH_Y + 0.005, z); coachArt.add(m);
+}
+function buildOffenseArt() {
+  if (!game.receivers) return;
   const play = PLAYS[game.playIndex] || PLAYS[0];
   game.receivers.forEach((r, e) => {
     const sp = r.group.position;
     const wpts = play.route(e, r.align.x, game.los);
     const pts = [{ x: sp.x, z: sp.z }, ...wpts.map((w) => ({ x: w.x, z: w.z }))];
-    const col = r.role === 'RB' ? 0x7cfca0 : 0xffd54a;
-    coachArt.add(routeRibbon(pts, col, 0.45));
-    coachArt.add(routeDot(sp.x, sp.z, 0xffffff, 0.42));
+    const col = r.role === 'RB' ? 0x6cff8a : 0xffe04a;
+    addLine(pts, col, 0.7);
     const a = pts[pts.length - 1], b = pts[pts.length - 2] || a;
-    coachArt.add(routeArrow(a, { x: a.x - b.x, z: a.z - b.z }, col, 1.1));
+    addArrow(a, { x: a.x - b.x, z: a.z - b.z }, col, 1.6);
+    addDot(sp.x, sp.z, 0xffffff, 0.55);
   });
-  if (game.qb) { const q = game.qb.group.position; coachArt.add(routeDot(q.x, q.z, 0xbfe3ff, 0.5)); }
+  if (game.qb) { const q = game.qb.group.position; addDot(q.x, q.z, 0x8fd0ff, 0.62); }
 }
+// Work out each defender's pre-snap assignment from the called coverage (mirrors
+// applyDefCall + the snap's base jobs) so the art matches what they'll do.
+function defenseArtPlan() {
+  const plan = [], call = game.defCall, d = game.dir, L = game.los;
+  const qp = game.qb ? game.qb.group.position : { x: 0, z: L };
+  let ci = 0; const thirds = [-15, 15, 0];
+  for (const p of game.defense) {
+    if (p.ragdolling) continue;
+    const dp = p.group.position;
+    const isRush = p.role === 'DL' || (call === 2 && p.role === 'LB');
+    const isSpy = call === 3 && p.role === 'LB';
+    let type, x, z;
+    if (isRush) { type = 'rush'; x = qp.x; z = qp.z; }
+    else if (isSpy) { type = 'spy'; x = qp.x; z = qp.z; }
+    else if (call === 1 && p.role === 'CB') { type = 'zone'; x = thirds[ci++] ?? 0; z = L + d * 16; }
+    else if (call === 1 && p.role === 'LB') { type = 'zone'; x = 0; z = L + d * 8; }
+    else if (p.deep) { type = 'zone'; x = 0; z = L + d * 18; }
+    else {
+      const a = p.covers >= 0 && game.receivers && game.receivers[p.covers] ? game.receivers[p.covers].group.position : null;
+      if (a) { type = 'cover'; x = a.x; z = a.z; } else { type = 'zone'; x = dp.x; z = L + d * 10; }
+    }
+    plan.push({ p, type, x, z });
+  }
+  return plan;
+}
+function buildDefenseArt() {
+  if (!game.defense) return;
+  const COL = { rush: 0xff5a3a, cover: 0x6aa0ff, zone: 0x3fe08a, spy: 0xffd23a };
+  for (const it of defenseArtPlan()) {
+    const sp = it.p.group.position, col = COL[it.type] || 0x6aa0ff;
+    addLine([{ x: sp.x, z: sp.z }, { x: it.x, z: it.z }], col, 0.7);
+    addArrow({ x: it.x, z: it.z }, { x: it.x - sp.x, z: it.z - sp.z }, col, 1.6);
+    if (it.type === 'zone') addRing(it.x, it.z, 3.4, col);
+    addDot(sp.x, sp.z, col, 0.55);
+  }
+}
+function buildCoachArt() { if (game.userOnOffense) buildOffenseArt(); else buildDefenseArt(); }
 let coachSig = '';
 function updateCoachArt() {
-  const showIt = game.coachCam && game.state === STATE.PRESNAP && game.userOnOffense && !game.choosing && !game.gameOver;
+  const showIt = game.coachCam && game.state === STATE.PRESNAP && !game.choosing && !game.gameOver;
   if (!showIt) { if (coachArt.visible || coachArt.children.length) { clearCoachArt(); coachArt.visible = false; coachSig = ''; } return; }
-  const sig = `${game.playIndex}|${game.los.toFixed(1)}|${game.dir}`;
+  const sig = `${game.userOnOffense ? 'O' + game.playIndex : 'D' + game.defCall}|${game.los.toFixed(1)}|${game.dir}`;
   if (sig !== coachSig || !coachArt.children.length) { clearCoachArt(); buildCoachArt(); coachSig = sig; }
   coachArt.visible = true;
 }
@@ -3298,8 +3352,8 @@ function setAction(label, hot = false) {
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
-  // PLAY ART (coach cam): only callable pre-snap on offense, before the snap.
-  if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && onO && !game.choosing && !game.gameOver));
+  // PLAY ART (coach cam): callable pre-snap on either side of the ball.
+  if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) { setAction(game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
   else if (s === STATE.LIVE) { setAction(onO ? 'THROW' : 'SWITCH'); show(turboBtn); }
@@ -6800,10 +6854,13 @@ function updateCamera(dt) {
   // Framing: wide & high for pass plays (see the QB, the arc and the routes);
   // tighter & lower behind a ball carrier. Eased so a catch / incompletion
   // glides instead of snapping.
-  const back = (passPlay ? 11 : chase ? 7 : loose ? 9.5 : 8.5) * TUNE.camDist;
-  const hgt = (air ? Math.max(6.8, _fp.y + 3) : passPlay ? 6.8 : chase ? 4.3 : 5.6) * TUNE.camHeight;
-  const aheadL = passPlay ? 11 : chase ? 7.5 : loose ? 6 : 6.5;
-  const lookH = air ? (_fp.y * 0.5 + 1.0) : 1.5;
+  let back = (passPlay ? 11 : chase ? 7 : loose ? 9.5 : 8.5) * TUNE.camDist;
+  let hgt = (air ? Math.max(6.8, _fp.y + 3) : passPlay ? 6.8 : chase ? 4.3 : 5.6) * TUNE.camHeight;
+  let aheadL = passPlay ? 11 : chase ? 7.5 : loose ? 6 : 6.5;
+  let lookH = air ? (_fp.y * 0.5 + 1.0) : 1.5;
+  // Coach cam: while the PLAY ART overlay is up pre-snap, pull the shot OUT and UP
+  // and look further downfield so the whole formation + the art read at a glance.
+  if (game.coachCam && game.state === STATE.PRESNAP) { back *= 1.7; hgt *= 2.05; aheadL = 22; lookH = 1.0; }
   const fe = Math.min(1, dt * 4); // framing ease
   cam.back += (back - cam.back) * fe;
   cam.hgt += (hgt - cam.hgt) * fe;
