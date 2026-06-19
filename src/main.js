@@ -1424,9 +1424,6 @@ async function loadAssets() {
         .map((n) => an[n] && inPlaceY(an[n])).filter(Boolean),
     };
     const cr = measureBoneSpan(cheerTemplate); cheerScale = 1.8 / cr.span; cheerGroundY = -(cr.lo * cheerScale - 0.05);
-    // The model ships fully self-lit (emissive). Dim that so the dramatic stage
-    // spotlights actually sculpt them (they keep a soft glow so they're never black).
-    cheerTemplate.traverse((o) => { if (o.isMesh && o.material) { o.material.emissiveIntensity = 0.38; o.material.needsUpdate = true; } });
   } catch (e) { console.warn('cheerleader model missing', e); cheerTemplate = null; cheerClips = null; }
   // Diving catch, loose-ball scoop, hurdle vault, cage wall-jump — all leave the
   // ground, so keep root vertical motion (inPlaceY) + groundClamp at runtime.
@@ -2415,25 +2412,35 @@ function benchReact() {
     playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
   }
 }
-// Pre-game cinematic cast: a chorus line of cheerleaders that walk on to a line at
-// midfield (the 50), DANCE (the model's pop/boom dances), then walk off to the
-// sidelines. Pure cosmetics (NOT in game.all), spawned HIDDEN — shown only during
-// the pregame cinematic (see startCinematic), never on the field during play.
+// The cheerleaders: a pregame cinematic chorus line at midfield (walk on -> DANCE
+// the model's pop/boom dances -> walk off), then for the rest of the game they post
+// up on the sideline apron in two staggered lines and keep dancing/cheering. Pure
+// cosmetics (NOT in game.all), beyond the cage fence so players/ball never reach
+// them. Spawned HIDDEN; shown by the cinematic, then by placeCheerSideline.
 const CHEER_N = 8;
 const CHEER_ENTER_Z = 11;   // they start downfield and walk toward camera into the line at z=0
 const CHEER_T_DANCE = 4;    // walked in + dancing by ~4s
 const CHEER_T_EXIT = 19;    // start walking off at ~19s (cinematic is 25s)
 const CHEER_WALK_SPD = 3.1, CHEER_EXIT_SPD = 5.0;
+// Gameplay home: two staggered lines on the +X sideline apron, OUTSIDE the cage
+// (HALF_W ~ 26.65; ball overshoots to ~CAGE_X+2 = 28.65) so nothing can touch them.
+const CHEER_SIDE_X = 30, CHEER_ROW_GAP = 1.7, CHEER_Z_SPACING = 2.6;
 function cheerAction(mixer, clip) { const a = mixer.clipAction(clip); a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true; a.setEffectiveWeight(0); a.play(); return a; }
 function setCheerClip(ch, name) {
   if (ch.cur === name || !ch.acts[name]) return;
   const nx = ch.acts[name]; nx.reset(); nx.setEffectiveWeight(1);
   nx.crossFadeFrom(ch.acts[ch.cur], 0.3, false); nx.play(); ch.cur = name;
 }
+// The model ships fully self-lit; dim its emissive for the dark spotlit cinematic,
+// restore it for the normally-lit gameplay sideline.
+function setCheerEmissive(v) {
+  if (!game.cheer) return;
+  for (const ch of game.cheer) ch.model.traverse((o) => { if (o.isMesh && o.material) o.material.emissiveIntensity = v; });
+}
 function spawnCheer() {
   game.cheer = [];
   if (!cheerTemplate || !cheerClips || !cheerClips.walk || !cheerClips.dances.length) return; // no model -> no cast
-  const span = 22; // width of the line across midfield
+  const span = 22, perRow = Math.ceil(CHEER_N / 2); // midfield line width; squad split into two rows
   for (let i = 0; i < CHEER_N; i++) {
     const model = cloneSkeleton(cheerTemplate);
     model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
@@ -2443,33 +2450,53 @@ function spawnCheer() {
     const x = CHEER_N > 1 ? (i - (CHEER_N - 1) / 2) * (span / (CHEER_N - 1)) : 0;
     group.position.set(x, 0, CHEER_ENTER_Z); // start downfield, walk in toward the line
     group.rotation.y = Math.PI;              // face the home sideline / camera
-    group.visible = false;                   // shown only during the cinematic
+    group.visible = false;                   // shown only during the cinematic / on the sideline
     const mixer = new THREE.AnimationMixer(model);
     const acts = { walk: cheerAction(mixer, cheerClips.walk), dance: cheerAction(mixer, cheerClips.dances[(Math.random() * cheerClips.dances.length) | 0]) };
     acts.walk.setEffectiveWeight(1);
     mixer.update(Math.random() * 1.5); // desync so the line isn't in lockstep
-    game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter' });
+    // Sideline post: two staggered rows on the +X apron, facing the field.
+    const row = i < perRow ? 0 : 1, j = i - row * perRow, rowCount = row === 0 ? perRow : (CHEER_N - perRow);
+    const sideX = CHEER_SIDE_X + row * CHEER_ROW_GAP;
+    const sideZ = (j - (rowCount - 1) / 2) * CHEER_Z_SPACING + (row ? CHEER_Z_SPACING / 2 : 0);
+    game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter', sideX, sideZ, sideHeading: -Math.PI / 2 });
   }
 }
-// Choreography, driven by the cinematic clock: walk in -> dance -> walk off.
+// Send the squad to its sideline posts (two staggered lines) and keep them dancing
+// for the rest of the game (called when the cinematic ends).
+function placeCheerSideline() {
+  if (!game.cheer) return;
+  setCheerEmissive(1.3); // self-lit (a touch hot) so they read on the dim sideline apron
+  for (const ch of game.cheer) {
+    ch.phase = 'sideline'; ch.heading = ch.sideHeading;
+    ch.group.position.set(ch.sideX, 0, ch.sideZ); ch.group.rotation.y = ch.heading;
+    ch.group.visible = true; setCheerClip(ch, 'dance');
+  }
+}
+// Cinematic clock drives the pregame choreography (walk in -> dance -> walk off);
+// on the sideline ('sideline' phase) they simply dance/cheer in place.
 function updateCheer(dt) {
   if (!game.cheer) return;
   const t = game.cinematic ? game.cinematic.t : 1e9;
   for (const ch of game.cheer) {
     const p = ch.group.position;
-    if (ch.phase === 'enter') {                            // walk forward to the line (z=0)
-      const dz = 0 - p.z;
-      if (t >= CHEER_T_DANCE || Math.abs(dz) < 0.15) { p.z = 0; ch.phase = 'dance'; }
-      else { p.z += Math.sign(dz) * Math.min(Math.abs(dz), CHEER_WALK_SPD * dt); }
-      ch.heading = Math.PI; setCheerClip(ch, 'walk');
-    } else if (ch.phase === 'dance') {                     // hold the line and dance
-      if (t >= CHEER_T_EXIT) ch.phase = 'exit';
-      else { ch.heading = Math.PI; setCheerClip(ch, 'dance'); }
-    }
-    if (ch.phase === 'exit') {                             // walk off to the nearest sideline
-      const tx = ch.side * (HALF_W + 3), dx = tx - p.x;
-      if (Math.abs(dx) > 0.2) p.x += Math.sign(dx) * Math.min(Math.abs(dx), CHEER_EXIT_SPD * dt);
-      ch.heading = ch.side > 0 ? Math.PI / 2 : -Math.PI / 2; setCheerClip(ch, 'walk');
+    if (ch.phase === 'sideline') {
+      setCheerClip(ch, 'dance');                          // dance + cheer through the game
+    } else {
+      if (ch.phase === 'enter') {                          // walk forward to the line (z=0)
+        const dz = 0 - p.z;
+        if (t >= CHEER_T_DANCE || Math.abs(dz) < 0.15) { p.z = 0; ch.phase = 'dance'; }
+        else { p.z += Math.sign(dz) * Math.min(Math.abs(dz), CHEER_WALK_SPD * dt); }
+        ch.heading = Math.PI; setCheerClip(ch, 'walk');
+      } else if (ch.phase === 'dance') {                   // hold the line and dance
+        if (t >= CHEER_T_EXIT) ch.phase = 'exit';
+        else { ch.heading = Math.PI; setCheerClip(ch, 'dance'); }
+      }
+      if (ch.phase === 'exit') {                           // walk off to the nearest sideline
+        const tx = ch.side * (HALF_W + 3), dx = tx - p.x;
+        if (Math.abs(dx) > 0.2) p.x += Math.sign(dx) * Math.min(Math.abs(dx), CHEER_EXIT_SPD * dt);
+        ch.heading = ch.side > 0 ? Math.PI / 2 : -Math.PI / 2; setCheerClip(ch, 'walk');
+      }
     }
     ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0;
   }
@@ -7168,15 +7195,17 @@ function showCineSkip() {
   // launched the cinematic doesn't instantly dismiss it.
   setTimeout(() => {
     if (!game.cinematic) return;
-    window.addEventListener('keydown', _cineSkipFn);
-    window.addEventListener('pointerdown', _cineSkipFn);
+    // Capture phase so a tap anywhere skips even though the field's input handlers
+    // stop propagation of pointer events.
+    window.addEventListener('keydown', _cineSkipFn, true);
+    window.addEventListener('pointerdown', _cineSkipFn, true);
   }, 250);
 }
 function hideCineSkip() {
   if (_cineSkipEl) _cineSkipEl.style.display = 'none';
   if (_cineSkipFn) {
-    window.removeEventListener('keydown', _cineSkipFn);
-    window.removeEventListener('pointerdown', _cineSkipFn);
+    window.removeEventListener('keydown', _cineSkipFn, true);
+    window.removeEventListener('pointerdown', _cineSkipFn, true);
     if (_cineSkipEl) _cineSkipEl.removeEventListener('click', _cineSkipFn);
     _cineSkipFn = null;
   }
@@ -7191,6 +7220,7 @@ function startCinematic() {
   // Dramatic staging: crush the arena to near-black and pool stage spotlights on
   // the line (reuses the prewarmed celebration spotlights, so no shader stall).
   setCelebLights(true);
+  setCheerEmissive(0.38);                                    // dim self-glow so the spotlights sculpt them
   if (strobe) strobe.intensity = 0;                          // no red strobe — just the spots
   applyArenaDim(0.9);
   for (let i = 0; i < sweepLights.length; i++) {
@@ -7233,7 +7263,7 @@ function endCinematic() {
   game.cinematic = null;
   hideCineSkip();
   if (cutEl) cutEl.style.opacity = '1';                      // hard black hides the swap to gameplay
-  setGroups(game.cheer, false);                             // dancers off the field for good
+  placeCheerSideline();                                     // squad posts up on the sideline (two staggered lines)
   setGroups(game.all, true); setGroups(game.bench, true);
   setCineHud(false);                                        // restore the gameplay HUD
   applyLighting();                                          // un-dim the arena (back to night baseline)
@@ -7956,6 +7986,7 @@ function simStep(realDt) {
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
   updateFenceBlood(realDt); // blood runs down the fence (real-time, ignores slow-mo)
   updateBench(realDt);     // sideline reserves pace + emote (real-time, ignores slow-mo)
+  updateCheer(realDt);     // sideline cheer squad dances through the game (real-time)
   updateCelebFx(realDt);   // touchdown fireworks + sweeping spotlights
   driveTowerGlows(clock.elapsedTime); // floodlight bloom shimmer
   updateCageGates(realDt); // cage gates swing open between plays
