@@ -1631,6 +1631,12 @@ const TUNE_DEFAULTS = {
   playClock: 15,         // delay-of-game seconds before the snap (applies next play)
   swarmRadius: 4.2,      // yards: defenders within this of the carrier join the gang tackle
   jamYards: 5,           // coverage may JAM a route runner within this many yds of the LOS; past it, no body-blocking (illegal contact) — they can only cover
+  // Contact spacing (the gap/offset where two players MEET) — tuned in the Contact Lab.
+  gapBattle: 0.4,        // break-tackle: how far the tackler stands off the carrier (yd)
+  latBattle: 0.0,        // break-tackle: tackler lateral offset (yd)
+  gapBlock: 0.42,        // engaged block: half the chest-to-chest gap (yd)
+  latBlock: 0.0,         // engaged block: defender lateral offset (yd)
+  gapGrab: 0.5,          // wrap/gang drag: how far each grabber rings the carrier (yd)
   tackleReach: 1.5,      // contact radius for a tackle (yd)
   catchReach: 1.6,       // catch radius (intended receiver gets +1.0) (yd)
   catchGrab: 0.45,       // 3D slack on the reach volume: how far OUT of reach the ball can still be grabbed (yd)
@@ -1715,6 +1721,7 @@ const game = {
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
+  lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
   // dir = the current offense's attacking direction. When the CPU has the ball
   // you play DEFENSE (control the nearest defender).
@@ -2625,9 +2632,10 @@ function updateBlocks(dt) {
     let ax = dp.x - op.x, az = dp.z - op.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
     const mx = (op.x + dp.x) / 2, mz = (op.z + dp.z) / 2;
     const wob = Math.sin(game.playClock * 8 + o.breathPh) * 0.04;
-    const half = 0.42 + wob; // ~0.84yd apart: arm's length, so extended hands lock on each other's chest
+    const half = TUNE.gapBlock + wob; // half the chest-to-chest gap (Contact Lab)
+    const px2 = az, pz2 = -ax; // perpendicular, for the defender's lateral offset
     op.x = mx - ax * half; op.z = mz - az * half;
-    dp.x = mx + ax * half; dp.z = mz + az * half;
+    dp.x = mx + ax * half + px2 * TUNE.latBlock; dp.z = mz + az * half + pz2 * TUNE.latBlock;
     o.heading = Math.atan2(ax, az); d.heading = Math.atan2(-ax, -az);
     o.vel.set(0, 0, 0); d.vel.set(0, 0, 0); o.speed = 0; d.speed = 0;
     o.blocking = true; d.blocking = true; d.engaged = true; d.pursuit = false;
@@ -2848,7 +2856,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
   const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
-  const onLeft = (x, target) => !dbgCam.on && !replayManual() && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
+  const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
     if (d > maxR) { dx = dx / d * maxR; dy = dy / d * maxR; }
@@ -2915,7 +2923,7 @@ function saveCanvasPNG() {
 // The orbit/zoom/pan canvas controls are live in the debug free-cam AND in manual
 // replay mode (same machinery, driving dbgCam's az/el/dist/target).
 function replayManual() { return game.state === STATE.REPLAY && game.replay.manual; }
-function camDrag() { return dbgCam.on || replayManual(); }
+function camDrag() { return dbgCam.on || replayManual() || game.lab; }
 (function freecamControls() {
   const RK = 0.005;
   let drag = false, pan = false, lx = 0, ly = 0, pinch = 0;
@@ -5497,9 +5505,10 @@ function updateBattle(dt) {
   c.x = b.baseX + sa * drive; c.z = b.baseZ + ca * drive;
   // Locked CHEST TO CHEST: the tackler is driven right up onto the carrier (a real
   // wrap-up, not a stand-off at arm's length) — see applyBattleArms / applyBattleLean.
-  const half = 0.4 + wob;
+  const half = TUNE.gapBattle + wob;
   const tk = b.tackler.group.position;
-  tk.x = c.x + sa * half; tk.z = c.z + ca * half;
+  const rx = Math.cos(ang), rz = -Math.sin(ang); // right of facing, for the lateral offset
+  tk.x = c.x + sa * half + rx * TUNE.latBattle; tk.z = c.z + ca * half + rz * TUNE.latBattle;
 
   battleFill.style.width = `${Math.round(b.val * 100)}%`;
   battleDiv.style.left = `${Math.round(b.val * 100)}%`;
@@ -5753,7 +5762,7 @@ function updateDrag(dt) {
   // Latch grabbers around him, easing into their slot and churning to drive him.
   for (const t of d.grabbers) {
     if (t.ragdolling) continue;
-    const tx = cp.x + Math.sin(t.grabSlot) * 0.5, tz = cp.z + Math.cos(t.grabSlot) * 0.5;
+    const tx = cp.x + Math.sin(t.grabSlot) * TUNE.gapGrab, tz = cp.z + Math.cos(t.grabSlot) * TUNE.gapGrab;
     const k = Math.min(1, dt * 12);
     t.group.position.x += (tx - t.group.position.x) * k;
     t.group.position.z += (tz - t.group.position.z) * k;
@@ -7149,6 +7158,12 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'swarmRadius', label: 'Gang-tackle radius', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'jamYards', label: 'Coverage jam (yd)', min: 0, max: 15, step: 1, fmt: (v) => v.toFixed(0) },
+  // --- Contact spacing (also editable visually in the Contact Lab) ---
+  { tab: 'Contact', key: 'gapBattle', label: 'Battle gap (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'latBattle', label: 'Battle lateral (yd)', min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'gapBlock', label: 'Block gap (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'latBlock', label: 'Block lateral (yd)', min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Contact', key: 'gapGrab', label: 'Wrap/drag radius (yd)', min: 0, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuSpdMul', label: 'CPU speed ×', min: 0.7, max: 1.4, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuCatchAdd', label: 'CPU catch +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'cpuAccMul', label: 'CPU accuracy ×', min: 0.5, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
@@ -7271,6 +7286,7 @@ function buildDebugPanel() {
   dbgPanelEl.querySelector('#dbg-close').addEventListener('click', () => toggleDebugPanel(false));
   dbgPanelEl.querySelector('#dbg-scuffle').addEventListener('click', forceScuffle);
   { const tb = dbgPanelEl.querySelector('#dbg-throw'); if (tb) tb.addEventListener('click', dbgThrowToWR); }
+  { const lb = dbgPanelEl.querySelector('#dbg-lab'); if (lb) lb.addEventListener('click', () => { toggleDebugPanel(false); enterLab(); }); }
   // Save: persist the current knobs to localStorage so they survive a reload.
   const saveBtn = dbgPanelEl.querySelector('#dbg-save');
   saveBtn.addEventListener('click', () => {
@@ -7382,6 +7398,106 @@ function forceScuffle() {
   const ok = startPostPlayFight(x, z);
   if (!ok) setStatus('No opposing pair nearby to scuffle');
 }
+// ============================================================================
+// CONTACT LAB — a standalone editor for the two-player CONTACT poses. Loads just a
+// red carrier (A) + a blue defender (B), cycles every collision/contact pose
+// (battle / block / wrap-drag / ball-protect), and lets you orbit the camera and
+// tune the SPACING knobs (gap/lateral) that feed the live game. Save persists to
+// localStorage (the published game reads it on load); Copy exports the JSON to bake
+// into the code defaults. Enter via ?lab or the debug panel's Contact Lab button.
+// ============================================================================
+const LAB = { on: false, idx: 0, A: null, B: null, wasInGame: false };
+const _labMid = new THREE.Vector3();
+function labPose(ch, want, dt) {
+  setClip(ch, ch.actions[want] ? want : 'run');
+  ch.group.rotation.set(0, ch.heading, 0);
+  ch.mixer.update(dt);
+}
+const LAB_CONTACTS = [
+  { name: 'BREAK-TACKLE BATTLE', keys: ['gapBattle', 'latBattle'],
+    place(A, B) { const ang = A.heading, sa = Math.sin(ang), ca = Math.cos(ang), rx = Math.cos(ang), rz = -Math.sin(ang);
+      B.group.position.set(sa * TUNE.gapBattle + rx * TUNE.latBattle, 0, ca * TUNE.gapBattle + rz * TUNE.latBattle); B.heading = ang + Math.PI; },
+    apply(A, B, dt) { labPose(A, 'run', dt); labPose(B, B.actions.block ? 'block' : 'run', dt);
+      applyBattleLean(A, false, 1); applyBattleArms(A, false, 1); applyBattleLean(B, true, 1); applyBattleArms(B, true, 1); } },
+  { name: 'ENGAGED BLOCK', keys: ['gapBlock', 'latBlock'],
+    place(A, B) { const ang = A.heading, sa = Math.sin(ang), ca = Math.cos(ang), px = ca, pz = -sa;
+      B.group.position.set(sa * TUNE.gapBlock * 2 + px * TUNE.latBlock, 0, ca * TUNE.gapBlock * 2 + pz * TUNE.latBlock); B.heading = ang + Math.PI; },
+    apply(A, B, dt) { labPose(A, 'run', dt); labPose(B, 'run', dt); applyBlockPose(A, 1); applyBlockPose(B, 1); } },
+  { name: 'WRAP / GANG DRAG', keys: ['gapGrab'],
+    place(A, B) { const ang = A.heading, sa = Math.sin(ang), ca = Math.cos(ang);
+      B.group.position.set(sa * TUNE.gapGrab, 0, ca * TUNE.gapGrab); B.heading = ang + Math.PI; },
+    apply(A, B, dt) { labPose(A, 'run', dt); labPose(B, 'run', dt); applyGrabLean(A, 1); applyBattleArms(B, true, 1); } },
+  { name: 'BALL PROTECT (carry)', keys: [],
+    place(A, B) { const ang = A.heading, sa = Math.sin(ang), ca = Math.cos(ang);
+      B.group.position.set(sa * 0.5, 0, ca * 0.5); B.heading = ang + Math.PI; },
+    apply(A, B, dt) { labPose(A, 'run', dt); labPose(B, 'run', dt); A.catchStyle = ''; applyCarryProtect(A, 1); } },
+];
+const labPanelEl = document.getElementById('lab-panel');
+const labKnob = (key) => DBG_KNOBS.find((k) => k.key === key) || { min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2), label: key };
+function buildLabPanel() {
+  if (!labPanelEl) return;
+  const c = LAB_CONTACTS[LAB.idx];
+  const sliders = c.keys.map((key) => { const k = labKnob(key);
+    return `<label class="lab-row"><span>${k.label}</span><input type="range" data-key="${key}" min="${k.min}" max="${k.max}" step="${k.step}" value="${TUNE[key]}"><b id="labv-${key}">${k.fmt(TUNE[key])}</b></label>`;
+  }).join('') || '<div class="lab-none">— no spacing knobs for this pose —</div>';
+  labPanelEl.innerHTML = `
+    <div class="lab-head"><span>🥋 CONTACT LAB</span><button id="lab-exit" aria-label="exit">✕</button></div>
+    <div class="lab-sel"><button id="lab-prev">◀</button><span id="lab-name">${LAB.idx + 1}/${LAB_CONTACTS.length} · ${c.name}</span><button id="lab-next">▶</button></div>
+    <div class="lab-sliders">${sliders}</div>
+    <div class="lab-actrow"><button id="lab-save">Save</button><button id="lab-copy">Copy values</button><button id="lab-reset">Reset</button></div>
+    <div class="lab-hint">drag rotate · pinch / scroll zoom</div>`;
+  labPanelEl.classList.remove('hidden');
+  labPanelEl.querySelector('#lab-prev').onclick = () => { LAB.idx = (LAB.idx + LAB_CONTACTS.length - 1) % LAB_CONTACTS.length; buildLabPanel(); };
+  labPanelEl.querySelector('#lab-next').onclick = () => { LAB.idx = (LAB.idx + 1) % LAB_CONTACTS.length; buildLabPanel(); };
+  labPanelEl.querySelector('#lab-exit').onclick = exitLab;
+  labPanelEl.querySelectorAll('input[type=range]').forEach((inp) => inp.addEventListener('input', () => {
+    const key = inp.dataset.key; TUNE[key] = parseFloat(inp.value);
+    const v = labPanelEl.querySelector('#labv-' + key); if (v) v.textContent = labKnob(key).fmt(TUNE[key]);
+  }));
+  const saveBtn = labPanelEl.querySelector('#lab-save');
+  saveBtn.onclick = () => { try { localStorage.setItem(TUNE_STORE_KEY, dbgTuneJSON()); saveBtn.textContent = '✓ Saved'; } catch (e) { saveBtn.textContent = 'failed'; } setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200); };
+  const copyBtn = labPanelEl.querySelector('#lab-copy');
+  copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(dbgTuneJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy values'; }, 1200); };
+  labPanelEl.querySelector('#lab-reset').onclick = () => { for (const key of c.keys) TUNE[key] = TUNE_DEFAULTS[key]; buildLabPanel(); };
+}
+function enterLab() {
+  if (!game.all.length || LAB.on) return;
+  LAB.on = true; game.lab = true; LAB.wasInGame = gameStarted;
+  LAB.A = game.teamA[6] || game.teamA[0]; // a red carrier
+  LAB.B = game.teamB[6] || game.teamB[0]; // a blue defender
+  clearRagdolls();
+  for (const ch of game.all) { ch.ragdolling = false; ch.group.visible = (ch === LAB.A || ch === LAB.B); if (ch.nameTag) ch.nameTag.visible = false; ch.vel.set(0, 0, 0); ch.speed = 0; ch.oneShotT = 0; }
+  LAB.A.heading = 0; LAB.A.group.position.set(0, 0, 0);
+  game.battle.val = 0.5;
+  document.body.classList.add('lab-mode');
+  if (startMenuEl) startMenuEl.classList.add('hidden');
+  hideFieldChrome();
+  dbgCam.target.set(0, 1.2, 0.3); dbgCam.az = 0.7; dbgCam.el = 0.22; dbgCam.dist = 4.8; dbgCam.follow = false;
+  camera.fov = 40; camera.updateProjectionMatrix();
+  buildLabPanel();
+  startLoop(); // ensure the render loop is running (entered from the menu)
+}
+function exitLab() {
+  if (!LAB.on) return;
+  LAB.on = false; game.lab = false;
+  if (labPanelEl) labPanelEl.classList.add('hidden');
+  document.body.classList.remove('lab-mode');
+  for (const ch of game.all) { ch.group.visible = true; if (ch.nameTag) ch.nameTag.visible = true; }
+  if (LAB.wasInGame) { enterReset(true); } // resume the game (re-line-up)
+  else { startGame(); }                     // came from the start menu — kick off a real game
+}
+function updateLab(dt) {
+  const c = LAB_CONTACTS[LAB.idx], A = LAB.A, B = LAB.B;
+  if (!A || !B) return;
+  game.battle.val = 0.5;
+  A.group.position.set(0, 0, 0); A.heading = 0;
+  c.place(A, B);
+  c.apply(A, B, dt);
+  groundClamp(A); groundClamp(B);
+  if (ball.mesh && A.handBone) { A.handBone.updateWorldMatrix(true, false); A.handBone.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.9, _hips.y), _hips.z); ball.mesh.rotation.set(0, A.heading, 0.35); ball.mesh.visible = true; }
+  _labMid.set((A.group.position.x + B.group.position.x) / 2, 1.1, (A.group.position.z + B.group.position.z) / 2);
+  dbgCam.target.lerp(_labMid, Math.min(1, dt * 4));
+}
 // Debug: rescale every player's visual model and re-seat it on the turf. Called when
 // the Player size knob changes (the collider radii are separate TUNE knobs).
 function applyPlayerSize() {
@@ -7474,6 +7590,15 @@ function animate() {
   updateDbg(); // balance telemetry overlay (toggle with I)
   updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
   const realDt = Math.min(clock.getDelta(), 0.05);
+  // Contact Lab: only the two posed players + an orbit camera; no sim, no gameplay.
+  if (game.lab) {
+    updateLab(realDt);
+    applyDebugCam();
+    renderer.render(scene, camera);
+    if (dbgCam.shot) { dbgCam.shot = false; saveCanvasPNG(); }
+    requestAnimationFrame(animate);
+    return;
+  }
   // Free debug camera: the sim is frozen; just scrub the replay buffer (rewind) and
   // drive the orbit camera, then render. Nothing in the game advances.
   if (dbgCam.on) {
@@ -7588,6 +7713,8 @@ function buildStartMenu() {
   if (btn) btn.addEventListener('click', startGame, { once: true });
 }
 let gameStarted = false;
+let _loopStarted = false;
+function startLoop() { if (_loopStarted) return; _loopStarted = true; animate(); } // single rAF owner
 function startGame() {
   if (gameStarted) return; gameStarted = true;
   audio.unlock();
@@ -7597,7 +7724,7 @@ function startGame() {
   if (tagOff) tagOff.textContent = TEAMS.home.abbr;
   if (tagDef) tagDef.textContent = TEAMS.away.abbr;
   newPlay();
-  animate();
+  startLoop();
 }
 loadAssets().then(() => {
   spawnTeams(); spawnBench(); makeBall();
@@ -7609,7 +7736,10 @@ loadAssets().then(() => {
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   buildStartMenu();
-  if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame(); // menu gates the kickoff
+  // Boot straight into the Contact Lab with ?lab; otherwise the matchup menu gates the kickoff.
+  const wantLab = (typeof location !== 'undefined') && /\blab\b/.test(location.search + ' ' + location.hash);
+  if (wantLab) { enterLab(); }
+  else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
 
 

@@ -1202,3 +1202,38 @@ body.replay-mode .replay-btn { display: none !important; }
 }
 
 /* (Start-menu difficulty selector is styled in the VS-menu block above.) */
+
+/* ---------- Contact Lab (two-player contact-pose / spacing editor) ---------- */
+body.lab-mode #hud, body.lab-mode #joystick, body.lab-mode .action-btn,
+body.lab-mode .mini-btn, body.lab-mode #simbar, body.lab-mode #fs-btn,
+body.lab-mode #coach-btn, body.lab-mode #userstats, body.lab-mode #replay-btn,
+body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
+#lab-panel {
+  position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left));
+  z-index: 70; width: min(92vw, 310px);
+  background: rgba(8,11,16,0.88); border: 1px solid rgba(255,255,255,0.18); border-radius: 12px;
+  padding: 10px 11px; color: #eef2f7; backdrop-filter: blur(8px);
+  font-family: inherit; -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 10px 34px rgba(0,0,0,0.55);
+}
+#lab-panel.hidden { display: none; }
+#lab-panel .lab-head { display: flex; align-items: center; justify-content: space-between;
+  font-weight: 900; font-style: italic; letter-spacing: 1px; font-size: 15px; color: #ffd23a; margin-bottom: 8px; }
+#lab-panel .lab-head button { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; padding: 2px 6px; }
+#lab-panel .lab-sel { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+#lab-panel .lab-sel button { width: 40px; height: 36px; border-radius: 9px; cursor: pointer;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 15px; }
+#lab-panel .lab-sel button:active { transform: scale(0.92); }
+#lab-panel #lab-name { flex: 1; text-align: center; font-weight: 800; font-size: 12px; letter-spacing: 0.5px; }
+#lab-panel .lab-sliders { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; min-height: 8px; }
+#lab-panel .lab-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+#lab-panel .lab-row span { width: 92px; font-weight: 700; color: #cdd5df; }
+#lab-panel .lab-row input { flex: 1; accent-color: #ffd23a; height: 28px; }
+#lab-panel .lab-row b { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: #ffd23a; }
+#lab-panel .lab-none { font-size: 12px; color: rgba(255,255,255,0.5); font-style: italic; padding: 4px 0; }
+#lab-panel .lab-actrow { display: flex; gap: 6px; margin-bottom: 6px; }
+#lab-panel .lab-actrow button { flex: 1; min-height: 38px; border-radius: 9px; cursor: pointer;
+  font-family: inherit; font-weight: 800; font-size: 12px; color: #eef2f7;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); }
+#lab-panel .lab-actrow button:active { transform: translateY(1px); }
+#lab-panel .lab-hint { font-size: 10px; letter-spacing: 0.4px; color: rgba(255,255,255,0.5); text-align: center; }
