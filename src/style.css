@@ -336,6 +336,40 @@ html, body {
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* ---------- User-action tracker (your tackles / catches / INTs) ---------- */
+#userstats {
+  position: fixed;
+  top: max(26px, calc(env(safe-area-inset-top) + 22px)); /* below the FPS readout, top-left */
+  left: max(7px, env(safe-area-inset-left));
+  display: flex; gap: 6px;
+  z-index: 25;
+  pointer-events: none;
+}
+#userstats.hidden { display: none; }
+.us-item {
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 3px 7px;
+  backdrop-filter: blur(5px);
+}
+.us-item i {
+  font-style: normal; font-weight: 800; font-size: 9px; letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.62);
+}
+.us-item b { font-size: 14px; font-weight: 900; line-height: 1; color: #fff; }
+.us-k-tackles i { color: #ff9a7a; }
+.us-k-catches i { color: #ffe04a; }
+.us-k-ints i { color: #7fc0ff; }
+.us-item.bump { animation: us-bump 0.5s ease; }
+@keyframes us-bump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.5); background: rgba(255, 213, 74, 0.85); }
+  100% { transform: scale(1); }
+}
+body.replay-mode #userstats { display: none !important; }
 body.replay-mode #fps { display: none !important; }
 
 /* Broadcast cut: a quick dark dip between plays (opacity driven per-frame). */

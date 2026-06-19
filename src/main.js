@@ -1696,6 +1696,7 @@ const game = {
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
+  userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
@@ -1725,6 +1726,30 @@ const game = {
   throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
   throwArmed: false, // a throw only arms on a fresh press in LIVE (not the snap press)
 };
+// ---- User-action tracker: a running, persisted record of the HUMAN player's
+// plays — tackles he makes (his controlled defender brings the carrier down),
+// catches by his offense, and interceptions by his defense. Career totals,
+// stored across sessions; shown in the HUD badge + the debug Stats report. -------
+const USER_STATS_KEY = 'rfUserStats';
+try {
+  if (typeof localStorage !== 'undefined') {
+    const s = JSON.parse(localStorage.getItem(USER_STATS_KEY) || '{}');
+    for (const k in game.userStats) if (Number.isFinite(s[k])) game.userStats[k] = s[k];
+  }
+} catch (e) { /* ignore corrupt/unavailable storage */ }
+function saveUserStats() {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(USER_STATS_KEY, JSON.stringify(game.userStats)); } catch (e) { /* ignore */ }
+}
+// Credit one user action and flash the HUD. label drives the on-screen note.
+function creditUserStat(key, label) {
+  if (game.userStats[key] === undefined) return;
+  game.userStats[key]++;
+  saveUserStats();
+  if (typeof dbgLogPush === 'function') dbgLogPush(`<b>YOU:</b> ${label} (${game.userStats[key]})`);
+  flashUserStats(key);
+}
+// Did the human personally make this tackle? (his controlled defender, on defense)
+function userMadeTackle(tackler) { return !game.userOnOffense && tackler && tackler === game.controlled; }
 const THROW_CHARGE_MAX = 0.5; // seconds to a full bullet pass
 
 const ball = {
@@ -2927,6 +2952,26 @@ if (coachBtn) coachBtn.addEventListener('click', (e) => {
   coachBtn.classList.toggle('on', game.coachCam);
   updateCoachArt();
 });
+// User-action tracker HUD (your tackles / catches / interceptions).
+const userStatsEl = document.getElementById('userstats');
+const usEls = { tackles: document.getElementById('us-tkl'), catches: document.getElementById('us-cat'), ints: document.getElementById('us-int') };
+const usItemFor = { tackles: 'us-k-tackles', catches: 'us-k-catches', ints: 'us-k-ints' };
+function flashUserStats(key) {
+  if (!userStatsEl) return;
+  if (usEls[key]) usEls[key].textContent = game.userStats[key]; // update instantly on the action
+  const item = userStatsEl.querySelector('.' + usItemFor[key]);
+  if (item) { item.classList.remove('bump'); void item.offsetWidth; item.classList.add('bump'); }
+}
+function updateUserStatsHUD() {
+  if (!userStatsEl) return;
+  // Visible once you're in the game (hidden behind the start menu; replay CSS hides it).
+  const sm = document.getElementById('startmenu');
+  const onMenu = sm && !sm.classList.contains('hidden');
+  userStatsEl.classList.toggle('hidden', !!onMenu);
+  if (usEls.tackles) usEls.tackles.textContent = game.userStats.tackles;
+  if (usEls.catches) usEls.catches.textContent = game.userStats.catches;
+  if (usEls.ints) usEls.ints.textContent = game.userStats.ints;
+}
 // Two-button scheme: TURBO + one contextual ACTION button. (Desktop keeps the
 // optional Q/E/F shortcuts for explicit spin/dive/pitch.)
 (function buttons() {
@@ -3198,7 +3243,7 @@ function recordStats(result, endZ) {
   const gain = Number.isFinite(endZ) ? Math.round(game.dir * (endZ - game.los)) : 0;
   const td = result === 'TD';
   if (game.tally && gain >= 20) game.tally.bigPlays++;
-  if (p.sack) { if (p.tackler && p.tackler.stats) { p.tackler.stats.tkl++; p.tackler.stats.sack++; } return; }
+  if (p.sack) { if (p.tackler && p.tackler.stats) { p.tackler.stats.tkl++; p.tackler.stats.sack++; if (userMadeTackle(p.tackler)) creditUserStat('tackles', 'SACK'); } return; }
   if (p.completed && p.catcher) {                          // completed pass
     if (p.passer && p.passer.stats) { p.passer.stats.att++; p.passer.stats.cmp++; p.passer.stats.passYds += gain; if (td) p.passer.stats.passTD++; }
     if (p.catcher.stats) { p.catcher.stats.rec++; p.catcher.stats.recYds += gain; if (td) p.catcher.stats.recTD++; }
@@ -3207,7 +3252,7 @@ function recordStats(result, endZ) {
   } else if (p.carrier && p.carrier.stats) {               // designed run / scramble
     p.carrier.stats.car++; p.carrier.stats.rushYds += gain; if (td) p.carrier.stats.rushTD++;
   }
-  if (p.tackler && p.tackler.stats && !td) p.tackler.stats.tkl++;
+  if (p.tackler && p.tackler.stats && !td) { p.tackler.stats.tkl++; if (userMadeTackle(p.tackler)) creditUserStat('tackles', 'TACKLE'); }
 }
 function postPlayCards(result) {
   const p = game.play; if (!p) return [];
@@ -3603,7 +3648,8 @@ function dbgBalanceReport() {
   const avg = (n, d) => d ? (n / d).toFixed(1) : '0.0';
   const blk = (nm, sc, g) => !g ? `${nm} ${sc}` :
     `${nm}  ${sc} pts\n  pass ${g.cmp}/${g.att} (${pct(g.cmp, g.att)}%)  ${g.passYds}yd  ${avg(g.passYds, g.att)}/att  ${g.passTD}td\n  rush ${g.car}c  ${g.rushYds}yd  ${avg(g.rushYds, g.car)}/c  ${g.rushTD}td\n  def  ${g.tkl}tkl ${g.sack}sk ${g.intCaught}int`;
-  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}`;
+  const u = game.userStats;
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
@@ -4387,6 +4433,7 @@ function beginReturn(returner, kind = 'pick') {
   // or a chaser depends on whose drive it was. !userOnOffense => the user's team
   // (on defense) recovered, so the user runs it back; otherwise the user chases.
   const userReturning = !game.userOnOffense;
+  if (kind === 'pick' && userReturning) creditUserStat('ints', 'INTERCEPTION'); // the user's defense picked it off
   if (userReturning) {
     game.controlled = returner;
     showBanner(kind === 'fumble' ? 'SCOOP & SCORE!' : 'PICKED OFF!', '#3fe08a'); audio.cheer(0.5);
@@ -4995,7 +5042,7 @@ function updateBall(dt) {
         if (game.play) game.play.intBy = c; // box score: the pick
         if (game.tally) game.tally.picks++;
         beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
-      } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } enterRun(c, 'Caught it! Run!'); }
+      } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } if (game.userOnOffense) creditUserStat('catches', 'CATCH'); enterRun(c, 'Caught it! Run!'); }
     }
   }
 }
@@ -6679,6 +6726,7 @@ function updatePlay(dt) {
   updateReticles(); // single authority for all on-field rings (visibility + position)
   updateNameTags();
   updateCoachArt(); // pre-snap play-art overlay (PLAY ART button)
+  updateUserStatsHUD(); // your tackles / catches / interceptions badge
   // Target arrow bobs over the selected receiver while you're picking a throw.
   const showArrow = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
   targetArrow.visible = showArrow;
@@ -7150,7 +7198,7 @@ function buildDebugPanel() {
   dbgPanelEl.querySelector('#dbg-toB').addEventListener('click', () => { if (abB) applyTune(abB); });
   // Stats / balance report
   dbgPanelEl.querySelector('#dbg-stat-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(dbgBalanceReport()); } catch (e) { /* ignore */ } });
-  dbgPanelEl.querySelector('#dbg-stat-reset').addEventListener('click', () => { game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }; for (const ch of game.all) ch.stats = blankStats(); });
+  dbgPanelEl.querySelector('#dbg-stat-reset').addEventListener('click', () => { game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }; for (const ch of game.all) ch.stats = blankStats(); game.userStats.tackles = game.userStats.catches = game.userStats.ints = 0; saveUserStats(); });
   updateDbgExport();
 }
 // Pretty one-line JSON of the current knobs (rounded), for Save / Copy / display.
