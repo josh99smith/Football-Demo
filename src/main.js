@@ -1585,7 +1585,7 @@ function makeCharacter(team) {
     backped: false,
     // Procedural overlay blend weights (0..1): each eases in/out so a pose fades
     // smoothly over the locomotion clip instead of snapping on/off in one frame.
-    throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, catchRaise: 0.8,
+    throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, catchRaise: 0.8, protectW: 0,
     // Locomotion "life": eased bank (lean into turns) + forward pitch (lean with
     // speed/turbo); prevHeading feeds the turn rate; breathPh desyncs idle breathing;
     // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
@@ -1660,7 +1660,7 @@ const TUNE_DEFAULTS = {
   runLean: 1.0,                                    // × forward body lean while running (lower = subtler)
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
-  animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0,
+  animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0,
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -3894,7 +3894,7 @@ function preparePlay(teleport) {
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false;
-    ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
+    ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
     ch.resetSpeed = WALK_SPEED * (0.6 + Math.random() * 0.85); // amble .. brisk jog
@@ -6162,6 +6162,44 @@ function applyArmAction(ch, dt, bw = 1) {
     blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5 * w, bw);
   }
 }
+// Ball-security threat: how imminent is contact on the ball carrier (0 none .. 1
+// about to be hit)? Rises as the nearest pursuer closes inside ~5yd, boosted by his
+// closing speed. Drives the off-arm protect pose (applyCarryProtect).
+function carrierThreat(ch) {
+  if (ch !== game.carrier) return 0;
+  if (game.state !== STATE.RUN && game.state !== STATE.RETURN) return 0;
+  const cp = ch.group.position;
+  const foes = ch.team === 'off' ? game.defense : game.offense; // whoever is chasing him
+  let best = Infinity, closing = 0;
+  for (const d of foes) {
+    if (d.ragdolling) continue;
+    const dx = d.group.position.x - cp.x, dz = d.group.position.z - cp.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < best) {
+      best = dist;
+      const rl = dist || 1;
+      closing = -(((d.vel.x - ch.vel.x) * dx + (d.vel.z - ch.vel.z) * dz) / rl); // + = closing in
+    }
+  }
+  if (!Number.isFinite(best)) return 0;
+  const prox = THREE.MathUtils.clamp((5.0 - best) / 4.0, 0, 1);  // 0 at 5yd -> 1 at 1yd
+  const clos = THREE.MathUtils.clamp(closing / 8, 0, 1);         // a hard closing angle adds urgency
+  return THREE.MathUtils.clamp(prox * (0.55 + 0.7 * clos), 0, 1);
+}
+// Ball-security pose: the OFF (left) arm folds up across the front to shield the
+// ball while the carry (right) arm tucks it high & tight, with a slight protective
+// curl into the oncoming hit. Layered over the run cycle; weight = threat, so it
+// eases on as a tackler bears down and off again in the clear.
+function applyCarryProtect(ch, w = 1) {
+  w *= TUNE.animProtect;
+  if (w < 0.001 || !ch.upperArm || !ch.upperArmRest) return;
+  blendBone(ch.leftArm, ch.leftArmRest, -1.05, w);       // off arm wraps across the body...
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, -1.85, w); // ...hand up over the ball
+  blendBone(ch.upperArm, ch.upperArmRest, -0.55, w);     // carry arm pulls in...
+  blendBone(ch.foreArm, ch.foreArmRest, -1.5, w);        // ...ball high & tight to the chest
+  blendLean(ch, 0.16, 0, w * 0.5);                       // slight curl into the contact
+  if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.18 * w); ch.headBone.quaternion.multiply(_tq); ch.headBone.updateMatrixWorld(true); } // chin down
+}
 // Break-tackle BATTLE pose: the two lean into each other and churn — the
 // tackler wraps up (both arms forward, head down), the carrier drives through
 // (stiff-arm out, ball cradled). Procedural so it reads as real contact.
@@ -6349,6 +6387,12 @@ function updateAnimation(ch, dt) {
   if (ch.catchW > 0.001) applyCatchPose(ch, ball.mesh.position, dt, ch.catchW);
   if (ch.grabW > 0.001) applyBattleArms(ch, true, ch.grabW); // wrap him up like a tackler
   if (ch.battleW > 0.001) applyBattleArms(ch, ch === game.battle.tackler, ch.battleW);
+  // Ball security: the carrier shields the ball with his off arm, ramping with the
+  // threat of contact — only in open-field carrying (no battle/grab/stiff-arm/etc.
+  // overlay, which pose the arms themselves).
+  const protectTarget = (!active && ch === game.carrier) ? carrierThreat(ch) : 0;
+  ch.protectW += (protectTarget - ch.protectW) * Math.min(1, dt * 8);
+  if (ch.protectW > 0.01) applyCarryProtect(ch, ch.protectW);
   // Head-on-a-swivel: a backpedaling player (a DB dropping into coverage, the QB
   // on his drop) tracks the ball in flight or the nearest receiver instead of
   // staring straight back. Eased, and eased back to center once he's done.
@@ -7043,6 +7087,7 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'animGrab', label: 'Grab/wrap ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animProtect', label: 'Ball protect ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
