@@ -2360,48 +2360,79 @@ function spawnTeams() {
   game.all = [...game.teamA, ...game.teamB];
   setupPossession();
 }
-// Team benches: 7 reserves per team pacing their own sideline lane, facing the
-// field and emoting. They're NOT in game.all (no play logic touches them).
+// Team benches: an NFL-style team area per sideline (home = -X, away = +X), using
+// the SAME models as the on-field players. 10 per side: 8 standing in two rows,
+// watching the game / turning to talk to a teammate (+ erupting on big plays), and
+// 2 pacing behind them. They're NOT in game.all (no play logic touches them), and
+// they sit OUTSIDE the cage (front row past the ball's max reach ~28.65).
+const BENCH_N = 10, BENCH_STAND = 8;        // per team: 8 standing, 2 pacing
+const BENCH_FRONT_X = 28.8, BENCH_ROW_DX = 2.0, BENCH_PACE_X = 32.6; // apron lanes (×side)
+const BENCH_Z0 = -16, BENCH_DZ = 4.5;       // standing cluster: 4 z-slots, two staggered rows
+const BENCH_PACE_LO = -20, BENCH_PACE_HI = 2;
 function spawnBench() {
   game.benchA = []; game.benchB = []; game.bench = [];
-  const lane = HALF_W + SIDELINE * 0.5; // center of the bench apron
-  for (let i = 0; i < 7; i++) {
-    const a = makeCharacter('off'); setupBench(a, -lane, i); game.benchA.push(a); // team A: left sideline
-    const b = makeCharacter('def'); setupBench(b, lane, i);  game.benchB.push(b); // team B: right sideline
+  for (let i = 0; i < BENCH_N; i++) {
+    const a = makeCharacter('off'); setupBench(a, -1, i); game.benchA.push(a); // home team: -X sideline
+    const b = makeCharacter('def'); setupBench(b, 1, i);  game.benchB.push(b); // away team: +X sideline
   }
   game.bench = [...game.benchA, ...game.benchB];
 }
-function setupBench(ch, lane, i) {
-  ch.isBench = true; ch.lane = lane;
-  ch.faceField = lane > 0 ? -Math.PI / 2 : Math.PI / 2; // inward toward the field
-  const z = -HALF_L + 16 + i * ((FIELD_L - 32) / 6);
-  ch.group.position.set(lane + (Math.random() - 0.5) * 2, 0, z);
-  ch.heading = ch.faceField; ch.group.rotation.set(0, ch.heading, 0);
-  ch.benchTarget = z; ch.benchWait = Math.random() * 3; ch.emoteCd = 3 + Math.random() * 7;
+function setupBench(ch, side, i) {
+  ch.isBench = true; ch.side = side;
+  ch.faceField = side > 0 ? -Math.PI / 2 : Math.PI / 2; // inward toward the field
+  ch.heading = ch.faceField;
+  ch.emoteCd = 4 + Math.random() * 9;
+  if (i < BENCH_STAND) {                                 // standing in the team area (two rows of 4)
+    ch.benchRole = 'stand';
+    const row = i < 4 ? 0 : 1, k = i - row * 4;
+    ch.homeX = (BENCH_FRONT_X + row * BENCH_ROW_DX) * side;
+    ch.homeZ = BENCH_Z0 + k * BENCH_DZ + (row ? BENCH_DZ / 2 : 0); // back row staggered
+    ch.group.position.set(ch.homeX, 0, ch.homeZ);
+    ch.chatCd = 2 + Math.random() * 6; ch.chatT = 0; ch.chatHeading = ch.faceField;
+  } else {                                               // pacing behind the standing rows
+    ch.benchRole = 'pace';
+    ch.paceLane = BENCH_PACE_X * side;
+    ch.group.position.set(ch.paceLane, 0, THREE.MathUtils.lerp(BENCH_PACE_LO, BENCH_PACE_HI, Math.random()));
+    ch.benchTarget = ch.group.position.z; ch.benchWait = Math.random() * 3;
+  }
+  ch.group.rotation.set(0, ch.heading, 0);
 }
 function updateBench(dt) {
   if (!game.bench) return;
   for (const ch of game.bench) {
     if (ch.oneShotT > 0) { ch.oneShotT -= dt; ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0; continue; }
-    const p = ch.group.position; let moving = false;
     ch.emoteCd -= dt;
-    if (ch.benchWait > 0) { ch.benchWait -= dt; ch.heading = ch.faceField; }
-    else {
-      const dz = ch.benchTarget - p.z;
-      if (Math.abs(dz) > 0.5) {                       // pace toward the target spot
-        p.z += Math.sign(dz) * Math.min(Math.abs(dz), 2.6 * dt);
-        p.x += (ch.lane - p.x) * Math.min(1, dt * 2); // ease back to the lane
-        ch.heading = dz > 0 ? 0 : Math.PI; moving = true;
-      } else {                                        // arrived: face the field, wait, pick a new spot
-        ch.heading = ch.faceField; ch.benchWait = 1.5 + Math.random() * 4;
-        ch.benchTarget = THREE.MathUtils.clamp(p.z + (Math.random() - 0.5) * 44, -HALF_L + 14, HALF_L - 14);
+    if (ch.benchRole === 'pace') {                       // walk the sideline behind the bench
+      const p = ch.group.position; let moving = false;
+      if (ch.benchWait > 0) { ch.benchWait -= dt; ch.heading = ch.faceField; }
+      else {
+        const dz = ch.benchTarget - p.z;
+        if (Math.abs(dz) > 0.5) {
+          p.z += Math.sign(dz) * Math.min(Math.abs(dz), 2.4 * dt);
+          p.x += (ch.paceLane - p.x) * Math.min(1, dt * 2);
+          ch.heading = dz > 0 ? 0 : Math.PI; moving = true;
+        } else {
+          ch.heading = ch.faceField; ch.benchWait = 1.5 + Math.random() * 3;
+          ch.benchTarget = THREE.MathUtils.clamp(p.z + (Math.random() - 0.5) * 30, BENCH_PACE_LO, BENCH_PACE_HI);
+        }
       }
+      setClip(ch, moving ? 'walk' : 'idle');
+    } else {                                             // standing: watch the game, turn to chat
+      ch.chatCd -= dt;
+      if (ch.chatT > 0) { ch.chatT -= dt; ch.heading = ch.chatHeading; }
+      else {
+        ch.heading = ch.faceField;
+        if (ch.chatCd <= 0) { // turn toward a neighbor up/down the line for a beat (talking)
+          ch.chatT = 1.5 + Math.random() * 2.5; ch.chatCd = 5 + Math.random() * 8;
+          ch.chatHeading = ch.faceField + (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.45);
+        }
+      }
+      setClip(ch, 'idle');
     }
-    if (ch.emoteCd <= 0 && ch.actions.celebrate) {    // periodic emote (cheer/clap)
+    if (ch.emoteCd <= 0 && ch.actions.celebrate) {       // ambient react to the game
       playOneShot(ch, 'celebrate', 1.5 + Math.random(), true);
-      ch.emoteCd = 7 + Math.random() * 9; ch.heading = ch.faceField;
+      ch.emoteCd = 9 + Math.random() * 11;
     }
-    setClip(ch, moving ? 'walk' : 'idle');
     ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0;
   }
 }
@@ -2422,9 +2453,10 @@ const CHEER_ENTER_Z = 11;   // they start downfield and walk toward camera into 
 const CHEER_T_DANCE = 4;    // walked in + dancing by ~4s
 const CHEER_T_EXIT = 19;    // start walking off at ~19s (cinematic is 25s)
 const CHEER_WALK_SPD = 3.1, CHEER_EXIT_SPD = 5.0;
-// Gameplay home: two staggered lines on the +X sideline apron, OUTSIDE the cage
-// (HALF_W ~ 26.65; ball overshoots to ~CAGE_X+2 = 28.65) so nothing can touch them.
-const CHEER_SIDE_X = 30, CHEER_ROW_GAP = 1.7, CHEER_Z_SPACING = 2.6;
+// Gameplay home: their OWN section on the +X sideline apron, toward +Z (clear of the
+// away bench team area at z<0), two staggered lines, OUTSIDE the cage (HALF_W ~ 26.65;
+// ball overshoots to ~CAGE_X+2 = 28.65) so nothing can touch them.
+const CHEER_SIDE_X = 30, CHEER_ROW_GAP = 1.7, CHEER_Z_SPACING = 2.6, CHEER_SECTION_Z = 24;
 function cheerAction(mixer, clip) { const a = mixer.clipAction(clip); a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true; a.setEffectiveWeight(0); a.play(); return a; }
 function setCheerClip(ch, name) {
   if (ch.cur === name || !ch.acts[name]) return;
@@ -2458,7 +2490,7 @@ function spawnCheer() {
     // Sideline post: two staggered rows on the +X apron, facing the field.
     const row = i < perRow ? 0 : 1, j = i - row * perRow, rowCount = row === 0 ? perRow : (CHEER_N - perRow);
     const sideX = CHEER_SIDE_X + row * CHEER_ROW_GAP;
-    const sideZ = (j - (rowCount - 1) / 2) * CHEER_Z_SPACING + (row ? CHEER_Z_SPACING / 2 : 0);
+    const sideZ = CHEER_SECTION_Z + (j - (rowCount - 1) / 2) * CHEER_Z_SPACING + (row ? CHEER_Z_SPACING / 2 : 0);
     game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter', sideX, sideZ, sideHeading: -Math.PI / 2 });
   }
 }
@@ -7845,13 +7877,15 @@ async function applyModelChoice() {
   if (idx() !== want) return;             // selection changed again during the load
   _appliedModelIdx = want;
   if (!game.all || !game.all.length) return; // not spawned yet (initial spawn already honors the flag)
-  // Tear down the current player models (keep benches as-is).
+  // Tear down the current player models (field AND bench) so the sideline swaps too.
   for (const ch of game.all) {
     if (ch.ragdoll) { try { ch.ragdoll.dispose(); } catch (e) { /* ignore */ } }
     if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group);
   }
+  for (const ch of (game.bench || [])) { if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group); }
   clearRagdolls();
   spawnTeams();              // rebuilds game.teamA/teamB/all + setupPossession (uses the new flag)
+  spawnBench();              // rebuild the sideline with the new model too
   if (TUNE.playerSize !== 1) applyPlayerSize();
   try { applyLook(); } catch (e) { /* ignore */ }
   try { buildPortraits(); } catch (e) { /* ignore */ } // refresh the post-play card art
@@ -8124,6 +8158,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
