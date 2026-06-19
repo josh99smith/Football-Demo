@@ -7728,9 +7728,30 @@ function buildStartMenu() {
 let gameStarted = false;
 let _loopStarted = false;
 function startLoop() { if (_loopStarted) return; _loopStarted = true; animate(); } // single rAF owner
+
+// Background music: full on the title menu, ducked under live play. Browsers
+// block audio until a gesture, so the bed kicks in on the first tap/key and we
+// ride the gain down at kickoff rather than restarting the track.
+const MUSIC_URL = 'assets/music/fourth_down_riot.wav';
+const MENU_MUSIC_GAIN = 0.4;
+const GAME_MUSIC_GAIN = 0.12;
+let _musicPrimed = false;
+function primeMusic() {
+  if (_musicPrimed) return; _musicPrimed = true;
+  audio.unlock();
+  // If a game is already underway (e.g. ?lab / instant start) go straight to the quiet bed.
+  audio.playMusic(MUSIC_URL, { gain: gameStarted ? GAME_MUSIC_GAIN : MENU_MUSIC_GAIN });
+}
+['pointerdown', 'touchstart', 'keydown'].forEach((ev) =>
+  window.addEventListener(ev, primeMusic, { once: true, capture: true }));
+
 function startGame() {
   if (gameStarted) return; gameStarted = true;
   audio.unlock();
+  // Bring the music bed down to the gameplay level (or start it there if no
+  // gesture has primed it yet, e.g. an instant start with no menu).
+  if (_musicPrimed) audio.setMusicGain(GAME_MUSIC_GAIN);
+  else { _musicPrimed = true; audio.playMusic(MUSIC_URL, { gain: GAME_MUSIC_GAIN }); }
   if (startMenuEl) startMenuEl.classList.add('hidden');
   // Label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff).
   const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');

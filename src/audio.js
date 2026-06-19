@@ -285,18 +285,29 @@ export class AudioManager {
   playMusic(url, { gain = 0.25, loop = true } = {}) {
     if (!this.ready) return;
     this.stopMusic();
+    this._musicGain = gain; // live target so a duck during decode still lands
     const start = (buf) => {
       if (!buf || this.music) return;
       const src = this.ctx.createBufferSource(); src.buffer = buf; src.loop = loop;
-      const g = this.ctx.createGain(); g.gain.value = this.muted ? 0 : gain;
+      const g = this.ctx.createGain(); g.gain.value = this.muted ? 0 : this._musicGain;
       src.connect(g); g.connect(this.master); src.start(this.t);
-      this.music = { src, g, gain };
+      this.music = { src, g };
     };
     if (this._musicBuf && this._musicBuf.url === url) { start(this._musicBuf.buf); return; }
     fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
       .then((raw) => this.ctx.decodeAudioData(raw.slice(0)))
       .then((buf) => { this._musicBuf = { url, buf }; start(buf); })
       .catch(() => { /* no music file — silence */ });
+  }
+  // Smoothly ride the music bed up/down (e.g. duck under gameplay). Works even
+  // if the track is still decoding — the new target is applied when it starts.
+  setMusicGain(gain, ramp = 0.8) {
+    this._musicGain = gain;
+    if (!this.music) return;
+    const t = this.t, g = this.music.g.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(this.muted ? 0 : gain, t + ramp);
   }
   stopMusic() {
     if (!this.music) return;
