@@ -4177,6 +4177,7 @@ function updateReplay(dt) {
       ev.fired = true; const ch = game.all[ev.pIdx]; if (!ch) continue;
       if (ev.type === 'tear') tearInHalf(ch, ev.hx, ev.hz, ev.power); else popHelmet(ch, ev.hx, ev.hz, ev.power);
     }
+    ensureBallVisible(); // the replay skips simStep, so keep the ball clamped on-screen here too
     driveReplayFlames(dt, r.i);
     return;
   }
@@ -4226,6 +4227,7 @@ function updateReplay(dt) {
     if (ev.type === 'tear') tearInHalf(ch, ev.hx, ev.hz, ev.power); else popHelmet(ch, ev.hx, ev.hz, ev.power);
     timeScale.bulletTime(0.12, 1.0, 1.3); // slow-mo the gore in the replay
   }
+  ensureBallVisible(); // the replay skips simStep, so keep the ball clamped on-screen here too
   driveReplayFlames(dt, r.i); // ON FIRE / turbo flames follow the replayed bodies
 }
 function endReplay() {
@@ -5006,9 +5008,15 @@ function updateBall(dt) {
     if (h.ragdolling && h.ragdoll && h.ragdoll.active) {
       // Tucked with the falling body: track the carrier's physics-driven hips
       // (fall back to his ground position so the ball never snaps to the origin).
+      // Ignore a non-finite spike on a violent hit so the ball isn't flung off
+      // screen (and that garbage isn't baked into the replay record).
       const hips = h.ragdoll.tryBone('Hips');
-      if (hips) { hips.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z); }
-      else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
+      if (hips) {
+        hips.getWorldPosition(_hips);
+        if (Number.isFinite(_hips.x) && Number.isFinite(_hips.y) && Number.isFinite(_hips.z)) {
+          ball.mesh.position.set(_hips.x, Math.max(0.2, _hips.y), _hips.z);
+        } else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
+      } else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
       return;
     }
     // In a chest-to-chest contact (break-tackle battle / wrap-drag), follow the
