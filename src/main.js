@@ -1233,6 +1233,14 @@ const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
 
 let charTemplate, defTemplate, helmetOffTemplate, helmetDefTemplate, footballTemplate;
+// Player-team model registry. Index 0 = the default model; each alt is appended at
+// load (skipped if its .glb is missing). Entry: { name, template, helmet|null, scale,
+// groundY }. TUNE.altModel indexes it; each alt gets its OWN helmet (or none yet).
+const ALT_MODEL_DEFS = [
+  { glb: 'assets/character_alt.glb', helmet: 'assets/helmet_alt.glb', name: 'ALT 1' },
+  { glb: 'assets/character_alt2.glb', helmet: 'assets/helmet_alt2.glb', name: 'ALT 2' },
+];
+const PLAYER_MODELS = [];
 let idleClip, walkClip, runClip, sprintClip, jukeClip, catchClip, tackleClip;
 let backLClip, backRClip; // backpedal locomotion (left/right drift)
 // Variety + new-move clips from the merged Meshy packs (animations2/3.glb).
@@ -1426,6 +1434,23 @@ async function loadAssets() {
     DEF_SCALE = 1.8 / dr.span;
     DEF_GROUND_Y = -(dr.lo * DEF_SCALE - 0.05);
   } else { DEF_SCALE = SCALE; DEF_GROUND_Y = GROUND_Y; }
+  // Build the player-team model registry: default first (loaded), then each alt as
+  // a LAZY placeholder — alt models can be big, so they only download when selected
+  // (see ensurePlayerModel). Height is auto-normalized on load; helmet is per-model.
+  PLAYER_MODELS.length = 0;
+  PLAYER_MODELS.push({ name: 'DEFAULT', template: charTemplate, helmet: helmetOffTemplate || helmetDefTemplate, scale: SCALE, groundY: GROUND_Y, loaded: true });
+  for (const def of ALT_MODEL_DEFS) PLAYER_MODELS.push({ name: def.name, glb: def.glb, helmetUrl: def.helmet, template: null, helmet: null, scale: SCALE, groundY: GROUND_Y, loaded: false });
+}
+// Lazy-load an alt model's mesh + helmet on first use (keeps big models off the
+// startup download). Resolves with the registry entry; entry.template stays null
+// (so callers fall back to the default model) if the .glb is missing/broken.
+async function ensurePlayerModel(idx) {
+  const e = PLAYER_MODELS[idx];
+  if (!e || e.loaded) return e;
+  try { e.template = (await loadGLB(e.glb)).scene; } catch (err) { console.warn('alt model missing', e.glb, err); e.loaded = true; return e; }
+  try { e.helmet = (await loadGLB(e.helmetUrl)).scene; } catch (err) { e.helmet = null; } // bare-headed until provided
+  const r = measureBoneSpan(e.template); e.scale = 1.8 / r.span; e.groundY = -(r.lo * e.scale - 0.05);
+  e.loaded = true; return e;
 }
 
 function makeCharacter(team) {
@@ -1437,9 +1462,15 @@ function makeCharacter(team) {
   // attaches its head/helmet exactly like the offense. If that model is missing,
   // fall back to cloning the offense and tinting it blue.
   const useBlue = isDef && defTemplate;
-  const model = cloneSkeleton(useBlue ? defTemplate : charTemplate);
-  model.scale.multiplyScalar(isDef ? DEF_SCALE : SCALE);
-  model.position.y = isDef ? DEF_GROUND_Y : GROUND_Y;
+  // Player team picks from the model registry (0 = default); defense uses its blue
+  // model. A not-yet-loaded alt falls back to the default until ensurePlayerModel runs.
+  let pm = (!isDef && PLAYER_MODELS.length) ? PLAYER_MODELS[THREE.MathUtils.clamp(TUNE.altModel | 0, 0, PLAYER_MODELS.length - 1)] : null;
+  if (pm && !pm.template) pm = PLAYER_MODELS[0];
+  const model = cloneSkeleton(pm ? pm.template : (useBlue ? defTemplate : charTemplate));
+  const mScale = pm ? pm.scale : (isDef ? DEF_SCALE : SCALE);
+  const mGroundY = pm ? pm.groundY : (isDef ? DEF_GROUND_Y : GROUND_Y);
+  model.scale.multiplyScalar(mScale);
+  model.position.y = mGroundY;
   model.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true; o.frustumCulled = false; o.userData.isBody = true;
@@ -1542,9 +1573,9 @@ function makeCharacter(team) {
   // is rigidly attached (can't detach, follows head turns + ragdoll tumbles).
   // Local transform compensates for the bone's tiny world scale.
   let helmet = null;
-  // Both teams wear the red helmet head model (helmetOffTemplate); the blue
-  // helmet is kept only as a fallback if the red one fails to load.
-  const helmetScene = helmetOffTemplate || helmetDefTemplate;
+  // Each player-team model carries its own helmet (the default + defense use the
+  // original; alts use theirs, or go bare-headed until one's provided).
+  const helmetScene = pm ? pm.helmet : (helmetOffTemplate || helmetDefTemplate);
   if (headBone) headBone.scale.setScalar(HEAD_SCALE); // Blitz-style big head (both teams)
   if (helmetScene && headBone && headEnd) {
     model.updateWorldMatrix(true, true);
@@ -1571,7 +1602,7 @@ function makeCharacter(team) {
   }
 
   return {
-    group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle,
+    group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, mScale, mGroundY,
     upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
@@ -1659,6 +1690,7 @@ const TUNE_DEFAULTS = {
   lightFloods: 1.0,      // × corner floodlight (tower spot) intensity
   lightFloodColor: '#fff4d6',    // floodlight color
   playerGlow: 0.35,      // player skin self-illumination (1 = fully self-lit, 0 = scene-lit only)
+  altModel: 0,           // 0 = default model for your team; 1 = the alternate character_alt.glb model
   // Look / materials
   offenseTint: '#ffffff', defenseTint: '#ffffff', // per-team body color multiply
   skinRough: 1.0, skinMetal: 0.0,                  // player skin material
@@ -7205,6 +7237,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
   { tab: 'Colliders', key: 'ballSize', label: 'Ball size ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   // --- Look / materials ---
+  { tab: 'Look', key: 'altModel', label: 'Your-team model', min: 0, max: ALT_MODEL_DEFS.length, step: 1, fmt: (v) => { const i = v | 0; return (PLAYER_MODELS[i] && PLAYER_MODELS[i].name) || (i === 0 ? 'DEFAULT' : '#' + i); }, onChange: () => applyModelChoice() },
   { tab: 'Look', key: 'offenseTint', label: 'Offense tint', type: 'color', onChange: () => applyLook() },
   { tab: 'Look', key: 'defenseTint', label: 'Defense tint', type: 'color', onChange: () => applyLook() },
   { tab: 'Look', key: 'skinRough', label: 'Skin roughness', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyLook() },
@@ -7529,9 +7562,36 @@ function applyPlayerSize() {
   for (const ch of game.all) {
     if (!ch.model) continue;
     const isDef = ch.team === 'def';
-    ch.model.scale.setScalar((isDef ? DEF_SCALE : SCALE) * m);
-    ch.model.position.y = (isDef ? DEF_GROUND_Y : GROUND_Y) * m; // keep the feet on the ground
+    const base = Number.isFinite(ch.mScale) ? ch.mScale : (isDef ? DEF_SCALE : SCALE);
+    const gy = Number.isFinite(ch.mGroundY) ? ch.mGroundY : (isDef ? DEF_GROUND_Y : GROUND_Y);
+    ch.model.scale.setScalar(base * m);
+    ch.model.position.y = gy * m; // keep the feet on the ground
   }
+}
+// Swap the player team's model to/from the alternate (TUNE.altModel). Same rig, so
+// it's a full rebuild of both teams (cheap) preserving score/clock/possession; the
+// shared animation clips drive the new mesh by bone name. Idempotent — only rebuilds
+// when the choice actually changed (so opening the panel doesn't respawn everyone).
+let _appliedModelIdx = 0;
+async function applyModelChoice() {
+  const idx = () => THREE.MathUtils.clamp(TUNE.altModel | 0, 0, Math.max(0, PLAYER_MODELS.length - 1));
+  const want = idx();
+  if (want === _appliedModelIdx) return; // no change
+  await ensurePlayerModel(want);          // lazy-download the model the first time it's picked
+  if (idx() !== want) return;             // selection changed again during the load
+  _appliedModelIdx = want;
+  if (!game.all || !game.all.length) return; // not spawned yet (initial spawn already honors the flag)
+  // Tear down the current player models (keep benches as-is).
+  for (const ch of game.all) {
+    if (ch.ragdoll) { try { ch.ragdoll.dispose(); } catch (e) { /* ignore */ } }
+    if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group);
+  }
+  clearRagdolls();
+  spawnTeams();              // rebuilds game.teamA/teamB/all + setupPossession (uses the new flag)
+  if (TUNE.playerSize !== 1) applyPlayerSize();
+  try { applyLook(); } catch (e) { /* ignore */ }
+  try { buildPortraits(); } catch (e) { /* ignore */ } // refresh the post-play card art
+  enterReset(true);          // place everyone on the field, lined up
 }
 function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
@@ -7771,8 +7831,13 @@ function startGame() {
   newPlay();
   startLoop();
 }
-loadAssets().then(() => {
+loadAssets().then(async () => {
+  // If a non-default player model was saved, download it before the first spawn so
+  // teams come up wearing it (otherwise the default loads instantly and it'd swap in late).
+  const savedIdx = THREE.MathUtils.clamp(TUNE.altModel | 0, 0, Math.max(0, PLAYER_MODELS.length - 1));
+  if (savedIdx > 0) { try { await ensurePlayerModel(savedIdx); } catch (e) { /* fall back to default */ } }
   spawnTeams(); spawnBench(); makeBall();
+  _appliedModelIdx = savedIdx; // initial spawn honored the saved index
   ballFlame = new FlameEmitter(48); playerFlame = new FlameEmitter(48); // ON FIRE / turbo flames
   game.firstDown = game.los + FIRST_DOWN_YDS;
   buildPortraits(); // pre-render the posed card art for both teams
