@@ -745,7 +745,7 @@ function updateReticles() {
   const rcv = game.receivers ? game.receivers[game.selected] : null;
   const selOn = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && rcv && rcv.group && !rcv.ragdolling;
   selRing.visible = !!selOn;
-  if (selOn) selRing.position.set(rcv.group.position.x, 0.03, rcv.group.position.z);
+  if (selOn) { selRing.position.set(rcv.group.position.x, 0.03, rcv.group.position.z); selRing.scale.set(1, 1, 1); } // (the user-catch cue pulses it; keep the pre-throw ring normal)
   // Blue concentric reticle on the controlled player (live play, or pre-snap D).
   const ctlOn = ctl && ctl.group && !ctl.ragdolling && (live || (game.state === STATE.PRESNAP && !game.userOnOffense));
   ctrlRing.visible = !!ctlOn;
@@ -1725,6 +1725,12 @@ const TUNE_DEFAULTS = {
   catchLog: false,       // log catch telemetry (gap/height/branch) to the debug event log
   jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
   catchHeight: 1.0,      // × the catch collider's vertical reach (height)
+  // User catch (Phase 1 RAC + Phase 2 cue): on your own pass, press CATCH in the
+  // timing window to make the grab in stride. CPU receivers are unaffected.
+  userCatch: true,       // enable the user-controlled catch on your targeted receiver
+  catchWindow: 1.4,      // 3D gap (yd) at which the user-catch timing window opens as the ball drops in
+  userCatchBonus: 0.18,  // max catch-odds bonus added for a well-timed user catch
+  racBoost: 1.18,        // × baseSpeed burst out of a RAC (catch-in-stride) reception (YAC)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -4588,6 +4594,10 @@ function throwBall(power) {
   ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
   ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false; ball.hitFence = false;
   ball.mode = 'flying';
+  // Arm the user catch on your own pass (the human makes the play on his receiver).
+  game.userCatch = (TUNE.userCatch && game.userOnOffense && recv && !recv.cpu)
+    ? { on: true, open: false, armed: false, buffered: false, score: 0, recv }
+    : { on: false };
   if (game.play) { game.play.passer = game.qb; game.play.target = recv; game.play.viaPass = true; } // box score: the throw
   game.state = STATE.AIR; selRing.visible = false;
   // Procedural throwing motion, varied by the throw: face the target and let
@@ -5357,11 +5367,20 @@ function updateBall(dt) {
         if (Math.hypot(c.vel.x, c.vel.z) < 2) { const fwd = game.dir > 0 ? 0 : Math.PI, sp = c.baseSpeed * 0.5; c.vel.set(Math.sin(fwd) * sp, 0, Math.cos(fwd) * sp); }
       }
       if (ball.intercept) {
+        if (game.userCatch) game.userCatch.on = false; // clear the user-catch cue on a pick
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
         if (game.tally) game.tally.picks++;
         beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
-      } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } if (game.userOnOffense) creditUserStat('catches', 'CATCH'); enterRun(c, 'Caught it! Run!'); }
+      } else {
+        ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; }
+        if (game.userOnOffense) creditUserStat('catches', 'CATCH');
+        // RAC (Phase 1): a user catch-in-stride bursts downfield instead of dead-stopping.
+        const uc = game.userCatch;
+        if (uc && uc.on && uc.armed && c === uc.recv) { const h = c.heading, sp = c.baseSpeed * TUNE.racBoost; c.vel.set(Math.sin(h) * sp, 0, Math.cos(h) * sp); c.speed = sp; }
+        if (uc) uc.on = false;
+        enterRun(c, 'Caught it! Run!');
+      }
     }
   }
 }
@@ -5408,6 +5427,8 @@ function passBrokenUp(msg, color, swatter, swatType) {
   if (swatter) { swatter.catchLeap = false; swatter.catchPlant = false; swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
+  if (game.userCatch) game.userCatch.on = false; // clear the user-catch cue on an incompletion
+  selRing.visible = false; selRing.scale.set(1, 1, 1);
   endPlay('incomplete', game.los); // endPlay blows the whistle
 }
 
@@ -5434,6 +5455,37 @@ function catchGap(ch, ballPos, intended) {
   const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
   return Math.hypot(dH, dV);
 }
+// Phase 1 (RAC) + Phase 2 cue: while a pass is in the air to the USER's receiver,
+// a timing window opens as the ball drops into reach. Pressing the action button
+// ("CATCH" / Space) in the window arms a catch-in-stride — it overrides the auto
+// style in commitCatchReach (keep momentum, no plant), layers a timing bonus onto
+// tryReception, and bursts downfield out of the secure (YAC). CPU receivers and the
+// user's non-targeted WRs are untouched (they auto-resolve exactly as before).
+function updateUserCatch(actionEdge) {
+  const uc = game.userCatch; if (!uc || !uc.on) return;
+  const recv = uc.recv;
+  if (!recv || recv.ragdolling || ball.mode !== 'flying') { selRing.visible = false; return; }
+  const p = ball.mesh.position;
+  const gap = catchGap(recv, p, true);
+  const descending = ball.vy < 0;
+  const open = descending && gap < TUNE.catchWindow; // catchable now
+  if (actionEdge) { // press: arm RAC; timing credit scales with how close the ball is
+    uc.armed = true;
+    const q = 1 - THREE.MathUtils.clamp((gap - TUNE.catchGrab) / Math.max(0.1, TUNE.catchWindow - TUNE.catchGrab), 0, 1);
+    uc.score = Math.max(uc.score, descending ? q : 0);
+    if (!descending) uc.buffered = true; // tapped early -> honor it the instant the window opens
+  }
+  if (open && uc.buffered) { uc.armed = true; uc.score = Math.max(uc.score, 0.6); uc.buffered = false; }
+  uc.open = open;
+  // Cue: light the CATCH button hot + pulse the receiver's ring when catchable.
+  setAction('CATCH', open || uc.armed);
+  if (open || uc.armed) {
+    selRing.visible = true;
+    selRing.position.set(recv.group.position.x, 0.03, recv.group.position.z);
+    const pulse = 1 + Math.sin(performance.now() * 0.02) * 0.18;
+    selRing.scale.set(pulse, pulse, pulse);
+  } else { selRing.visible = false; }
+}
 // Anticipatory catch reach (Phase 3) + catch-style selection (Phase 4): as the
 // ball drops toward a player, commit the catch ANIMATION BEFORE the grab resolves
 // so the body is already up/extended/scooping when the ball arrives (instead of
@@ -5455,9 +5507,12 @@ function commitCatchReach(ch, ballPos) {
   const low = ballPos.y < g.y + 0.95;            // around the knees/shins
   const running = ch.speed > 4.5;
   ch.catchPlant = false;
-  if ((high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+  // RAC (Phase 1): a user-armed catch-in-stride forces the procedural reach (keep
+  // momentum, no planted leap/scoop) — smallest reach, biggest YAC.
+  const racStride = game.userCatch && game.userCatch.on && game.userCatch.armed && ch === game.userCatch.recv;
+  if (!racStride && (high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
     playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
-  } else if (low && running && ch.actions.scoop && ch.oneShotT <= 0) {
+  } else if (!racStride && low && running && ch.actions.scoop && ch.oneShotT <= 0) {
     playOneShot(ch, 'scoop', 0.55, true); ch.catchLeap = true; ch.catchStyle = 'scoop'; // low pickup on the run — no plant
   } else {
     ch.catchStyle = (running && ballPos.y > g.y + 1.45) ? 'overshoulder' : 'standing';
@@ -5496,9 +5551,13 @@ function tryReception() {
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
   const rxReach = vReach(bestR); // vertical reach (standing + leap)
   const cpuAdj = bestR.cpu ? diff().cpuCatch : 0; // difficulty: nudge CPU catch odds
+  // User catch (Phase 1): a well-timed press on YOUR receiver layers a bonus on top
+  // of the AI odds. No press = baseline (nothing regresses); CPU receivers = 0.
+  const userBonus = (game.userCatch && game.userCatch.on && game.userCatch.armed && bestR === game.userCatch.recv)
+    ? game.userCatch.score * TUNE.userCatchBonus : 0;
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
-    let base = 0.84 + rxSkill * 0.14 + cpuAdj;
+    let base = 0.84 + rxSkill * 0.14 + cpuAdj + userBonus;
     if (ballY > rxReach) base -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // thrown over his head
     if (Math.random() < base) { startSecure(bestR, false); return true; }
     passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
@@ -5517,7 +5576,7 @@ function tryReception() {
   pCatch += high * THREE.MathUtils.clamp(rxReach - dbReachV, -1.5, 1.5) * 0.35 * TUNE.jumpReach;
   if (ballY > rxReach) pCatch -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // over the receiver's reach
   if (game.onFire) pCatch += 0.12;
-  pCatch += TUNE.catchBias; // global completion-odds nudge (debug knob)
+  pCatch += TUNE.catchBias + userBonus; // global completion-odds nudge + user-catch timing bonus
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
   if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
 
@@ -6944,6 +7003,8 @@ function updatePlay(dt) {
     game.throwCharge = 0; game.throwArmed = false; // not live: never carry a stale charge
     // On defense, the action button switches you to the defender nearest the ball.
     if (actionEdge && !game.userOnOffense && (game.state === STATE.LIVE || game.state === STATE.AIR)) switchDefender();
+    // On your own pass in flight, the action button is the CATCH (Phase 1 RAC).
+    else if (game.userOnOffense && game.state === STATE.AIR && game.userCatch && game.userCatch.on) updateUserCatch(actionEdge);
   }
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
@@ -7506,6 +7567,10 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'intChance', label: 'Interception odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'userCatch', label: 'User catch', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Gameplay', key: 'catchWindow', label: 'Catch window (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'userCatchBonus', label: 'User catch bonus', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'racBoost', label: 'RAC burst ×', min: 1, max: 1.6, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
@@ -8159,6 +8224,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
