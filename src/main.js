@@ -2453,9 +2453,10 @@ const CHEER_ENTER_Z = 11;   // they start downfield and walk toward camera into 
 const CHEER_T_DANCE = 4;    // walked in + dancing by ~4s
 const CHEER_T_EXIT = 19;    // start walking off at ~19s (cinematic is 25s)
 const CHEER_WALK_SPD = 3.1, CHEER_EXIT_SPD = 5.0;
-// Gameplay home: their OWN section on the +X sideline apron, toward +Z (clear of the
-// away bench team area at z<0), two staggered lines, OUTSIDE the cage (HALF_W ~ 26.65;
-// ball overshoots to ~CAGE_X+2 = 28.65) so nothing can touch them.
+// Gameplay home: their OWN section on the HOME (-X) sideline apron, toward +Z (clear
+// of the home bench team area at z<0), two staggered lines, OUTSIDE the cage (HALF_W ~
+// 26.65; ball overshoots to ~CAGE_X+2 = 28.65) so nothing can touch them.
+const CHEER_SIDE = -1; // -1 = home (-X) sideline, +1 = away (+X)
 const CHEER_SIDE_X = 30, CHEER_ROW_GAP = 1.7, CHEER_Z_SPACING = 2.6, CHEER_SECTION_Z = 24;
 function cheerAction(mixer, clip) { const a = mixer.clipAction(clip); a.setLoop(THREE.LoopRepeat, Infinity); a.enabled = true; a.setEffectiveWeight(0); a.play(); return a; }
 function setCheerClip(ch, name) {
@@ -2487,11 +2488,11 @@ function spawnCheer() {
     const acts = { walk: cheerAction(mixer, cheerClips.walk), dance: cheerAction(mixer, cheerClips.dances[(Math.random() * cheerClips.dances.length) | 0]) };
     acts.walk.setEffectiveWeight(1);
     mixer.update(Math.random() * 1.5); // desync so the line isn't in lockstep
-    // Sideline post: two staggered rows on the +X apron, facing the field.
+    // Sideline post: two staggered rows on the HOME (-X) apron, facing the field.
     const row = i < perRow ? 0 : 1, j = i - row * perRow, rowCount = row === 0 ? perRow : (CHEER_N - perRow);
-    const sideX = CHEER_SIDE_X + row * CHEER_ROW_GAP;
+    const sideX = (CHEER_SIDE_X + row * CHEER_ROW_GAP) * CHEER_SIDE;
     const sideZ = CHEER_SECTION_Z + (j - (rowCount - 1) / 2) * CHEER_Z_SPACING + (row ? CHEER_Z_SPACING / 2 : 0);
-    game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter', sideX, sideZ, sideHeading: -Math.PI / 2 });
+    game.cheer.push({ group, model, mixer, acts, cur: 'walk', isCheer: true, heading: Math.PI, side: x >= 0 ? 1 : -1, phase: 'enter', sideX, sideZ, sideHeading: CHEER_SIDE > 0 ? -Math.PI / 2 : Math.PI / 2 });
   }
 }
 // Send the squad to its sideline posts (two staggered lines) and keep them dancing
@@ -8158,6 +8159,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
