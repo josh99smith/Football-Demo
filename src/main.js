@@ -1732,6 +1732,7 @@ const TUNE_DEFAULTS = {
   catchWindow: 1.4,      // 3D gap (yd) at which the user-catch timing window opens as the ball drops in
   userCatchBonus: 0.18,  // max catch-odds bonus added for a well-timed user catch
   racBoost: 1.18,        // × baseSpeed burst out of a RAC (catch-in-stride) reception (YAC)
+  catchMissPenalty: 0.06,// catch-odds penalty for a clearly mistimed user press (vs a clean AI grab)
   catchIK: 1.0,          // Phase 4: weight of the 2-bone hand IK that lands the hands on the ball (0 = off)
   possCatch: 0.12,       // POSSESSION style: flat catch-odds bonus (secure, lowest drop), no YAC
   aggContest: 0.16,      // AGGRESSIVE style: bonus to CONTESTED catches (high-point win)
@@ -4628,7 +4629,7 @@ function throwBall(power) {
   ball.mode = 'flying';
   // Arm the user catch on your own pass (the human makes the play on his receiver).
   game.userCatch = (TUNE.userCatch && game.userOnOffense && recv && !recv.cpu)
-    ? { on: true, open: false, armed: false, buffered: null, style: 'rac', score: 0, recv }
+    ? { on: true, open: false, armed: false, armEarly: false, buffered: null, style: 'rac', score: 0, recv }
     : { on: false };
   if (!game.userCatch.on) hideCatchRow();
   if (game.play) { game.play.passer = game.qb; game.play.target = recv; game.play.viaPass = true; } // box score: the throw
@@ -5441,7 +5442,17 @@ function startSecure(player, isInt) {
       if (player.actions.divecatch && (reach > 1.7 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; player.catchPlant = true; }
     }
   } else {
-    audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
+    audio.catch(); audio.cheer(0.35);
+    // Phase 2 — weight the big ones: a contested / aggressive / leaping grab gets
+    // deeper slow-mo + more shake than a flat checkdown.
+    let nd = Infinity;
+    for (const d of game.defense) { if (d.ragdolling) continue; const dx = d.group.position.x - player.group.position.x, dz = d.group.position.z - player.group.position.z; const dist = Math.hypot(dx, dz); if (dist < nd) nd = dist; }
+    let drama = nd < CONTEST_R ? THREE.MathUtils.clamp(1 - nd / CONTEST_R, 0, 1) : 0;
+    if (player.catchLeap) drama = Math.max(drama, 0.4); // a leaping/extended grab is dramatic
+    const _uc = game.userCatch;
+    if (_uc && _uc.on && _uc.armed && player === _uc.recv && _uc.style === 'agg') drama = Math.max(drama, 0.6);
+    timeScale.slow(0.7 - drama * 0.35, 0.18 + drama * 0.32); // 0.7/0.18 flat .. 0.35/0.50 on a big contested grab
+    if (drama > 0.05) shake.add(0.06 + drama * 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
     // Leaping reception: if the body is ALREADY in an anticipatory leap (fired during
     // the descent, see updateBall), don't restart a clip — the hands track the ball
@@ -5513,11 +5524,12 @@ function updateUserCatch(catchEdge) {
   const open = descending && gap < TUNE.catchWindow; // catchable now
   if (catchEdge) { // press: arm a style; timing credit scales with how close the ball is
     uc.armed = true; uc.style = catchEdge;
+    uc.armEarly = !open || gap > (TUNE.catchGrab + TUNE.catchWindow) * 0.55; // committed before/early in the window (aggressive needs this)
     const q = 1 - THREE.MathUtils.clamp((gap - TUNE.catchGrab) / Math.max(0.1, TUNE.catchWindow - TUNE.catchGrab), 0, 1);
     uc.score = Math.max(uc.score, descending ? q : 0);
     if (!descending) uc.buffered = uc.style; // tapped early -> honor it the instant the window opens
   }
-  if (open && uc.buffered) { uc.armed = true; uc.style = uc.buffered; uc.score = Math.max(uc.score, 0.6); uc.buffered = null; }
+  if (open && uc.buffered) { uc.armed = true; uc.style = uc.buffered; uc.armEarly = true; uc.score = Math.max(uc.score, 0.6); uc.buffered = null; }
   uc.open = open;
   // Cue: light the style buttons hot + pulse the receiver's ring when catchable.
   showCatchRow(open, uc.armed ? uc.style : null);
@@ -5606,9 +5618,16 @@ function tryReception() {
   let userBonus = 0, userContest = 0;
   const _uc = game.userCatch;
   if (_uc && _uc.on && _uc.armed && bestR === _uc.recv) {
-    userBonus = _uc.score * TUNE.userCatchBonus;
-    if (_uc.style === 'poss') userBonus += TUNE.possCatch;                        // secure: flat catch bonus, lowest drop
-    else if (_uc.style === 'agg') { userContest = TUNE.aggContest; userBonus -= TUNE.aggSecurity; } // wins contests, riskier on easy balls
+    if (_uc.style === 'poss') {
+      // POSSESSION — widest timing leniency (timing matters least) + flat secure bonus.
+      userBonus = Math.max(_uc.score, 0.7) * TUNE.userCatchBonus + TUNE.possCatch;
+    } else if (_uc.style === 'agg' && _uc.armEarly) {
+      // AGGRESSIVE only pays off as a COMMITTED early high-point; armed late it's just a contested grab.
+      userBonus = _uc.score * TUNE.userCatchBonus - TUNE.aggSecurity; userContest = TUNE.aggContest;
+    } else { // RAC (neutral catch + YAC), or aggressive armed too late (no high-point edge)
+      userBonus = _uc.score * TUNE.userCatchBonus;
+    }
+    if (_uc.score <= 0.01) userBonus -= TUNE.catchMissPenalty; // a clearly mistimed mash is worse than a clean AI grab
   }
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
@@ -7710,6 +7729,7 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'catchWindow', label: 'Catch window (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'userCatchBonus', label: 'User catch bonus', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'racBoost', label: 'RAC burst ×', min: 1, max: 1.6, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'catchMissPenalty', label: 'Mistimed catch −', min: 0, max: 0.3, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'possCatch', label: 'Possession bonus', min: 0, max: 0.4, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'aggContest', label: 'Aggressive contest+', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
   { tab: 'Gameplay', key: 'aggSecurity', label: 'Aggressive risk−', min: 0, max: 0.4, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
@@ -8370,6 +8390,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
