@@ -156,7 +156,18 @@
     <div class="rp-bar rp-bottom"></div>
     <div class="rp-tag"><span class="rp-dot"></span>INSTANT REPLAY<span id="rp-angle"></span></div>
     <button id="rp-continue" class="rp-continue">CONTINUE&nbsp;▸</button>
+    <!-- Manual replay controls: switch from the cinematic loop to user-driven camera
+         + a pausable, scrubbable timeline. -->
+    <div id="rp-controls">
+      <button id="rp-mode" class="rp-ctl-btn">🎥 MANUAL CAM</button>
+      <button id="rp-playpause" class="rp-ctl-btn rp-hide">❚❚</button>
+      <input id="rp-scrub" type="range" min="0" max="100" value="0" class="rp-hide" aria-label="replay timeline" />
+    </div>
+    <div id="rp-manualhint" class="rp-hide">drag rotate · pinch/scroll zoom · scrub timeline</div>
   </div>
+
+  <!-- Instant-replay button: pops up between plays so you can watch the last play. -->
+  <button id="replay-btn" class="replay-btn hidden">⟲&nbsp;REPLAY</button>
 
   <!-- 1-on-1 break-tackle battle (mash to break free) -->
   <div id="battle" class="hidden">

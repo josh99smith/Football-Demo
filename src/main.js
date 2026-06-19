@@ -1710,7 +1710,7 @@ const game = {
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
   cut: { phase: null, t: 0, mid: null },// broadcast fade dip that hides the reset snap
-  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam
+  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub)
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
@@ -2848,7 +2848,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
   const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
-  const onLeft = (x, target) => !dbgCam.on && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
+  const onLeft = (x, target) => !dbgCam.on && !replayManual() && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
     if (d > maxR) { dx = dx / d * maxR; dy = dy / d * maxR; }
@@ -2912,6 +2912,10 @@ function saveCanvasPNG() {
   try { const a = document.createElement('a'); a.href = renderer.domElement.toDataURL('image/png'); a.download = `reapers_${Date.now()}.png`; a.click(); }
   catch (e) { setStatus('Screenshot failed'); }
 }
+// The orbit/zoom/pan canvas controls are live in the debug free-cam AND in manual
+// replay mode (same machinery, driving dbgCam's az/el/dist/target).
+function replayManual() { return game.state === STATE.REPLAY && game.replay.manual; }
+function camDrag() { return dbgCam.on || replayManual(); }
 (function freecamControls() {
   const RK = 0.005;
   let drag = false, pan = false, lx = 0, ly = 0, pinch = 0;
@@ -2922,24 +2926,24 @@ function saveCanvasPNG() {
     const s = dbgCam.dist * 0.0016; dbgCam.target.addScaledVector(_r, -dx * s).addScaledVector(_u, dy * s);
   };
   const zoom = (f) => { dbgCam.dist = THREE.MathUtils.clamp(dbgCam.dist * f, 2, 90); };
-  canvas.addEventListener('mousedown', (e) => { if (!dbgCam.on) return; drag = true; pan = e.button === 2 || e.shiftKey; lx = e.clientX; ly = e.clientY; e.preventDefault(); });
-  window.addEventListener('mousemove', (e) => { if (!dbgCam.on || !drag) return; const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY; pan ? panT(dx, dy) : rot(dx, dy); });
+  canvas.addEventListener('mousedown', (e) => { if (!camDrag()) return; drag = true; pan = e.button === 2 || e.shiftKey; lx = e.clientX; ly = e.clientY; e.preventDefault(); });
+  window.addEventListener('mousemove', (e) => { if (!camDrag() || !drag) return; const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY; pan ? panT(dx, dy) : rot(dx, dy); });
   window.addEventListener('mouseup', () => { drag = false; });
-  canvas.addEventListener('wheel', (e) => { if (!dbgCam.on) return; e.preventDefault(); zoom(1 + Math.sign(e.deltaY) * 0.08); }, { passive: false });
-  canvas.addEventListener('contextmenu', (e) => { if (dbgCam.on) e.preventDefault(); });
+  canvas.addEventListener('wheel', (e) => { if (!camDrag()) return; e.preventDefault(); zoom(1 + Math.sign(e.deltaY) * 0.08); }, { passive: false });
+  canvas.addEventListener('contextmenu', (e) => { if (camDrag()) e.preventDefault(); });
   const mid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
   const dist2 = (a, b) => Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
   canvas.addEventListener('touchstart', (e) => {
-    if (!dbgCam.on) return; e.preventDefault(); const t = e.touches;
+    if (!camDrag()) return; e.preventDefault(); const t = e.touches;
     if (t.length >= 2) { pinch = dist2(t[0], t[1]); const m = mid(t[0], t[1]); lx = m.x; ly = m.y; }
     else if (t.length === 1) { lx = t[0].clientX; ly = t[0].clientY; pinch = 0; }
   }, { passive: false });
   canvas.addEventListener('touchmove', (e) => {
-    if (!dbgCam.on) return; e.preventDefault(); const t = e.touches;
+    if (!camDrag()) return; e.preventDefault(); const t = e.touches;
     if (t.length >= 2) { const d = dist2(t[0], t[1]); if (pinch) zoom(pinch / d); const m = mid(t[0], t[1]); panT(m.x - lx, m.y - ly); lx = m.x; ly = m.y; pinch = d; }
     else if (t.length === 1) { rot(t[0].clientX - lx, t[0].clientY - ly); lx = t[0].clientX; ly = t[0].clientY; }
   }, { passive: false });
-  canvas.addEventListener('touchend', (e) => { if (!dbgCam.on) return; const t = e.touches; if (t.length) { lx = t[0].clientX; ly = t[0].clientY; } pinch = 0; }, { passive: false });
+  canvas.addEventListener('touchend', (e) => { if (!camDrag()) return; const t = e.touches; if (t.length) { lx = t[0].clientX; ly = t[0].clientY; } pinch = 0; }, { passive: false });
 })();
 
 const actionBtn = document.getElementById('action-btn');
@@ -3987,11 +3991,71 @@ function finalizeReset() {
 // it back in slow motion from a cinematic broadcast angle.
 const REPLAY_MAX = 1080; // ~18s at 60fps — a full play plus the TD celebration
 const replayEl = document.getElementById('replay');
-// Tap anywhere on the replay (or the CONTINUE button) to leave the loop.
+// Tap anywhere on the replay (or the CONTINUE button) to leave the loop — but NOT
+// in manual mode, where taps drive the camera/controls (you exit via CONTINUE).
 if (replayEl) {
-  const cont = (e) => { e.preventDefault(); audio.unlock(); endReplay(); };
+  const cont = (e) => { if (game.replay.manual) return; e.preventDefault(); audio.unlock(); endReplay(); };
   replayEl.addEventListener('touchstart', cont, { passive: false });
   replayEl.addEventListener('mousedown', cont);
+}
+// ---- Instant-replay controls: an on-demand REPLAY button between plays, plus a
+// MANUAL CAM toggle inside the replay (cinematic stays the default). Manual = a
+// user-driven orbit camera + a pausable, scrubbable timeline. ------------------
+const rpModeBtn = document.getElementById('rp-mode');
+const rpPlayBtn = document.getElementById('rp-playpause');
+const rpScrub = document.getElementById('rp-scrub');
+const rpManualHint = document.getElementById('rp-manualhint');
+const replayBtn = document.getElementById('replay-btn');
+const rpContinueBtn = document.getElementById('rp-continue');
+const rpControlsEl = document.getElementById('rp-controls');
+// Taps on the controls must NOT bubble to the overlay's tap-to-exit handler.
+if (rpControlsEl) { const stop = (e) => e.stopPropagation(); rpControlsEl.addEventListener('mousedown', stop); rpControlsEl.addEventListener('touchstart', stop, { passive: true }); }
+function updateReplayControls() {
+  const r = game.replay, manual = r.manual;
+  if (replayEl) replayEl.classList.toggle('rp-manual', manual);
+  if (rpModeBtn) { rpModeBtn.textContent = manual ? '🎬 CINEMATIC' : '🎥 MANUAL CAM'; rpModeBtn.classList.toggle('on', manual); }
+  if (rpPlayBtn) { rpPlayBtn.classList.toggle('rp-hide', !manual); rpPlayBtn.textContent = r.paused ? '▶' : '❚❚'; }
+  if (rpScrub) rpScrub.classList.toggle('rp-hide', !manual);
+  if (rpManualHint) rpManualHint.classList.toggle('rp-hide', !manual);
+}
+// Restore/undo gore that's ahead of the scrub position so forward playback re-enacts it.
+function rearmReplayGore(i) {
+  for (const ev of game.replay.events) {
+    if (ev.fired && i < ev.fi) { const ch = game.all[ev.pIdx]; if (ch) { restoreHelmet(ch); restoreTear(ch); } ev.fired = false; }
+  }
+}
+function setReplayManual(on) {
+  const r = game.replay;
+  r.manual = on;
+  if (on) {
+    r.paused = false;
+    if (rpScrub) { rpScrub.max = String(dbgScrubMax()); rpScrub.value = String(Math.round(r.i)); }
+    // Frame the orbit camera on the action and follow it.
+    dbgCam.target.copy(ball.mesh.position);
+    dbgCam.az = game.dir > 0 ? Math.PI * 0.42 : -Math.PI * 0.58; dbgCam.el = 0.5; dbgCam.dist = 14; dbgCam.follow = true;
+    camera.fov = 52; camera.updateProjectionMatrix();
+  } else {
+    r.snap = true; // re-frame the cinematic shot cleanly
+  }
+  updateReplayControls();
+}
+if (rpModeBtn) rpModeBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); setReplayManual(!game.replay.manual); });
+if (rpPlayBtn) rpPlayBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); game.replay.paused = !game.replay.paused; updateReplayControls(); });
+if (rpScrub) {
+  const onScrub = (e) => { e.stopPropagation(); const r = game.replay; r.i = THREE.MathUtils.clamp(+e.target.value, 0, dbgScrubMax()); r.paused = true; rearmReplayGore(r.i); applyReplayFrame(r.i); updateReplayControls(); };
+  rpScrub.addEventListener('input', onScrub);
+  rpScrub.addEventListener('mousedown', (e) => e.stopPropagation());
+  rpScrub.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+}
+if (rpContinueBtn) rpContinueBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); endReplay(); });
+if (replayBtn) replayBtn.addEventListener('click', (e) => { e.preventDefault(); audio.unlock(); if (game.replay.frames.length >= 40 && game.state !== STATE.REPLAY) startReplay(false); });
+// Show the on-demand REPLAY button between plays whenever there's footage to watch.
+function updateReplayButton() {
+  if (!replayBtn) return;
+  const s = game.state;
+  const between = s === STATE.DEAD || s === STATE.RESET || s === STATE.PRESNAP;
+  const show = between && !game.choosing && !game.gameOver && game.replay.frames.length >= 40;
+  replayBtn.classList.toggle('hidden', !show);
 }
 // Capture the FINAL pose each frame as raw bone transforms (group + every bone),
 // so locomotion, procedural arm poses AND ragdolls all replay exactly. A frame
@@ -4066,6 +4130,10 @@ function startReplay(highlight = false) {
   if (replayEl) replayEl.classList.remove('hidden');
   document.body.classList.add('replay-mode'); // drop the gameplay HUD; only replay chrome shows
   setReplayLabel();
+  r.paused = false;
+  if (rpScrub) { rpScrub.max = String(Math.max(0, r.frames.length - 1)); rpScrub.value = String(Math.round(r.i)); }
+  updateReplayControls();
+  if (r.manual) setReplayManual(true); // honor the sticky MANUAL preference
   audio.whistle();
   return true;
 }
@@ -4082,6 +4150,24 @@ function applyReplayFrame(fi) {
 // cut between angles. Exits only when the player taps CONTINUE (endReplay).
 function updateReplay(dt) {
   const r = game.replay, f = r.frames, last = f.length - 1;
+  // MANUAL mode: you drive the camera (orbit/zoom) and the timeline (pause + scrub).
+  // No auto-cuts or looping — it advances only while playing and stops at the end.
+  if (r.manual) {
+    if (!r.paused) {
+      r.i += r.rate * game.tsFactor;
+      if (r.i >= last) { r.i = last; r.paused = true; updateReplayControls(); }
+      if (rpScrub) rpScrub.value = String(Math.round(r.i)); // keep the slider synced during playback
+    }
+    if (rpFadeEl) rpFadeEl.style.opacity = '0';
+    applyReplayFrame(THREE.MathUtils.clamp(r.i, 0, last));
+    for (const ev of r.events) { // re-enact gore as the timeline reaches it
+      if (ev.fired || r.i < ev.fi) continue;
+      ev.fired = true; const ch = game.all[ev.pIdx]; if (!ch) continue;
+      if (ev.type === 'tear') tearInHalf(ch, ev.hx, ev.hz, ev.power); else popHelmet(ch, ev.hx, ev.hz, ev.power);
+    }
+    driveReplayFlames(dt, r.i);
+    return;
+  }
   if (r.phase === 'play') {
     r.i += r.rate * game.tsFactor; // playback speed (full-play replays would drag at deep slow-mo; highlight pass is slower)
     r.seg += dt;
@@ -4132,7 +4218,8 @@ function updateReplay(dt) {
 }
 function endReplay() {
   if (game.state !== STATE.REPLAY) return;
-  if (replayEl) replayEl.classList.add('hidden');
+  if (replayEl) { replayEl.classList.add('hidden'); replayEl.classList.remove('rp-manual'); }
+  dbgCam.follow = false; game.replay.paused = false; // leave manual state clean (the toggle pref persists)
   if (rpFadeEl) rpFadeEl.style.opacity = '0';
   document.body.classList.remove('replay-mode'); // restore the gameplay HUD
   if (ballFlame) { ballFlame.update(0, 0, 0, 0, null); playerFlame.update(0, 0, 0, 0, null); } // clear replay flames
@@ -6771,6 +6858,7 @@ function updatePlay(dt) {
   updateNameTags();
   updateCoachArt(); // pre-snap play-art overlay (PLAY ART button)
   updateUserStatsHUD(); // your tackles / catches / interceptions badge
+  updateReplayButton(); // on-demand REPLAY button between plays
   // Target arrow bobs over the selected receiver while you're picking a throw.
   const showArrow = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && game.receivers[game.selected];
   targetArrow.visible = showArrow;
@@ -6881,6 +6969,14 @@ function updateWallVisibility() {
 function updateCamera(dt) {
   updateWallVisibility(); // hide only the wall the camera has moved outside of (fence stays)
   if (game.state === STATE.REPLAY) {
+    // Manual replay: a user-driven orbit camera that FOLLOWS the action (drag to
+    // rotate, pinch/scroll to zoom — see freecamControls). Reuses the debug orbit.
+    if (game.replay.manual) {
+      const b = ball.mesh.position;
+      applyDebugCam(); // dbgCam.follow keeps it centered on the carrier/ball
+      sun.position.set(b.x + 40, 70, b.z + 20); sun.target.position.set(b.x, 0, b.z);
+      return;
+    }
     // Cinematic broadcast shot: the current preset angle, slowly orbiting the
     // ball. On an angle cut (r.snap, set while the screen is black) we jump the
     // camera so the new shot is already framed when we fade back up.

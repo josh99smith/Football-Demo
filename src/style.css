@@ -662,6 +662,49 @@ body.replay-mode #build-badge { display: none !important; }
 .rp-continue:active { transform: scale(0.93); }
 @keyframes rpPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
 
+/* ---------- Replay manual controls (camera mode + timeline) ---------- */
+#rp-controls {
+  position: fixed; bottom: calc(9vh + 14px); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; z-index: 33;
+  max-width: 92vw;
+}
+.rp-ctl-btn {
+  padding: 9px 14px; border-radius: 20px;
+  font-family: inherit; font-weight: 800; letter-spacing: 0.5px; font-size: clamp(12px, 2.6vw, 15px);
+  color: #fff; background: rgba(0,0,0,0.55); border: 1.5px solid rgba(255,255,255,0.35);
+  backdrop-filter: blur(6px); cursor: pointer; touch-action: manipulation; white-space: nowrap;
+}
+.rp-ctl-btn:active { transform: scale(0.93); }
+.rp-ctl-btn.on { background: var(--accent); color: #06120b; border-color: rgba(255,255,255,0.7); }
+#rp-scrub { width: min(46vw, 320px); accent-color: var(--accent); touch-action: manipulation; cursor: pointer; }
+.rp-hide { display: none !important; }
+#rp-manualhint {
+  position: fixed; bottom: calc(9vh + 56px); left: 50%; transform: translateX(-50%);
+  z-index: 33; color: rgba(255,255,255,0.75); font-size: clamp(10px, 2.4vw, 13px);
+  font-weight: 700; letter-spacing: 0.4px; text-shadow: 0 2px 6px rgba(0,0,0,0.7); pointer-events: none;
+}
+/* In manual mode the overlay must let canvas drags through to orbit the camera;
+   only the controls stay tappable. */
+#replay.rp-manual { pointer-events: none; }
+#replay.rp-manual #rp-controls,
+#replay.rp-manual .rp-continue,
+#replay.rp-manual #rp-scrub,
+#replay.rp-manual .rp-ctl-btn { pointer-events: auto; }
+
+/* ---------- Instant-replay button (between plays) ---------- */
+.replay-btn {
+  position: fixed; bottom: max(26px, calc(env(safe-area-inset-bottom) + 18px));
+  left: 50%; transform: translateX(-50%);
+  padding: 11px 22px; border-radius: 24px; z-index: 23;
+  font-family: inherit; font-weight: 900; font-style: italic; letter-spacing: 1px;
+  font-size: clamp(13px, 3vw, 16px); color: #fff;
+  background: rgba(20,24,30,0.72); border: 2px solid rgba(255,255,255,0.4);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5); cursor: pointer; touch-action: manipulation;
+}
+.replay-btn:active { transform: translateX(-50%) scale(0.93); }
+.replay-btn.hidden { display: none; }
+body.replay-mode .replay-btn { display: none !important; }
+
 /* ---------- Play-result readout (top-left, Blitz style) ---------- */
 #playresult {
   position: fixed;
