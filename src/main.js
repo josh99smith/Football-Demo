@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { PhysicsWorld, TackleRagdoll, pickVariant } from './ragdoll.js';
 import { BUILD } from './build.js';
@@ -1234,6 +1235,9 @@ try {
   const ktx2 = new KTX2Loader().setTranscoderPath('vendor/three/addons/libs/basis/').detectSupport(renderer);
   loader.setKTX2Loader(ktx2);
 } catch (e) { console.warn('KTX2 loader unavailable', e); }
+// Meshopt-compressed geometry support (EXT_meshopt_compression) — e.g. the
+// cheerleader model is exported meshopt-packed, so the decoder must be registered.
+try { loader.setMeshoptDecoder(MeshoptDecoder); } catch (e) { console.warn('Meshopt decoder unavailable', e); }
 const HEAD_SCALE = 1.6; // Blitz-style oversized heads (applied to both teams)
 const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
@@ -1260,6 +1264,8 @@ let backLClip, backRClip; // backpedal locomotion (left/right drift)
 // Variety + new-move clips from the merged Meshy packs (animations2/3.glb).
 let idleClips = [], walkClips = [], celebClips = [], getUpClips = [];
 let danceClips = [], sulkClips = []; // end-of-game finale: winners dance, losers fume
+// Pregame cinematic: a dedicated cheerleader model (its OWN rig + bundled clips).
+let cheerTemplate = null, cheerWalkClip = null, cheerScale = 1, cheerGroundY = 0;
 let diveCatchClip, scoopClip, vaultClip, cageVaultClip;
 let vaultClips = []; // hurdle pool (per-player variety, animations2/5.glb)
 let blockClips = []; // engaged-PUSH pool (push-clip slices, animations4.glb): blocking + break-tackle
@@ -1405,6 +1411,16 @@ async function loadAssets() {
     .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
   sulkClips = ['Angry_To_Tantrum_Sit', 'Angry_Stomp', 'Angry_Ground_Stomp']
     .map((n) => byName[n] && inPlaceY(byName[n])).filter(Boolean);
+  // Pregame cheerleader: its own model + bundled clips. Use the "Walking_Woman"
+  // clip (the woman walk) for the cinematic, frozen in place (inPlaceY) so the line
+  // marches without drifting. Height-normalized like the players.
+  try {
+    const cg = await loadGLB('assets/cheerleader.glb');
+    cheerTemplate = cg.scene;
+    const wc = (cg.animations || []).find((a) => a.name === 'Walking_Woman') || (cg.animations || [])[0];
+    cheerWalkClip = wc ? inPlaceY(wc) : null;
+    const cr = measureBoneSpan(cheerTemplate); cheerScale = 1.8 / cr.span; cheerGroundY = -(cr.lo * cheerScale - 0.05);
+  } catch (e) { console.warn('cheerleader model missing', e); cheerTemplate = null; }
   // Diving catch, loose-ball scoop, hurdle vault, cage wall-jump — all leave the
   // ground, so keep root vertical motion (inPlaceY) + groundClamp at runtime.
   diveCatchClip = byName['Leap_Right_and_Catch']
@@ -2392,28 +2408,33 @@ function benchReact() {
     playOneShot(ch, 'celebrate', 2 + Math.random(), true); ch.emoteCd = 6 + Math.random() * 6;
   }
 }
-// Pre-game cinematic cast: a chorus line of dancers at midfield (the 50). They use
-// the player model and the looping dance clips (each picks its own, for variety).
-// Pure cosmetics (NOT in game.all) and spawned HIDDEN — they're only shown during
+// Pre-game cinematic cast: a chorus line of cheerleaders at midfield (the 50),
+// using the dedicated cheerleader model + its "Walking_Woman" clip (marching in
+// place). Pure cosmetics (NOT in game.all) and spawned HIDDEN — shown only during
 // the pregame cinematic (see startCinematic), never on the field during play.
 const CHEER_N = 8;
 function spawnCheer() {
   game.cheer = [];
+  if (!cheerTemplate || !cheerWalkClip) return; // no model -> no cinematic cast
   const span = 22; // width of the line across midfield
   for (let i = 0; i < CHEER_N; i++) {
-    const ch = makeCharacter('off');
+    const model = cloneSkeleton(cheerTemplate);
+    model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+    model.scale.multiplyScalar(cheerScale);
+    model.position.y = cheerGroundY;
+    const group = new THREE.Group(); group.add(model); scene.add(group);
     const x = CHEER_N > 1 ? (i - (CHEER_N - 1) / 2) * (span / (CHEER_N - 1)) : 0;
-    ch.isCheer = true;
-    ch.group.position.set(x, 0, 0); // midfield (the 50-yard line), in a line
-    ch.heading = Math.PI;           // face the home sideline
-    ch.group.rotation.set(0, ch.heading, 0);
-    ch.group.visible = false;       // shown only during the cinematic
-    setClip(ch, 'dance');
-    if (ch.active) { ch.active.time = Math.random() * (ch.active.getClip().duration || 1); ch.active.timeScale = 0.9 + Math.random() * 0.3; } // desync the routine
-    game.cheer.push(ch);
+    group.position.set(x, 0, 0); // midfield (the 50-yard line), in a line
+    group.rotation.y = Math.PI;  // face the home sideline
+    group.visible = false;       // shown only during the cinematic
+    const mixer = new THREE.AnimationMixer(model);
+    const act = mixer.clipAction(cheerWalkClip);
+    act.setLoop(THREE.LoopRepeat, Infinity); act.timeScale = 0.9 + Math.random() * 0.3; act.play();
+    mixer.update(Math.random() * 2); // desync so the line isn't in lockstep
+    game.cheer.push({ group, model, mixer, isCheer: true, heading: Math.PI });
   }
 }
-function updateCheer(dt) { // just advance the dance (positions are fixed during the cinematic)
+function updateCheer(dt) { // just advance the walk (positions are fixed during the cinematic)
   if (!game.cheer) return;
   for (const ch of game.cheer) { ch.group.rotation.y = ch.heading; stepMixer(ch, dt); ch.group.position.y = 0; }
 }
