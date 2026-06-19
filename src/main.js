@@ -5011,17 +5011,25 @@ function updateBall(dt) {
       else { const gp = h.group.position; ball.mesh.position.set(gp.x, 0.5, gp.z); }
       return;
     }
-    // In a chest-to-chest contact (break-tackle battle / wrap-drag), the carry hand
-    // is braced INTO the opponent, which buries the ball between the two bodies. Tuck
-    // it against the carrier's off-side at chest height, pulled back from the tackler,
-    // so it stays visible (matches the off-arm cradle in applyBattleArms).
+    // In a chest-to-chest contact (break-tackle battle / wrap-drag), follow the
+    // carry HAND bone so the ball stays on his hand (moving with the brace pose),
+    // just pulled back toward his body so it isn't buried in the tackler. (The old
+    // fixed world offset floated behind him once the contact distances were tuned.)
     const contact = (game.state === STATE.BATTLE && h === game.carrier) || (game.drag.active && h === game.carrier);
-    if (contact) {
+    if (contact && h.handBone) {
+      h.handBone.updateWorldMatrix(true, false); // fresh after this frame's pose
+      h.handBone.getWorldPosition(_hips);
+      _f.set(Math.sin(h.heading), 0, Math.cos(h.heading)); // toward the tackler
+      ball.mesh.position.set(_hips.x - _f.x * 0.12, Math.max(0.95, _hips.y), _hips.z - _f.z * 0.12);
+      ball.mesh.rotation.set(0.3, h.heading, 0.45);
+      return;
+    }
+    if (contact) { // no hand bone — keep the ball on his off-side at chest height
       const p = h.group.position;
-      _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));   // toward the tackler
-      _r.set(Math.cos(h.heading), 0, -Math.sin(h.heading));  // right of facing
-      ball.mesh.position.set(p.x - _f.x * 0.16 - _r.x * 0.24, 1.45, p.z - _f.z * 0.16 - _r.z * 0.24);
-      ball.mesh.rotation.set(0.3, h.heading, 0.45); // cradled low on the off arm
+      _f.set(Math.sin(h.heading), 0, Math.cos(h.heading));
+      _r.set(Math.cos(h.heading), 0, -Math.sin(h.heading));
+      ball.mesh.position.set(p.x - _f.x * 0.1 - _r.x * 0.2, 1.35, p.z - _f.z * 0.1 - _r.z * 0.2);
+      ball.mesh.rotation.set(0.3, h.heading, 0.45);
       return;
     }
     if (h.handBone) {
