@@ -514,8 +514,8 @@ body.replay-mode #fps { display: none !important; }
 /* ---------- Coach cam / PLAY ART toggle (pre-snap only) ---------- */
 .coach-btn {
   position: fixed;
-  top: max(30px, calc(env(safe-area-inset-top) + 26px)); /* below the FPS readout, top-left */
-  left: max(12px, env(safe-area-inset-left));
+  top: max(150px, calc(env(safe-area-inset-top) + 146px)); /* right side, stacked below the fullscreen + sim controls */
+  right: max(12px, env(safe-area-inset-right));
   padding: 8px 11px;
   border-radius: 11px;
   font-size: 12px; font-weight: 800; letter-spacing: 0.04em;
