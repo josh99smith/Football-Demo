@@ -1834,6 +1834,7 @@ const TUNE_DEFAULTS = {
   // Play-calling matchup: how much a concept-vs-coverage edge swings coverage
   // separation (0 = calls are cosmetic; 1 = a beaten call gives a clear step).
   matchupLeverage: 1.0,
+  onFireLeverage: 0.6, // extra leverage while ON FIRE (Phase 5: a hot player is uncoverable)
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -4077,6 +4078,7 @@ function yardResult(gained) {
 function matchupReason(result, gained) {
   const m = game.matchup; if (!m || !m.off) return '';
   const off = m.off.name, cov = (DEF_PLAYS[m.defIdx] || {}).name || 'coverage', p = game.play || {};
+  if (m.onFire && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 6))) return 'ON FIRE — uncoverable!';
   if (p.sack) return m.cov === 'blitz' ? 'Blitz got home!' : 'Coverage sack!';
   if (result === 'intercept') return m.lev < 0 ? `${cov} jumped it!` : 'Picked off!';
   if (m.lev > 0 && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 4))) return `${off} beat ${cov}!`;
@@ -5265,9 +5267,14 @@ function preSnapShell(idx) {
 // derived coverage cushion/closing factors the defense AI reads.
 function setMatchup(offPlay, defIdx) {
   const lev = matchupLeverage(offPlay, defIdx);
-  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev };
-  game.coverLev = lev * TUNE.matchupLeverage;
-  game.coverClose = 1 - game.coverLev * 0.28; // <1 = beaten DBs close slower (separation)
+  let cl = lev * TUNE.matchupLeverage;
+  // ON FIRE special (Phase 5): a hot player is uncoverable — every concept gets
+  // extra separation, so even a neutral/bad matchup still pops open while you burn.
+  const onFire = game.onFire && game.userOnOffense;
+  if (onFire) cl += TUNE.onFireLeverage;
+  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev, onFire };
+  game.coverLev = cl;
+  game.coverClose = 1 - cl * 0.28; // <1 = beaten DBs close slower (separation)
 }
 // Situational CPU coverage call (replaces pure-random): keyed on down & distance,
 // with a difficulty-scaled read and a dash of unpredictability.
