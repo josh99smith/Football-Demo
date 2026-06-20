@@ -3269,7 +3269,7 @@ function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null, hitEdge: null };
 
 // Floating joystick: it spawns under your thumb wherever you first touch the LEFT
 // half of the screen (so you never have to find a fixed pad), and tracks from
@@ -3441,6 +3441,17 @@ function updateUserStatsHUD() {
   cpress(document.getElementById('catch-rac'), 'rac');
   cpress(document.getElementById('catch-poss'), 'poss');
   cpress(document.getElementById('catch-agg'), 'agg');
+  // Hit-stick buttons (shown while closing on the carrier on defense): edge press -> input.hitEdge.
+  const hpress = (el, style) => {
+    if (!el) return;
+    const go = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); input.hitEdge = style; };
+    const up = (e) => { if (e) e.preventDefault(); el.classList.remove('active'); };
+    el.addEventListener('touchstart', go, { passive: false }); el.addEventListener('touchend', up, { passive: false }); el.addEventListener('touchcancel', up);
+    el.addEventListener('mousedown', go); window.addEventListener('mouseup', up);
+  };
+  hpress(document.getElementById('hit-high'), 'high');
+  hpress(document.getElementById('hit-wrap'), 'wrap');
+  hpress(document.getElementById('hit-low'), 'low');
   // Skip / sim controls (tap fires on press; trigger once).
   const tap = (el, fn) => {
     if (!el) return;
@@ -3995,8 +4006,8 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Escape' && game.paused) { closePause(); keys[e.code] = true; return; }
     if (game.paused) { keys[e.code] = true; return; }
     if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
-    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
-    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
+    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; input.hitEdge = 'high'; }   // spin / POSSESSION catch / HIGH hit-stick (on D)
+    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; input.hitEdge = 'low'; }     // stiff arm / AGGRESSIVE catch / LOW hit-stick (on D)
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
@@ -4258,6 +4269,19 @@ function showCatchRow(hot, armedStyle) {
   for (const k in catchBtns) { const b = catchBtns[k]; if (!b) continue; b.classList.toggle('hot', hot); b.classList.toggle('armed', armedStyle === k); }
 }
 function hideCatchRow() { if (catchRowEl) catchRowEl.classList.add('hidden'); }
+// Hit-stick chooser (Phase 3): shown while you control a defender closing on the
+// CPU ball-carrier; lights HOT inside tackle range (the "now" to press).
+const hitRowEl = document.getElementById('hit-row');
+const hitBtns = { high: document.getElementById('hit-high'), wrap: document.getElementById('hit-wrap'), low: document.getElementById('hit-low') };
+function showHitRow(hot) { if (!hitRowEl) return; hitRowEl.classList.remove('hidden'); for (const k in hitBtns) { const b = hitBtns[k]; if (b) b.classList.toggle('hot', hot); } }
+function hideHitRow() { if (hitRowEl) hitRowEl.classList.add('hidden'); }
+function updateHitStick() {
+  if (!TUNE.hitStick || game.userOnOffense || !game.controlled || !game.carrier || game.controlled === game.carrier ||
+      (game.state !== STATE.RUN && game.state !== STATE.RETURN)) { hideHitRow(); return; }
+  const d = distXZ(px(game.controlled), px(game.carrier));
+  if (d > TUNE.hitStickWindow) { hideHitRow(); return; }
+  showHitRow(d <= TUNE.tackleReach + 0.5); // hot = in range to land it
+}
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
@@ -5588,9 +5612,14 @@ function cpuQB(dt) {
 }
 // A CPU ball carrier (after a CPU catch/scramble) seeks the end zone while you
 // chase with a defender; your teammates pursue and tackle on contact.
-function updateCpuRun(dt, turboOn, actionEdge) {
+function updateCpuRun(dt, turboOn, actionEdge, hitEdge) {
   const c = game.carrier;
   if (!c) { endPlay('incomplete', game.los); return; }
+  // Hit-stick: a style press (high/low + buttons) tackles AND sets the style; a plain
+  // ACTION tap is a safe wrap. The armed style feeds beginTackle (see hitArm there).
+  const tackleEdge = actionEdge || !!hitEdge;
+  if ((actionEdge || hitEdge) && game.controlled) game.controlled.hitArm = hitEdge || 'wrap';
+  actionEdge = tackleEdge;
   // Re-acquire control if our man got knocked down (or was never set).
   if (!game.controlled || game.controlled.ragdolling) switchDefender();
   const o = game.controlled;
@@ -6804,6 +6833,21 @@ function beginTackle(lead, force = false) {
   const angle = pursuitAngle(lead, carrier);
   let big = lead.turbo || closing > 8; // Blitz: most square hits are violent (Phase 3 may force it on an exposed catch)
   const gang = gangSize >= 3;
+  // Phase 3 hit-stick: the user's chosen style (set in updateCpuRun). A square angle
+  // earns the big hit; off-angle high hits become arm tackles/whiffs; low = a clean
+  // cut-down; wrap = safe. Sets big/force + a fumble bonus instead of pure RNG.
+  let hitStyle = null, hitBonus = 0;
+  if (TUNE.hitStick && lead === game.controlled && lead.hitArm) { hitStyle = lead.hitArm; }
+  lead.hitArm = null;
+  if (hitStyle === 'high') {
+    if (angle < 58) { big = true; force = true; hitBonus = TUNE.hitStickBonus; game.replay.bigHit = true; } // squared up: violent
+    else if (!force) { // off-angle big swing — Phase 4 arm tackle, or a whiff
+      logTackle('arm-offangle', { closing, angle, style: 'high' });
+      if (Math.random() < TUNE.armTackleChance) { beginDrag(carrier, pile, false, hitDir, closing); return; } // drag him down by an arm
+      knockdownDefender(lead); shake.add(0.15); setStatus('WHIFF!'); return; // blew past him
+    }
+  } else if (hitStyle === 'low') { big = false; force = true; } // reliable cut-down, no escape, no spectacle
+  // 'wrap' (or no style): the normal safe path below.
   if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
 
   // A committed tackle (a lost battle) skips every escape — straight down.
@@ -6863,7 +6907,7 @@ function beginTackle(lead, force = false) {
   // free for a live scramble (see startFumble) instead of the play ending.
   // A receiver hit RIGHT after a contested catch (Phase 3) is jarring + exposed: the
   // ball pops loose far more often, scaled by the catch style he chose.
-  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance;
+  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0) + hitBonus) * TUNE.fumbleChance; // hitBonus = earned hit-stick high hit
   if (carrier.catchExposed > 0) { fProb += TUNE.catchHitRisk * (carrier.catchExposeRisk || 0.5); big = true; carrier.catchExposed = 0; }
   if (carrier.tauntT > 0 || Math.random() < fProb) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
@@ -8056,6 +8100,7 @@ const turboFillEl = document.getElementById('turbo-fill');
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
   const catchEdge = input.catchEdge; input.catchEdge = null; // user-catch style press (rac/poss/agg)
+  const hitEdge = input.hitEdge; input.hitEdge = null; // hit-stick style press (high/wrap/low)
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
@@ -8144,7 +8189,7 @@ function updatePlay(dt) {
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     if (game.state === STATE.LIVE) checkSack(); // a rusher at the QB = sack
   } else if (game.state === STATE.RUN && !game.userOnOffense) {
-    updateCpuRun(dt, turboOn, actionEdge); // CPU carrier; you tackle on defense
+    updateCpuRun(dt, turboOn, actionEdge, hitEdge); // CPU carrier; you tackle on defense (hit-stick style)
   } else if (game.state === STATE.RUN) {
     // The single ACTION button picks the right move for the moment (HURDLE /
     // STIFF ARM / JUKE — see carrierContext). Desktop Q/E/F stay as explicit
@@ -8236,6 +8281,7 @@ function updatePlay(dt) {
     resolveBodies();
     for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
   }
+  updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
