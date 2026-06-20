@@ -6259,14 +6259,15 @@ function updateLoose(dt, turboOn, actionEdge) {
     p.y = gy;
     if (ball.vy < 0) { ball.vy = -ball.vy * 0.6; if (ball.vy < 1.0) ball.vy = 0; } // bouncier
     ball.vx *= 0.86; ball.vz *= 0.86;
-    // Erratic squirt off the point of the ball — a fumble takes crazy hops.
+    // Erratic squirt off the point of the ball — a fumble hops, but not so wildly
+    // that it can't be corralled.
     if (Math.abs(ball.vy) > 0.8 || Math.hypot(ball.vx, ball.vz) > 1.2) {
-      const a = Math.random() * Math.PI * 2, k = 1.5 + Math.random() * 4.5;
+      const a = Math.random() * Math.PI * 2, k = 0.8 + Math.random() * 2.0;
       ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k;
-      if (ball.vy < 1.5) ball.vy += Math.random() * 3; // occasional pop up
+      if (ball.vy < 1.2) ball.vy += Math.random() * 1.8; // occasional small pop up
     }
   }
-  ball.vx *= (1 - dt * 0.35); ball.vz *= (1 - dt * 0.35); // rolls a good while (gets clear of the pile)
+  ball.vx *= (1 - dt * 0.6); ball.vz *= (1 - dt * 0.6); // settles fairly quickly so it can be recovered
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
@@ -6277,11 +6278,21 @@ function updateLoose(dt, turboOn, actionEdge) {
   const nearA = game.teamA.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
   const nearB = game.teamB.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
   const chasers = new Set([...nearA, ...nearB]);
+  const ballLow = p.y < 1.3;
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
+    if (ch.scoopDiveCd > 0) ch.scoopDiveCd -= dt;
     if (ch.ragdolling || ch === game.controlled) continue;
     if (chasers.has(ch)) {
-      ch.desired = addSteer(seek(px(ch), p.x, p.z), separation(ch, game.all, 2.2), 0.5); ch.turbo = true;
+      const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
+      // Players DIVE on the loose ball when they get close — lunge + scoop, which
+      // extends their reach/odds for a beat (same as the user's dive).
+      if (ballLow && d < 2.7 && ch.recoverT <= 0 && (ch.scoopDiveCd || 0) <= 0) {
+        const dx = p.x - ch.group.position.x, dz = p.z - ch.group.position.z, l = Math.hypot(dx, dz) || 1;
+        ch.vel.x = dx / l * ch.baseSpeed * 1.3; ch.vel.z = dz / l * ch.baseSpeed * 1.3; ch.heading = Math.atan2(dx, dz);
+        ch.recoverT = 0.5; ch.scoopDiveCd = 1.1;
+        if (ch.actions.scoop) playOneShot(ch, 'scoop', 0.6, true); else triggerArmAction(ch, 'pick', 0.45, p);
+      } else { ch.desired = addSteer(seek(px(ch), p.x, p.z), separation(ch, game.all, 2.2), 0.5); ch.turbo = true; }
     } else { ch.desired = { x: 0, z: 0 }; ch.turbo = false; } // the rest hold, don't pile on
   }
   if (game.controlled) {
@@ -6289,8 +6300,8 @@ function updateLoose(dt, turboOn, actionEdge) {
     controlledMove(game.controlled, dt, top);
     if (actionEdge) { // dive on the ball — extends your reach + recovery odds for a beat
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
-      o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
-      o.recoverT = 0.45;
+      o.vel.x = dx / l * o.baseSpeed * 1.4; o.vel.z = dz / l * o.baseSpeed * 1.4; o.heading = Math.atan2(dx, dz);
+      o.recoverT = 0.6;
       if (o.actions.scoop) playOneShot(o, 'scoop', 0.6, true); // diving scoop animation
       else triggerArmAction(o, 'pick', 0.45, p);          // procedural dive-reach fallback
     }
@@ -6299,22 +6310,22 @@ function updateLoose(dt, turboOn, actionEdge) {
   // Recovery: only a LOW, settling ball can be fallen on — and even then it can be
   // BOBBLED loose again (random). A hot, squirting ball can't be corralled at all.
   const hsp = Math.hypot(ball.vx, ball.vz);
-  if (ball.grabCd <= 0 && p.y < 1.0 && hsp < 6.5) {
+  if (ball.grabCd <= 0 && p.y < 1.3 && hsp < 7.5) {
     let rec = null, recD = Infinity;
     for (const ch of game.all) {
       if (ch.ragdolling) continue;
-      const reach = ch.recoverT > 0 ? 1.9 : 1.0;
+      const reach = ch.recoverT > 0 ? 2.6 : 1.4; // a dive reaches much farther; standing is generous too
       const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
       if (d <= reach && d < recD) { recD = d; rec = ch; }
     }
     if (rec) {
-      const settle = THREE.MathUtils.clamp(1 - hsp / 6.5, 0, 1); // 0 hot .. 1 dead
-      const pGet = 0.2 + settle * 0.45 + (rec.recoverT > 0 ? 0.28 : 0); // diving + a dead ball = near-sure
+      const settle = THREE.MathUtils.clamp(1 - hsp / 7.5, 0, 1); // 0 hot .. 1 dead
+      const pGet = 0.4 + settle * 0.5 + (rec.recoverT > 0 ? 0.35 : 0); // diving on a settling ball = near-sure
       if (Math.random() < pGet) { recoverFumble(rec); return; }
-      // MUFFED — kick it loose again with a random squirt; brief grab cooldown.
-      const a = Math.random() * Math.PI * 2, k = 3.5 + Math.random() * 5;
-      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k; ball.vy = 2.5 + Math.random() * 3.5;
-      ball.grabCd = 0.4; rec.recoverT = 0; shake.add(0.12);
+      // MUFFED — kick it loose again with a smaller squirt; brief grab cooldown.
+      const a = Math.random() * Math.PI * 2, k = 2 + Math.random() * 2.5;
+      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k; ball.vy = 1.8 + Math.random() * 2.2;
+      ball.grabCd = 0.35; rec.recoverT = 0; shake.add(0.12);
     }
   }
   // Pile-up scrum: if 3+ players crowd a settled ball and nobody's fallen on it,
@@ -6374,13 +6385,18 @@ function endScrum(userWon) {
 }
 function recoverFumble(ch) {
   setFumbleGlow(false);
-  ball.mode = 'carried'; ball.holder = ch; game.carrier = ch; // ball follows the recoverer, not the downed runner
+  ball.mode = 'carried'; ball.holder = ch; game.carrier = ch; ball.targetRecv = null; // ball follows the recoverer
+  ball.mesh.visible = true; ball.mesh.position.set(ch.group.position.x, 1.0, ch.group.position.z); // snap it onto him — never leave it on the turf
+  ball.vx = ball.vy = ball.vz = 0;
   triggerArmAction(ch, 'pick', 0.5, ball.mesh.position); // procedural dive-on-the-ball
   audio.catch(); shake.add(0.25);
-  const spotZ = ch.group.position.z;
-  if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense recovers its own fumble — dead at the spot, keeps it
-  else if (ball.fromFence) beginReturn(ch, 'pick');     // overthrow caromed off the fence = pick; live runback
-  else beginReturn(ch, 'fumble');                       // defense scooped a live fumble = returnable runback
+  if (game.offense.includes(ch)) {
+    // Your own recovery is LIVE — scoop and score (advance it) instead of dead at the spot.
+    if (game.play) game.play.recovered = true;
+    showBanner('SCOOP & GO!', '#bfffd0');
+    enterRun(ch, 'Recovered — take it to the house!');
+  } else if (ball.fromFence) beginReturn(ch, 'pick');     // overthrow caromed off the fence = pick; live runback
+  else beginReturn(ch, 'fumble');                          // defense scooped a live fumble = returnable runback
 }
 function recoverDead(spotZ) {
   setFumbleGlow(false); ball.mode = 'rest';
@@ -8390,6 +8406,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
