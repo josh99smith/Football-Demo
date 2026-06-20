@@ -3190,7 +3190,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
