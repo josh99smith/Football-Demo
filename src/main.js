@@ -1780,6 +1780,9 @@ const TUNE_DEFAULTS = {
   vizColliders: 0, vizVectors: 0, vizLabels: 0, vizLog: 0,
   // Difficulty fine-tune (multiply/offset on top of the rookie/pro/all-pro preset)
   cpuSpdMul: 1.0, cpuCatchAdd: 0.0, cpuAccMul: 1.0, userBreakMul: 1.0,
+  // Play-calling matchup: how much a concept-vs-coverage edge swings coverage
+  // separation (0 = calls are cosmetic; 1 = a beaten call gives a clear step).
+  matchupLeverage: 1.0,
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1824,6 +1827,10 @@ const game = {
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, psCat: 'all', cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / play-select category filter / CPU last call / CPU snap timer
   lastPlayIndex: -1, // the offensive play actually run last (for the "LAST" tag in play-select)
+  // Play-calling matchup (Phase 1): the concept-vs-coverage edge resolved at snap.
+  // coverLev > 0 = offense beat the call (receivers get a step); < 0 = blanketed.
+  matchup: null, coverLev: 0, coverClose: 1, cpuDefIdx: 0, cpuOffIdx: 0,
+  tend: { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }, // recent play/coverage calls per actor (tendency memory)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -2305,7 +2312,7 @@ const DEF_FORM = [
 // L/slot/R, 3 = RB) and its start X to world waypoints off the scrimmage line.
 const PLAYS = [
   {
-    name: 'BOMBS', sub: 'Shots + RB check',
+    name: 'BOMBS', sub: 'Shots + RB check', type: 'pass', concept: 'Shots', beats: ['blitz'], losesTo: ['zone'],
     route(e, sx, los) {
       const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx - 8, 1), P(sx - 13, 3)];          // RB swing/check
@@ -2314,7 +2321,7 @@ const PLAYS = [
     },
   },
   {
-    name: 'SLANTS', sub: 'Quick slants + flat',
+    name: 'SLANTS', sub: 'Quick slants + flat', type: 'pass', concept: 'Quick', beats: ['blitz'], losesTo: ['man'],
     route(e, sx, los) {
       const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx - 6, 0.5), P(sx - 14, 3)];        // RB flat
@@ -2322,7 +2329,7 @@ const PLAYS = [
     },
   },
   {
-    name: 'MESH', sub: 'Crossers + swing',
+    name: 'MESH', sub: 'Crossers + swing', type: 'pass', concept: 'Mesh', beats: ['man'], losesTo: ['zone'],
     route(e, sx, los) {
       const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx - 8, 1), P(sx - 14, 4)];          // RB swing
@@ -2331,7 +2338,7 @@ const PLAYS = [
     },
   },
   {
-    name: 'FLOOD', sub: 'Sidelines + flat',
+    name: 'FLOOD', sub: 'Sidelines + flat', type: 'pass', concept: 'Flood', beats: ['zone'], losesTo: ['man'],
     route(e, sx, los) {
       const toSide = Math.sign(sx) || 1, toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx - 6, 0.5), P(sx - 13, 3)];        // RB flat
@@ -2341,7 +2348,7 @@ const PLAYS = [
     },
   },
   {
-    name: 'DIVE', sub: 'HB up the gut', run: true,
+    name: 'DIVE', sub: 'HB up the gut', run: true, type: 'run', concept: 'Inside', beats: ['spy'], losesTo: ['blitz'],
     route(e, sx, los) {
       const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx + 4, 2), P(1, 9), P(0, 22)];      // RB cuts inside, upfield
@@ -2349,7 +2356,7 @@ const PLAYS = [
     },
   },
   {
-    name: 'SWEEP', sub: 'HB bounce outside', run: true,
+    name: 'SWEEP', sub: 'HB bounce outside', run: true, type: 'run', concept: 'Outside', beats: ['blitz'], losesTo: ['spy'],
     route(e, sx, los) {
       const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
       if (e === 3) return [P(sx - 7, 1), P(-19, 7), P(-21, 24)];  // RB bounces wide then up
@@ -2715,14 +2722,15 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // CPU speed mult; cpuCatch = +/- to CPU catch odds; cpuAcc = CPU throw-error mult
 // (>1 = more errant); userBreak = your break-tackle mult.
 const DIFF = {
-  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25 },
-  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00 },
-  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82 },
+  // cpuRead = how sharply the CPU reads matchups + calls the right look (0..1).
+  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25, cpuRead: 0.3 },
+  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00, cpuRead: 0.55 },
+  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82, cpuRead: 0.85 },
 };
 // Active difficulty with the debug multipliers/offsets folded in (TUNE.cpu*/userBreak*).
 const diff = () => {
   const d = DIFF[game.diff] || DIFF.pro;
-  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul };
+  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul, cpuRead: d.cpuRead != null ? d.cpuRead : 0.55 };
 };
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
@@ -2850,8 +2858,10 @@ function updateDefense() {
         const anchor = d.zonePoint || d.home;
         const threat = nearestOffenseTo(anchor, 9);
         const tp = threat ? px(threat) : anchor;
-        steer = arrive(dp, tp.x, tp.z, 2.6); // settle on the zone spot / threat instead of jittering
-        d.turbo = threat != null && dist2(dp, px(threat)) > 5 * 5;
+        // Beaten zone reacts slower to its threat underneath (deep help stays honest).
+        const close = d.deep ? 1 : (game.coverClose || 1);
+        steer = arrive(dp, tp.x, tp.z, 2.6 * close); // settle on the zone spot / threat instead of jittering
+        d.turbo = threat != null && dist2(dp, px(threat)) > 5 * 5 && !((game.coverLev || 0) > 0 && !d.deep);
       }
     } else { // man cover
       if (inAir && (ball.targetRecv === game.receivers[d.covers])) {
@@ -2864,11 +2874,16 @@ function updateDefense() {
         // no more full-speed micro-twitch. He only sprints when actually beaten.
         const a = game.receivers[d.covers];
         const ap = px(a);
+        // Matchup leverage (Phase 1): a coverage-beating concept gives the WR a
+        // step of cushion + a slower-closing DB; a blanketed matchup crowds him.
+        const lev = game.coverLev || 0, close = game.coverClose || 1;
+        const cushion = Math.max(0.2, 1.3 + lev * 1.5);
         const tx = ap.x + a.vel.x * 0.16;
-        const tz = ap.z + a.vel.z * 0.16 + game.dir * 1.3; // goal-side cushion
+        const tz = ap.z + a.vel.z * 0.16 + game.dir * cushion; // goal-side cushion
         const gap = distXZ(dp, ap);
-        steer = arrive(dp, tx, tz, gap > 3 ? 1.4 : 2.6); // tighter ramp when trailing, softer when matched
-        d.turbo = dist2(dp, ap) > 4.5 * 4.5; // glued unless beaten
+        steer = arrive(dp, tx, tz, (gap > 3 ? 1.4 : 2.6) * close); // tighter ramp when trailing, softer when matched/beaten
+        const gl = 4.5 + lev * 2; // beaten = less glued (lets the step open up)
+        d.turbo = dist2(dp, ap) > gl * gl; // glued unless beaten
       }
     }
     const sep = separation(d, game.defense, 3.0);
@@ -3759,11 +3774,13 @@ function syncStartDiff() {
 // --- Play-select screen: called before EVERY snap — an offensive playbook on
 // your possessions and a defensive call when the CPU has the ball. ----------
 const DEF_PLAYS = [
-  { name: 'MAN', sub: 'Tight man-up', tag: 'M', col: '#5a8bff' },
-  { name: 'ZONE', sub: 'Zones + deep help', tag: 'Z', col: '#3fe08a' },
-  { name: 'BLITZ', sub: 'Send the house', tag: '⚡', col: '#ff5a3a' },
-  { name: 'SPY', sub: 'Contain the QB', tag: 'S', col: '#ffd23a' },
+  { name: 'MAN', sub: 'Tight man-up', tag: 'M', col: '#5a8bff', id: 'man', shell: 'man', pressure: 0 },
+  { name: 'ZONE', sub: 'Zones + deep help', tag: 'Z', col: '#3fe08a', id: 'zone', shell: 'two', pressure: 0 },
+  { name: 'BLITZ', sub: 'Send the house', tag: '⚡', col: '#ff5a3a', id: 'blitz', shell: 'man', pressure: 1 },
+  { name: 'SPY', sub: 'Contain the QB', tag: 'S', col: '#ffd23a', id: 'spy', shell: 'single', pressure: 0 },
 ];
+// Coverage id by call index (matches DEF_PLAYS order) — used by the matchup model.
+const COVER_ID = DEF_PLAYS.map((d) => d.id);
 const PS_PAGE = 4; // cards shown per page
 const playSelectEl = document.getElementById('playselect');
 const psTitle = document.getElementById('ps-title');
@@ -3935,6 +3952,23 @@ function yardResult(gained) {
   const g = Math.round(gained);
   if (g <= 0) return { text: `${Math.abs(g)} YD LOSS`, cls: g < 0 ? 'loss' : '' };
   return { text: `+${g} YD`, cls: 'gain' };
+}
+// Phase 1 feedback — a one-line "why" for the result from the snap's matchup, so
+// the player learns the rock-paper-scissors (announcer VO is an audio-lane hook).
+function matchupReason(result, gained) {
+  const m = game.matchup; if (!m || !m.off) return '';
+  const off = m.off.name, cov = (DEF_PLAYS[m.defIdx] || {}).name || 'coverage', p = game.play || {};
+  if (p.sack) return m.cov === 'blitz' ? 'Blitz got home!' : 'Coverage sack!';
+  if (result === 'intercept') return m.lev < 0 ? `${cov} jumped it!` : 'Picked off!';
+  if (m.lev > 0 && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 4))) return `${off} beat ${cov}!`;
+  if (m.lev < 0 && (result === 'incomplete' || ((result === 'tackle' || result === 'oob') && gained <= 1))) return `${cov} had the answer`;
+  if (m.cov === 'zone' && result !== 'TD' && gained <= 2 && m.off.type === 'pass') return 'Zone took it away';
+  return '';
+}
+// Show the reason on the status line + hand it to the audio session (optional VO).
+function showReason(reason) {
+  if (!reason) return;
+  try { if (audio && audio.reason) audio.reason(reason, game.matchup); } catch (e) { /* audio lane */ }
 }
 const elRateCard = document.getElementById('ratecard');
 const RC_LABELS = ['SPD', 'STR', 'STA', 'SKL', 'TKL'];
@@ -5079,6 +5113,57 @@ function recycleReplayBuffers() {
   if (r.fxPool.length > REPLAY_MAX) r.fxPool.length = REPLAY_MAX;
 }
 // Apply a defensive call to game.defense (on top of the base assignments).
+// ---- Play-calling matchup (Phase 1) ---------------------------------------
+// Resolve a concept-vs-coverage edge: +1 the offense beat this coverage, -1 it
+// loses to it, 0 neutral. From the OFFENSE's perspective (used for both sides).
+function matchupLeverage(offPlay, defIdx) {
+  const cov = COVER_ID[defIdx];
+  if (!offPlay || !cov) return 0;
+  if (offPlay.beats && offPlay.beats.includes(cov)) return 1;
+  if (offPlay.losesTo && offPlay.losesTo.includes(cov)) return -1;
+  return 0;
+}
+// Lock in the matchup for this snap: who called what, the leverage, and the
+// derived coverage cushion/closing factors the defense AI reads.
+function setMatchup(offPlay, defIdx) {
+  const lev = matchupLeverage(offPlay, defIdx);
+  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev };
+  game.coverLev = lev * TUNE.matchupLeverage;
+  game.coverClose = 1 - game.coverLev * 0.28; // <1 = beaten DBs close slower (separation)
+}
+// Situational CPU coverage call (replaces pure-random): keyed on down & distance,
+// with a difficulty-scaled read and a dash of unpredictability.
+function cpuDefCall() {
+  const togo = toGoYds(), down = game.down, r = Math.random();
+  const sharp = diff().cpuRead != null ? diff().cpuRead : 0.5; // 0..1 how well it reads (set per difficulty)
+  // Occasionally just mix it up so it's never fully predictable.
+  if (r < 0.16 * (1 - sharp * 0.6)) return (Math.random() * 4) | 0;
+  if (togo <= 3) return r < 0.5 ? 2 : (r < 0.78 ? 0 : 3);          // short: blitz / man / spy
+  if (down >= 3 && togo >= 8) return r < 0.62 ? 1 : 0;             // 3rd-and-long: zone shell
+  if (togo >= 8) return r < 0.42 ? 1 : (r < 0.82 ? 0 : 2);         // medium: zone-lean mix
+  return r < 0.4 ? 0 : (r < 0.7 ? 1 : (r < 0.9 ? 2 : 3));          // default mix
+}
+// CPU offensive concept pick. (Phase 1: non-repeating random; Phase 2 upgrades
+// this to a situational, tendency-aware caller.)
+function cpuOffCall() {
+  let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
+  return idx;
+}
+// Tendency memory: remember each actor's recent calls so the CPU can adapt and
+// the scouting HUD (Phase 6) can surface them.
+function recordTendency(offIdx, defIdx) {
+  const t = game.tend;
+  if (game.userOnOffense) { t.userOff.push(offIdx); t.cpuDef.push(defIdx); }
+  else { t.cpuOff.push(offIdx); t.userDef.push(defIdx); }
+  for (const k in t) if (Array.isArray(t[k]) && t[k].length > 8) t[k].shift();
+}
+// The most-frequent value in a short history (the "favorite"), or null if too few.
+function modeOf(arr, min = 3) {
+  if (!arr || arr.length < min) return null;
+  const c = {}; let best = null, bn = 0;
+  for (const v of arr) { c[v] = (c[v] || 0) + 1; if (c[v] > bn) { bn = c[v]; best = v; } }
+  return bn >= 2 ? +best : null;
+}
 function applyDefCall(call) {
   const d = game.dir, L = game.los;
   const zone = (p, x, dz) => { p.job = 'zone'; p.zonePoint = new THREE.Vector3(x, 0, L + d * dz); };
@@ -5108,24 +5193,33 @@ function snap() {
   game.throwCharge = 0; game.throwArmed = false; // ignore the held snap press
   // The CPU drops back then throws; pick its target now (most open at snap).
   game.cpuQBTimer = game.userOnOffense ? 0 : 1.1 + Math.random() * 0.7;
-  let play;
-  if (game.userOnOffense) play = PLAYS[game.playIndex] || PLAYS[0];
-  else { // CPU: mix it up — never run the same concept twice in a row
-    let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
-    game.cpuLastPlay = idx; play = PLAYS[idx];
-  }
+  let play, offIdx;
+  if (game.userOnOffense) { offIdx = game.playIndex; play = PLAYS[offIdx] || PLAYS[0]; }
+  else { offIdx = cpuOffCall(); game.cpuLastPlay = offIdx; game.cpuOffIdx = offIdx; play = PLAYS[offIdx]; }
   game.receivers.forEach((r, e) => { r.route = play.route(e, r.align.x, game.los); r.wp = 0; r.cutTimer = 0; r.job = 'route'; });
   game.offense.forEach((o) => { if (o.role === 'OL') o.job = 'block'; }); // linemen block
   game.defense.forEach((d) => {
     d.job = d.role === 'DL' ? 'rush' : d.deep ? 'zone' : 'cover'; // DL rush, S deep, rest cover
     if (d.deep) d.zonePoint = new THREE.Vector3(0, 0, game.los + game.dir * 18);
   });
-  // Defensive scheme: your call on D; the CPU mixes coverages on your drives.
+  // Defensive scheme: your call on D; a thinking, situational call on your drives.
+  let defIdx;
   if (!game.userOnOffense) {
-    applyDefCall(game.defCall);
+    defIdx = game.defCall;
+    applyDefCall(defIdx);
     if (!game.controlled || !game.defense.includes(game.controlled)) game.controlled = nearestToBallDefender();
     ctrlRing.visible = true; selRing.visible = false;
-  } else { applyDefCall((Math.random() * 4) | 0); }
+  } else { defIdx = cpuDefCall(); applyDefCall(defIdx); }
+  game.cpuDefIdx = defIdx;
+  // Resolve the concept-vs-coverage matchup for this snap (drives the leverage
+  // the coverage AI reads + the post-play "why").
+  setMatchup(play, defIdx);
+  // Real pressure when BLITZ is on: the QB feels it (a hurried throw / sack window).
+  if (COVER_ID[defIdx] === 'blitz') {
+    if (game.userOnOffense) { /* user must beat it with the call/quick game */ }
+    else game.cpuQBTimer = Math.min(game.cpuQBTimer, 0.7 + Math.random() * 0.4); // CPU QB hurried under your blitz
+  }
+  recordTendency(offIdx, defIdx);
   audio.hike();
   if (play.run) {                          // RUN PLAY: hand it to the back and go
     const rb = game.receivers[3];
@@ -5566,9 +5660,12 @@ function endPlay(result, endZ) {
       tackleGain = gained;
       if (result === 'incomplete') setPlayResult('INCOMPLETE');
       else { const yr = yardResult(gained); setPlayResult(yr.text, yr.cls); game.clockStopped = false; } // a tackle/OOB keeps the clock running
-      setStatus(result === 'incomplete' ? 'Incomplete'
+      const _base = result === 'incomplete' ? 'Incomplete'
         : result === 'oob' ? `Out of bounds (+${Math.max(0, Math.round(gained))})`
-          : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`);
+          : `${userHad ? 'Tackled' : 'CPU down'} (+${Math.max(0, Math.round(gained))})`;
+      const _reason = matchupReason(result, gained); // the "why" (Phase 1)
+      setStatus(_reason ? `${_base} — ${_reason}` : _base);
+      showReason(_reason);
       const spot = THREE.MathUtils.clamp(result === 'incomplete' ? game.los : endZ, OWN_GOAL_Z + 1, GOAL_Z - 1);
       const gotFirst = game.dir > 0 ? spot >= game.firstDown : spot <= game.firstDown;
       if (gotFirst) { game.los = spot; game.down = 1; game.firstDown = game.los + game.dir * FIRST_DOWN_YDS; if (userHad) audio.say('firstDown'); }
