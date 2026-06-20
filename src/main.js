@@ -1492,45 +1492,27 @@ async function ensurePlayerModel(idx) {
   e.loaded = true; return e;
 }
 
-// Bake a static HEAD mesh from a model's own head geometry — the triangles whose
-// verts are skin-weighted to the Head bone (or its children) — into head-bone-local
-// space, sharing the body material (so it keeps the real texture). Used as a pop-off
-// "helmet" for bare-headed models: the actual head detaches and tumbles. Returns a
-// Group of baked sub-meshes (one per source skinned mesh) at the head's location, or
-// null if no head geometry is found (caller falls back).
-const _bhV = new THREE.Vector3();
-function bakeHeadProp(model, headBone) {
-  const headBones = new Set(); headBone.traverse((o) => { if (o.isBone) headBones.add(o); }); // Head + head_end + any children
-  model.updateWorldMatrix(true, true);
-  const group = new THREE.Group();
+// Find a model's HEAD triangles (verts skin-weighted to the Head bone or its
+// children) on its main skinned mesh, so the real head can be snapshotted off at pop
+// time (see popHead). Returns { mesh, tris (flat vertex-index triples), headIdx (set
+// of head bone indices) } or null. Cheap, run once per bare-headed player.
+function computeHeadTris(model, headBone) {
+  let res = null;
   model.traverse((sm) => {
-    if (!sm.isSkinnedMesh || !sm.geometry || !sm.geometry.attributes.position) return;
-    const geo = sm.geometry, pos = geo.attributes.position, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight, uv = geo.attributes.uv;
+    if (res || !sm.isSkinnedMesh || !sm.geometry || !sm.geometry.attributes.position || !sm.skeleton) return;
+    const geo = sm.geometry, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
     if (!si || !sw) return;
-    sm.skeleton.update();
-    const bones = sm.skeleton.bones;
-    const isHeadVert = (i) => { let bw = -1, bb = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; bb = si.getComponent(i, k); } } const b = bones[bb]; return !!(b && headBones.has(b)); };
-    const remap = new Map(), npos = [], nuv = [], nidx = [];
-    const add = (oi) => {
-      let ni = remap.get(oi); if (ni !== undefined) return ni;
-      _bhV.fromBufferAttribute(pos, oi); sm.applyBoneTransform(oi, _bhV); sm.localToWorld(_bhV); headBone.worldToLocal(_bhV);
-      ni = npos.length / 3; npos.push(_bhV.x, _bhV.y, _bhV.z); if (uv) nuv.push(uv.getX(oi), uv.getY(oi));
-      remap.set(oi, ni); return ni;
-    };
-    const tri = (a, b, c) => { if (isHeadVert(a) && isHeadVert(b) && isHeadVert(c)) nidx.push(add(a), add(b), add(c)); };
-    const idx = geo.index ? geo.index.array : null;
-    if (idx) { for (let t = 0; t < idx.length; t += 3) tri(idx[t], idx[t + 1], idx[t + 2]); }
-    else { for (let t = 0; t < pos.count; t += 3) tri(t, t + 1, t + 2); }
-    if (!nidx.length) return;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(npos, 3));
-    if (nuv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(nuv, 2));
-    g.setIndex(nidx); g.computeVertexNormals();
-    const mat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
-    const m = new THREE.Mesh(g, mat); m.castShadow = true; m.frustumCulled = false;
-    group.add(m);
+    const bones = sm.skeleton.bones, headIdx = new Set();
+    for (let i = 0; i < bones.length; i++) { let b = bones[i]; while (b) { if (b === headBone) { headIdx.add(i); break; } b = b.parent; } }
+    if (!headIdx.size) return;
+    const dom = (vi) => { let bw = -1, bb = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(vi, k); if (w > bw) { bw = w; bb = si.getComponent(vi, k); } } return bb; };
+    const isHead = (vi) => headIdx.has(dom(vi));
+    const tris = []; const idx = geo.index ? geo.index.array : null;
+    if (idx) { for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2]; if (isHead(a) && isHead(b) && isHead(c)) tris.push(a, b, c); } }
+    else { for (let t = 0; t < geo.attributes.position.count; t += 3) { if (isHead(t) && isHead(t + 1) && isHead(t + 2)) tris.push(t, t + 1, t + 2); } }
+    if (tris.length) res = { mesh: sm, tris, headIdx };
   });
-  return group.children.length ? group : null;
+  return res;
 }
 function makeCharacter(team) {  // Offense = original character; defense = its own blue rigged character (or a
   // blue-tinted fallback if that model didn't load). Each keeps its own skin.
@@ -1690,25 +1672,18 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
     // Remember the rest attachment so a popped-off helmet can snap back next play.
     helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
     helmet.userData.flying = false;
-  } else if (!helmet && headBone && headEnd) {
-    // Bare-headed model (no helmet GLB): bake a real HEAD prop from the model's own
-    // head geometry so the actual head pops off (not a stand-in). Invisible normally
-    // (the skinned head shows); on a pop it's shown + flown while the real head
-    // shrinks to a nub (see popHelmet/restoreHelmet).
-    helmet = bakeHeadProp(model, headBone);
-    if (helmet) {
-      headBone.add(helmet); helmet.visible = false;
-      helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
-      helmet.userData.flying = false; helmet.userData.isHead = true;
-    }
   }
+  // Bare-headed model (no helmet GLB): record its head triangles so the player's REAL
+  // head can pop off. The flying head is snapshotted to world space at pop time
+  // (popHead) — no fragile bone-local baking.
+  const headSnap = (!helmet && headBone) ? computeHeadTris(model, headBone) : null;
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, mScale, mGroundY,
     upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest, leftHandBone,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet, headFix, bones: restPose.map((e) => e[0]), // bone list for replay capture
+    headBone, headEnd, helmet, headFix, headSnap, bones: restPose.map((e) => e[0]), // bone list for replay capture
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -4629,10 +4604,12 @@ const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion(), _bloodPos = ne
 function popHelmet(ch, hx, hz, power) {
   if (!TUNE.gore) return; // gore disabled (debug)
   const h = ch.helmet;
-  if (!h || !h.userData.rest || h.userData.flying) return;
+  if (!h || !h.userData.rest || h.userData.flying) {
+    if (!h && ch.headSnap && !ch._flyHead) popHead(ch, hx, hz, power); // bare-headed model: pop the REAL head instead
+    return;
+  }
   scene.attach(h); // detach from the head bone, keeping its current world transform
   h.userData.flying = true;
-  if (h.userData.isHead) { h.visible = true; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_POP_SCALE); } // the HEAD pops: show the prop, shrink the real (skinned) head to a nub
   const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
   flyingHelmets.push({
     h,
@@ -4679,13 +4656,54 @@ function updateFlyingHelmets(dt) {
   }
 }
 function restoreHelmet(ch) {
+  if (ch._flyHead) { // bare-headed model: drop the flown-off head + re-grow the real one
+    const fh = ch._flyHead; ch._flyHead = null;
+    const i = flyingHelmets.findIndex((f) => f.h === fh); if (i >= 0) flyingHelmets.splice(i, 1);
+    if (fh.parent) fh.parent.remove(fh); if (fh.geometry) fh.geometry.dispose();
+    if (ch.headBone) ch.headBone.scale.setScalar(HEAD_SCALE);
+  }
   const h = ch.helmet;
   if (!h || !h.userData.flying) return;
   const r = h.userData.rest;
   h.userData.flying = false;
   r.parent.add(h); h.position.copy(r.pos); h.quaternion.copy(r.quat); h.scale.copy(r.scale);
-  if (h.userData.isHead) { h.visible = false; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_SCALE); } // re-grow the real head, re-hide the prop
   const i = flyingHelmets.findIndex((f) => f.h === h); if (i >= 0) flyingHelmets.splice(i, 1);
+}
+// Snapshot a bare-headed player's REAL head (its head triangles, in current world
+// pose) into a static mesh that detaches and tumbles like a popped helmet, while the
+// player's skinned head shrinks to a nub. Reuses the flying-helmet tumble + blood.
+const _phV = new THREE.Vector3();
+function popHead(ch, hx, hz, power) {
+  const hs = ch.headSnap, sm = hs.mesh; if (!sm || !sm.skeleton) return;
+  sm.updateWorldMatrix(true, false); sm.skeleton.update();
+  const pos = sm.geometry.attributes.position, uv = sm.geometry.attributes.uv;
+  const remap = new Map(), npos = [], nuv = [], nidx = [];
+  const add = (oi) => {
+    let ni = remap.get(oi); if (ni !== undefined) return ni;
+    _phV.fromBufferAttribute(pos, oi); sm.applyBoneTransform(oi, _phV); sm.localToWorld(_phV); // current skinned world position
+    ni = npos.length / 3; npos.push(_phV.x, _phV.y, _phV.z); if (uv) nuv.push(uv.getX(oi), uv.getY(oi));
+    remap.set(oi, ni); return ni;
+  };
+  const tr = hs.tris; for (let t = 0; t < tr.length; t += 3) nidx.push(add(tr[t]), add(tr[t + 1]), add(tr[t + 2]));
+  if (!nidx.length) return;
+  // Centre the geometry on its centroid so it tumbles about itself (mesh.position = centroid).
+  let cx = 0, cy = 0, cz = 0; const n = npos.length / 3;
+  for (let i = 0; i < npos.length; i += 3) { cx += npos[i]; cy += npos[i + 1]; cz += npos[i + 2]; }
+  cx /= n; cy /= n; cz /= n;
+  for (let i = 0; i < npos.length; i += 3) { npos[i] -= cx; npos[i + 1] -= cy; npos[i + 2] -= cz; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(npos, 3));
+  if (nuv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(nuv, 2));
+  g.setIndex(nidx); g.computeVertexNormals();
+  const mat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
+  const head = new THREE.Mesh(g, mat); head.position.set(cx, cy, cz); head.castShadow = true; head.frustumCulled = false;
+  scene.add(head); ch._flyHead = head;
+  if (ch.headBone) ch.headBone.scale.setScalar(HEAD_POP_SCALE); // decapitate: shrink the skinned head to a nub
+  const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
+  flyingHelmets.push({ h: head, vx: (hx / l) * spd + ch.vel.x * 0.3 + (Math.random() - 0.5) * 1.6, vy: 5.5 + Math.random() * 2.6, vz: (hz / l) * spd + ch.vel.z * 0.3 + (Math.random() - 0.5) * 1.6, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 11 + Math.random() * 9, rest: false });
+  _bloodPos.set(ch.group.position.x, 1.6, ch.group.position.z); if (ch.headBone) ch.headBone.getWorldPosition(_bloodPos);
+  bloodSpray(_bloodPos.x, _bloodPos.y - 0.15, _bloodPos.z); audio.fence(0.3);
+  if (game.state !== STATE.REPLAY) { const ev = game.replay.evPool.pop() || {}; ev.type = 'helmet'; ev.fi = game.replay.frames.length; ev.pIdx = game.all.indexOf(ch); ev.hx = hx; ev.hz = hz; ev.power = power || 70; ev.fired = false; game.replay.events.push(ev); }
 }
 
 // --- TORN IN HALF: a rare, brutal big-hit gore hook. The body splits at the
@@ -9167,6 +9185,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
