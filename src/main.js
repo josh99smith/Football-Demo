@@ -3985,11 +3985,16 @@ function playerCardHTML(player, kind) {
   const vals = RAT_KEYS.map((k) => player.rt[k + 'R']);
   const team = game.teamA && game.teamA.includes(player) ? 'home' : 'away';
   const port = portraitCache[`${team}_${kind}`];
-  const img = port ? `<img class="pc-portrait" src="${port}" alt="">` : '<div class="pc-portrait"></div>';
-  return `<div class="pc-card pc-${team}">${img}<div class="pc-ovr">${ovr(vals)}</div>`
-    + `<div class="pc-body"><div class="pc-name">${player.surname || ''}</div>`
-    + `<div class="pc-pos">${player.pos || player.role} · ${KIND_LABEL[kind]}</div>`
-    + `<div class="pc-stat">${statLine(player.stats || blankStats(), kind)}</div></div></div>`;
+  const img = port ? `<img class="pc-portrait" src="${port}" alt="">` : '';
+  return `<div class="pc-card pc-${team}">`
+    + `<div class="pc-shine"></div>${img}`
+    + `<div class="pc-kind">${KIND_LABEL[kind]}</div>`
+    + `<div class="pc-ovr"><b>${ovr(vals)}</b><i>OVR</i></div>`
+    + `<div class="pc-body">`
+    + `<div class="pc-name">${player.surname || ''}</div>`
+    + `<div class="pc-pos">${player.pos || player.role || ''}</div>`
+    + `<div class="pc-stat">${statLine(player.stats || blankStats(), kind)}</div>`
+    + `</div></div>`;
 }
 function showPlayerCards(result) {
   if (!playerCardsEl) return;
@@ -4021,13 +4026,16 @@ function restoreCardPose(ch) {
 function buildPortraits() {
   if (!charTemplate || !game.teamA || !game.teamA.length) return;
   try {
-    const W = 320, H = 360;
+    const W = 340, H = 440;
     const rt = new THREE.WebGLRenderTarget(W, H, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
     const pScene = new THREE.Scene();
-    pScene.add(new THREE.HemisphereLight(0xffffff, 0x55555f, 1.8));
-    pScene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    const dl = new THREE.DirectionalLight(0xffffff, 2.0); dl.position.set(2.5, 4, 3.5); pScene.add(dl);
-    const rim = new THREE.DirectionalLight(0x9ec0ff, 0.9); rim.position.set(-3, 2, -2); pScene.add(rim);
+    // Dramatic-but-readable studio light: a strong key + a camera-side fill so the
+    // dark Reaper armor reads, plus a cool rim for edge separation against any bg.
+    pScene.add(new THREE.HemisphereLight(0xffffff, 0x44485a, 2.4));
+    pScene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const dl = new THREE.DirectionalLight(0xffffff, 3.4); dl.position.set(2.6, 4.2, 3.6); pScene.add(dl);
+    const fill = new THREE.DirectionalLight(0xfff2e0, 1.5); fill.position.set(-1.6, 1.6, 4.2); pScene.add(fill); // warm camera-side fill
+    const rim = new THREE.DirectionalLight(0x9ec8ff, 1.9); rim.position.set(-3.2, 2.8, -2.6); pScene.add(rim); // cool back rim
     const pCam = new THREE.PerspectiveCamera(30, W / H, 0.1, 100);
     const ball = new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 12), new THREE.MeshStandardMaterial({ color: 0x6f3a18, roughness: 0.65 }));
     ball.scale.set(0.42, 0.42, 0.66);
@@ -4046,7 +4054,9 @@ function buildPortraits() {
         rep.group.updateMatrixWorld(true);
         if (kind !== 'def' && rep.handBone) { rep.handBone.getWorldPosition(_wp); ball.position.copy(_wp).add(new THREE.Vector3(0, 0, 0.12)); pScene.add(ball); }
         else pScene.remove(ball);
-        pCam.position.set(0.12, 1.5, 2.25); pCam.lookAt(0, 1.42, 0); // bust framing: helmet + upper body
+        // Frame the full dynamic figure (helmet → mid-thigh) with headroom so a
+        // raised throwing arm / the ball never clips the top of the crop.
+        pCam.position.set(0.1, 1.5, 3.7); pCam.lookAt(0, 1.3, 0);
         renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
         renderer.render(pScene, pCam);
         renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);

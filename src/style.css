@@ -1258,42 +1258,68 @@ body.replay-mode .replay-btn { display: none !important; }
 }
 
 /* ---------- Post-play player cards ---------- */
+/* Post-play hero cards: a KEYED (transparent) player cutout on a team-colored
+   spotlight, info banded across the bottom. Sit bottom-left, clear of the
+   scoreboard (top) and the action button (bottom-right). */
 #playercards {
-  position: fixed; z-index: 16;
-  left: max(8px, env(safe-area-inset-left));
-  top: max(30px, calc(env(safe-area-inset-top) + 26px));
-  display: flex; flex-direction: column; gap: 7px; pointer-events: none;
-  animation: pcIn 0.28s ease both;
+  position: fixed; z-index: var(--z-cards);
+  left: max(10px, env(safe-area-inset-left));
+  bottom: max(12px, calc(env(safe-area-inset-bottom) + 10px));
+  display: flex; flex-direction: row; align-items: flex-end; gap: 9px; pointer-events: none;
 }
 #playercards.hidden { display: none; }
-@keyframes pcIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes pcIn { from { opacity: 0; transform: translateY(14px) scale(0.94); } to { opacity: 1; transform: none; } }
 #playercards .pc-card {
-  position: relative; width: 124px; color: #eef2f7; overflow: hidden;
-  background: linear-gradient(180deg, rgba(20,26,36,0.92), rgba(8,11,16,0.92));
-  border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 11px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); backdrop-filter: blur(7px);
+  --tc: #8a93a3;
+  position: relative; width: clamp(118px, 16vw, 140px); aspect-ratio: 3 / 4; overflow: hidden;
+  border-radius: 14px; color: #fff;
+  border: 1.5px solid color-mix(in srgb, var(--tc) 72%, rgba(255, 255, 255, 0.3));
+  background:
+    radial-gradient(120% 76% at 50% 20%, color-mix(in srgb, var(--tc) 52%, transparent) 0%, transparent 60%),
+    linear-gradient(180deg, rgba(16, 20, 28, 0.4) 0%, rgba(8, 11, 16, 0.72) 56%, rgba(5, 7, 11, 0.92) 100%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  animation: pcIn 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
-#playercards .pc-card.pc-home { border-color: rgba(214,40,40,0.7); }
-#playercards .pc-card.pc-away { border-color: rgba(60,120,230,0.7); }
-/* Bust crop: show the helmet + top half of the body (object-position pulls the
-   frame up so the head/helmet stays in view and the legs are cropped off). */
+#playercards .pc-card.pc-home { --tc: var(--home); }
+#playercards .pc-card.pc-away { --tc: var(--away); }
+/* Diagonal sheen for a little trading-card gloss. */
+#playercards .pc-shine {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none; mix-blend-mode: screen;
+  background: linear-gradient(116deg, transparent 42%, rgba(255, 255, 255, 0.10) 50%, transparent 58%);
+}
+/* The keyed cutout: zoomed to fill, anchored at the head; the legs fall away
+   under the bottom scrim. */
 #playercards .pc-portrait {
-  display: block; width: 100%; height: 84px; object-fit: cover; object-position: 50% 14%;
-  background: radial-gradient(ellipse 70% 60% at 50% 34%, rgba(255,255,255,0.12), rgba(0,0,0,0) 70%);
+  position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1;
+  object-fit: contain; object-position: 50% 0;
+  transform: scale(1.34); transform-origin: 50% 9%;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6));
 }
-#playercards .pc-card.pc-home .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 34%, rgba(214,40,40,0.32), rgba(0,0,0,0) 70%); }
-#playercards .pc-card.pc-away .pc-portrait { background: radial-gradient(ellipse 72% 60% at 50% 34%, rgba(60,120,230,0.34), rgba(0,0,0,0) 70%); }
+/* Bottom scrim so the name + stats read over the figure. */
+#playercards .pc-card::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 52%; z-index: 2; pointer-events: none;
+  background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--tc) 16%, rgba(4, 6, 10, 0.8)) 46%, rgba(3, 5, 9, 0.96) 100%);
+}
+#playercards .pc-kind {
+  position: absolute; top: 10px; left: 0; z-index: 3;
+  font-size: 8px; font-weight: 900; letter-spacing: 1.2px; padding: 4px 8px 4px 7px;
+  color: #fff; background: var(--tc); border-radius: 0 7px 7px 0;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.5); text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
 #playercards .pc-ovr {
-  position: absolute; top: 6px; right: 6px;
-  min-width: 26px; padding: 2px 5px; border-radius: 8px; text-align: center;
-  font-weight: 900; font-size: 15px; line-height: 1; font-variant-numeric: tabular-nums;
-  color: #1a1208; background: linear-gradient(180deg, #ffe06a, #f0a020);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; line-height: 1;
+  padding: 4px 7px 3px; border-radius: 10px; color: #1a1208;
+  background: linear-gradient(180deg, #ffe879, #f0a020);
+  box-shadow: 0 2px 9px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
-#playercards .pc-body { padding: 5px 8px 7px; border-top: 1px solid rgba(255,255,255,0.1); }
-#playercards .pc-name { font-weight: 900; font-size: 13px; letter-spacing: 0.4px; color: #fff; line-height: 1.05; }
-#playercards .pc-pos { font-size: 8px; font-weight: 800; letter-spacing: 0.8px; color: var(--accent); margin-top: 1px; }
-#playercards .pc-stat { margin-top: 4px; font-size: 9.5px; font-weight: 800; font-variant-numeric: tabular-nums; color: #dbe7ff; }
+#playercards .pc-ovr b { font-size: 19px; font-weight: 900; font-variant-numeric: tabular-nums; }
+#playercards .pc-ovr i { font-size: 6.5px; font-weight: 800; font-style: normal; letter-spacing: 1.5px; opacity: 0.85; }
+#playercards .pc-body { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 8px 10px 9px; }
+#playercards .pc-name { font-size: clamp(15px, 2.4vw, 18px); font-weight: 900; font-style: italic; letter-spacing: 0.4px; color: #fff; line-height: 1; text-shadow: 0 2px 5px rgba(0, 0, 0, 0.8); }
+#playercards .pc-pos { font-size: 8.5px; font-weight: 800; letter-spacing: 1.4px; color: var(--accent); margin-top: 3px; }
+#playercards .pc-stat { margin-top: 5px; font-size: 8.5px; font-weight: 700; font-variant-numeric: tabular-nums; color: #cfe0ff; line-height: 1.25; }
 
 /* ---------- Balance telemetry overlay (toggle: I) ---------- */
 #dbg {
@@ -1642,6 +1668,7 @@ body.reduced-motion .ps-cats,
 body.reduced-motion .ps-deck,
 body.reduced-motion #banner,
 body.reduced-motion #banner.pop,
+body.reduced-motion #playercards .pc-card,
 body.reduced-motion #startmenu * { animation: none !important; }
 
 /* Accessibility: high contrast — solidify the UI-kit surfaces + borders. */
