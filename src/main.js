@@ -3427,6 +3427,54 @@ function uiTabs(tabs) {
   return { bar, panes, select };
 }
 
+// A labeled slider row. opts: { min, max, step, value, format(v), onInput(v) }.
+function uiSlider(label, opts) {
+  const wrap = document.createElement('label'); wrap.className = 'ui-field';
+  const top = document.createElement('div'); top.className = 'ui-field-top';
+  const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+  const val = document.createElement('span'); val.className = 'ui-field-val';
+  const fmt = opts.format || ((v) => v);
+  const range = document.createElement('input'); range.type = 'range';
+  range.min = opts.min; range.max = opts.max; range.step = opts.step != null ? opts.step : 1; range.value = opts.value;
+  val.textContent = fmt(+range.value);
+  range.addEventListener('input', () => { const v = +range.value; val.textContent = fmt(v); if (opts.onInput) opts.onInput(v); });
+  top.appendChild(name); top.appendChild(val);
+  wrap.appendChild(top); wrap.appendChild(range);
+  return wrap;
+}
+// A labeled on/off toggle (styled switch).
+function uiToggle(label, value, onChange) {
+  const wrap = document.createElement('label'); wrap.className = 'ui-field ui-toggle';
+  const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+  const sw = document.createElement('button'); sw.type = 'button'; sw.className = 'ui-switch'; sw.setAttribute('role', 'switch');
+  const set = (v) => { sw.classList.toggle('on', !!v); sw.setAttribute('aria-checked', String(!!v)); };
+  set(value);
+  sw.addEventListener('click', () => { const v = !sw.classList.contains('on'); set(v); audio.unlock(); onChange(v); });
+  wrap.appendChild(name); wrap.appendChild(sw);
+  return wrap;
+}
+// A segmented control (mutually exclusive). options = [{ label, value }].
+function uiSegmented(label, options, value, onChange) {
+  const wrap = document.createElement('div'); wrap.className = 'ui-field';
+  if (label) {
+    const top = document.createElement('div'); top.className = 'ui-field-top';
+    const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+    top.appendChild(name); wrap.appendChild(top);
+  }
+  const seg = document.createElement('div'); seg.className = 'ui-seg';
+  options.forEach((o) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'ui-seg-btn'; b.textContent = o.label;
+    b.classList.toggle('on', o.value === value);
+    b.addEventListener('click', () => {
+      seg.querySelectorAll('.ui-seg-btn').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on'); audio.unlock(); onChange(o.value);
+    });
+    seg.appendChild(b);
+  });
+  wrap.appendChild(seg);
+  return wrap;
+}
+
 // ===========================================================================
 // Pause menu (Phase 2): the single reachable hub for control. Soft-pauses the
 // sim (game.paused gates the loop in simStep) and presents Resume / Game
@@ -3462,6 +3510,7 @@ function buildPauseMenu() {
     { label: 'Resume', build: (p) => {
         const stack = document.createElement('div'); stack.className = 'ui-stack';
         stack.appendChild(uiButton('▶&nbsp; RESUME', 'primary', () => closePause()));
+        stack.appendChild(uiButton('⚙&nbsp; SETTINGS', 'ghost', () => openSettings()));
         const note = document.createElement('div'); note.className = 'pm-resume-note';
         note.textContent = 'The game is frozen while this menu is open. Tap outside, press Esc, or hit Resume to get back to the action.';
         stack.appendChild(note);
@@ -3527,6 +3576,115 @@ function syncPauseBtn() {
   pauseBtn.addEventListener('touchstart', go, { passive: false });
   pauseBtn.addEventListener('mousedown', go);
 })();
+
+// ===========================================================================
+// Settings (Phase 4): a standalone tabbed modal reachable from the pause menu
+// and the start menu. Every control binds to an EXISTING live knob (TUNE.* read
+// each frame, or an apply* call) — no new plumbing — and persists to localStorage
+// so a player's setup survives reloads. Audio defers to the audio session's mixer
+// (#volpanel) so we stay out of that lane (no edits to src/audio.js).
+// ===========================================================================
+const settingsMenuEl = document.getElementById('settingsmenu');
+const SETTINGS_KEY = 'rfSettings';
+let _reducedMotion = false; // gated in ScreenShake (tames the camera shake)
+// Player-facing settings and their live state (seeded from the current knobs).
+const settings = {
+  showFps: false,
+  brightness: TUNE.exposure,   // renderer tone-mapping exposure
+  shake: TUNE.shakeAmt,        // × screen shake
+  camDist: TUNE.camDist,       // × chase distance
+  camHeight: TUNE.camHeight,   // × chase height
+  quarterLen: TUNE.quarterLen, // seconds per quarter (applies next quarter)
+  diff: game.diff,             // rookie / pro / allpro
+  textScale: 1.0,              // UI text scale (hooks the fluid-type tokens)
+  highContrast: false,
+  reducedMotion: false,
+};
+function applySetting(key) {
+  const v = settings[key];
+  switch (key) {
+    case 'showFps': if (fpsEl) fpsEl.style.display = v ? '' : 'none'; break;
+    case 'brightness': TUNE.exposure = v; try { applyLighting(); } catch (e) { /* pre-scene */ } break;
+    case 'shake': TUNE.shakeAmt = v; break;
+    case 'camDist': TUNE.camDist = v; break;
+    case 'camHeight': TUNE.camHeight = v; break;
+    case 'quarterLen': TUNE.quarterLen = v; break;
+    case 'diff': game.diff = v; break;
+    case 'textScale': document.documentElement.style.setProperty('--ui-scale', v); break;
+    case 'highContrast': document.body.classList.toggle('high-contrast', !!v); break;
+    case 'reducedMotion': _reducedMotion = !!v; document.body.classList.toggle('reduced-motion', !!v); break;
+  }
+}
+function applyAllSettings() { for (const k in settings) applySetting(k); }
+function saveSettings() {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ }
+}
+function loadSettings() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      for (const k in settings) if (s[k] !== undefined) settings[k] = s[k];
+    }
+  } catch (e) { /* ignore corrupt storage */ }
+  applyAllSettings();
+}
+// Set + apply + persist in one shot (the onChange for every control).
+function setSetting(key, v) { settings[key] = v; applySetting(key); saveSettings(); }
+
+function buildSettings() {
+  if (!settingsMenuEl) return;
+  settingsMenuEl.innerHTML = '';
+  const panel = document.createElement('div'); panel.className = 'ui-panel';
+  const head = document.createElement('div'); head.className = 'ui-panel-head';
+  const title = document.createElement('div'); title.className = 'ui-panel-title'; title.textContent = 'SETTINGS';
+  const close = document.createElement('button'); close.className = 'ui-panel-close'; close.setAttribute('aria-label', 'Close'); close.textContent = '×';
+  close.addEventListener('click', () => closeSettings());
+  head.appendChild(title); head.appendChild(close);
+
+  const note = (text) => { const d = document.createElement('div'); d.className = 'ui-section-note'; d.textContent = text; return d; };
+  const { bar, panes } = uiTabs([
+    { label: 'Audio', build: (p) => {
+        p.appendChild(note('Master, music, SFX, and commentary levels live in the audio mixer.'));
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        // Close Settings first so the mixer (the audio session's #volpanel) isn't
+        // hidden behind this modal.
+        stack.appendChild(uiButton('🔊&nbsp; OPEN AUDIO MIXER', 'primary', () => { closeSettings(); if (typeof toggleVolPanel === 'function') toggleVolPanel(true); }));
+        p.appendChild(stack);
+    } },
+    { label: 'Video', build: (p) => {
+        p.appendChild(uiSlider('Brightness', { min: 0.7, max: 2.0, step: 0.05, value: settings.brightness, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('brightness', v) }));
+        p.appendChild(uiToggle('Show FPS counter', settings.showFps, (v) => setSetting('showFps', v)));
+    } },
+    { label: 'Gameplay', build: (p) => {
+        p.appendChild(uiSegmented('Difficulty', [
+          { label: DIFF.rookie.label, value: 'rookie' }, { label: DIFF.pro.label, value: 'pro' }, { label: DIFF.allpro.label, value: 'allpro' },
+        ], settings.diff, (v) => { setSetting('diff', v); syncStartDiff(); }));
+        p.appendChild(uiSlider('Quarter length', { min: 30, max: 180, step: 15, value: settings.quarterLen, format: (v) => `${v}s`, onInput: (v) => setSetting('quarterLen', v) }));
+        p.appendChild(note('Quarter length applies from the next quarter.'));
+    } },
+    { label: 'Camera', build: (p) => {
+        p.appendChild(uiSlider('Chase distance', { min: 0.7, max: 1.5, step: 0.05, value: settings.camDist, format: (v) => `${v.toFixed(2)}×`, onInput: (v) => setSetting('camDist', v) }));
+        p.appendChild(uiSlider('Chase height', { min: 0.7, max: 1.5, step: 0.05, value: settings.camHeight, format: (v) => `${v.toFixed(2)}×`, onInput: (v) => setSetting('camHeight', v) }));
+        p.appendChild(uiSlider('Screen shake', { min: 0, max: 1.5, step: 0.05, value: settings.shake, format: (v) => v === 0 ? 'off' : `${Math.round(v * 100)}%`, onInput: (v) => setSetting('shake', v) }));
+    } },
+    { label: 'Access', build: (p) => {
+        p.appendChild(uiSlider('Text size', { min: 0.9, max: 1.3, step: 0.05, value: settings.textScale, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('textScale', v) }));
+        p.appendChild(uiToggle('Reduced motion', settings.reducedMotion, (v) => setSetting('reducedMotion', v)));
+        p.appendChild(uiToggle('High contrast', settings.highContrast, (v) => setSetting('highContrast', v)));
+        p.appendChild(note('Reduced motion tames the camera shake and big-hit flashes.'));
+    } },
+  ]);
+  panel.appendChild(head); panel.appendChild(bar); panel.appendChild(panes);
+  settingsMenuEl.appendChild(panel);
+  settingsMenuEl.addEventListener('pointerdown', (e) => { if (e.target === settingsMenuEl) closeSettings(); });
+}
+function openSettings() { if (!settingsMenuEl) return; buildSettings(); settingsMenuEl.classList.remove('hidden'); }
+function closeSettings() { if (settingsMenuEl) settingsMenuEl.classList.add('hidden'); }
+// Keep the start-menu difficulty buttons in step when difficulty is changed here.
+function syncStartDiff() {
+  if (!startMenuEl) return;
+  startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b.dataset.diff === game.diff));
+}
 
 // PWA: register the service worker and show an "Install" prompt on launch (in a
 // browser tab). Uses the native beforeinstallprompt where available, with an
@@ -4017,6 +4175,8 @@ class ScreenShake {
       oy += (Math.random() * 2 - 1) * maxOffset * 0.5 * s;
       this.trauma = Math.max(0, this.trauma - dt * 1.6);
     }
+    // Reduced-motion (accessibility): hold the camera steady — no shake/kick.
+    if (_reducedMotion) { ox = oz = oy = 0; this.kickX = this.kickZ = 0; }
     this.offX = ox * TUNE.shakeAmt; this.offY = oy * TUNE.shakeAmt; this.offZ = oz * TUNE.shakeAmt;
     const k = Math.max(0, 1 - dt * 11); // snappy lurch-out, recovers in ~0.18s
     this.kickX *= k; this.kickZ *= k;
@@ -8720,6 +8880,7 @@ function buildStartMenu() {
           <div class="sm-diffs">${diffBtns}</div>
         </div>
         <button id="sm-vol" class="sm-vol" aria-label="Audio settings">🔊</button>
+        <button id="sm-settings" class="sm-iconbtn" aria-label="Settings">⚙</button>
         <div class="sm-startwrap">
           <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
           <button id="sm-gauntlet" class="sm-start sm-gauntlet"><span>GAUNTLET</span><span class="sm-sub">3 teams · win or restart</span></button>
@@ -8727,11 +8888,13 @@ function buildStartMenu() {
       </div>
     </div>`;
   startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
-    game.diff = el.dataset.diff;
+    setSetting('diff', el.dataset.diff); // persists; game.diff is kept in step
     startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b === el));
   }));
   const smVol = document.getElementById('sm-vol');
   if (smVol) smVol.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleVolPanel(); });
+  const smSettings = document.getElementById('sm-settings');
+  if (smSettings) smSettings.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSettings(); });
   syncVolUI();
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
@@ -8786,6 +8949,7 @@ loadAssets().then(async () => {
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
   setupVolumeUI();
+  loadSettings(); // player-facing settings (Phase 4) — apply before the first render
   buildStartMenu();
   // Boot straight into the Contact Lab with ?lab; otherwise the matchup menu gates the kickoff.
   const wantLab = (typeof location !== 'undefined') && /\blab\b/.test(location.search + ' ' + location.hash);

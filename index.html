@@ -251,6 +251,12 @@
   <button id="pause-btn" class="pause-btn hidden" aria-label="Pause / menu">❚❚</button>
   <div id="pausemenu" class="ui-modal hidden" role="dialog" aria-modal="true" aria-label="Game menu"></div>
 
+  <!-- Settings (Phase 4): a standalone tabbed modal (Audio / Video / Gameplay /
+       Camera / Accessibility) reachable from the pause menu and the start menu.
+       Built in main.js (buildSettings) from the Phase-1 UI kit; persists to
+       localStorage. Audio defers to the audio session's mixer (#volpanel). -->
+  <div id="settingsmenu" class="ui-modal hidden" role="dialog" aria-modal="true" aria-label="Settings"></div>
+
   <script type="module" src="src/main.js"></script>
 </body>
 </html>

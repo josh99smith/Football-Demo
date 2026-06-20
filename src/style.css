@@ -39,11 +39,13 @@
   /* Corner radius */
   --r-1: 8px; --r-2: 12px; --r-3: 16px;
 
-  /* Fluid type scale (clamp: phone → tablet) */
-  --fs-sm: clamp(11px, 2.6vw, 13px);
-  --fs-md: clamp(13px, 3vw, 15px);
-  --fs-lg: clamp(16px, 4vw, 20px);
-  --fs-xl: clamp(20px, 5.5vw, 30px);
+  /* Fluid type scale (clamp: phone → tablet), times the accessibility text scale
+     (--ui-scale, set by the Settings → Text size control). */
+  --ui-scale: 1;
+  --fs-sm: calc(clamp(11px, 2.6vw, 13px) * var(--ui-scale));
+  --fs-md: calc(clamp(13px, 3vw, 15px) * var(--ui-scale));
+  --fs-lg: calc(clamp(16px, 4vw, 20px) * var(--ui-scale));
+  --fs-xl: calc(clamp(20px, 5.5vw, 30px) * var(--ui-scale));
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -710,14 +712,15 @@ body.replay-mode #fps { display: none !important; }
   width: 16px; height: 16px; border-radius: 50%; background: #ffd23a;
   border: 2px solid #1b2a1f;
 }
-/* Volume control on the start menu's footer. */
-.sm-vol {
+/* Volume + settings controls on the start menu's footer (shared look). */
+.sm-vol, .sm-iconbtn {
   font-family: inherit; font-size: 22px; line-height: 1;
   width: 46px; height: 46px; border-radius: 12px; color: #fff;
   background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.22);
   cursor: pointer; -webkit-appearance: none;
 }
 .sm-vol.muted { background: rgba(255, 90, 58, 0.8); }
+.sm-iconbtn:active { transform: scale(0.92); }
 
 /* ---------- Coach cam / PLAY ART toggle (pre-snap only) ---------- */
 .coach-btn {
@@ -1429,6 +1432,10 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 }
 .ui-modal.hidden { display: none; }
 @keyframes uiFade { from { opacity: 0; } to { opacity: 1; } }
+/* Settings can be opened from the start menu (z 60), so it rides a tier above it
+   (and above the pause modal); the audio mixer (#volpanel, z 70) still wins, and
+   the mixer button closes Settings before opening it. */
+#settingsmenu { z-index: var(--z-toast); }
 
 .ui-panel {
   display: flex; flex-direction: column; width: min(560px, 96vw); max-height: 92vh; overflow: hidden;
@@ -1548,3 +1555,50 @@ body.cine-moment #joystick,
 body.cine-moment .action-btn,
 body.cine-moment .mini-btn,
 body.cine-moment .catch-row { display: none !important; }
+
+/* ===========================================================================
+   UI kit controls (Phase 4): slider · toggle · segmented — for Settings
+   =========================================================================== */
+.ui-field { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-3) 0; }
+.ui-field-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.ui-field-label { font-size: var(--fs-sm); font-weight: 700; color: var(--ink); }
+.ui-field-val { font-size: var(--fs-sm); font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ui-field input[type="range"] { width: 100%; height: 26px; margin: 0; -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
+.ui-field input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--surface-3); }
+.ui-field input[type="range"]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--surface-3); }
+.ui-field input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -8px; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 2px solid #15120a; }
+.ui-field input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 2px solid #15120a; }
+.ui-toggle { flex-direction: row; align-items: center; justify-content: space-between; }
+.ui-switch { flex: 0 0 auto; width: 52px; height: 30px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface-2); position: relative; cursor: pointer; transition: background 0.15s; -webkit-appearance: none; }
+.ui-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+  background: #cdd5df; transition: transform 0.15s, background 0.15s; }
+.ui-switch.on { background: var(--accent); }
+.ui-switch.on::after { transform: translateX(22px); background: #15120a; }
+.ui-seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-2); overflow: hidden; }
+.ui-seg-btn { flex: 1; font-family: inherit; font-size: var(--fs-sm); font-weight: 800; letter-spacing: 0.03em;
+  color: var(--ink-dim); background: var(--surface-2); border: none; border-right: 1px solid var(--border);
+  padding: 12px 8px; cursor: pointer; }
+.ui-seg-btn:last-child { border-right: none; }
+.ui-seg-btn.on { color: #15120a; background: var(--accent); }
+.ui-section-note { font-size: var(--fs-sm); color: var(--ink-dim); line-height: 1.5; margin-bottom: var(--sp-2); }
+
+/* Accessibility: reduced motion — kill the big-hit screen flashes/vignette punch
+   and the menu/HUD transitions (the camera shake is handled in ScreenShake). */
+body.reduced-motion #flash,
+body.reduced-motion #impact,
+body.reduced-motion #slowmo { display: none !important; }
+body.reduced-motion .ui-modal,
+body.reduced-motion .ui-panel,
+body.reduced-motion #status.flash,
+body.reduced-motion .action-btn.hot { animation: none !important; }
+
+/* Accessibility: high contrast — solidify the UI-kit surfaces + borders. */
+body.high-contrast .ui-panel { background: #06090e; border-color: rgba(255, 255, 255, 0.5); }
+body.high-contrast .ui-tab,
+body.high-contrast .ui-btn-ghost,
+body.high-contrast .ui-switch,
+body.high-contrast .ui-seg { border-color: rgba(255, 255, 255, 0.5); }
+body.high-contrast .ui-section-note,
+body.high-contrast .ui-field-label,
+body.high-contrast .pm-resume-note { color: #e9eef6; }
