@@ -745,7 +745,7 @@ function updateReticles() {
   const rcv = game.receivers ? game.receivers[game.selected] : null;
   const selOn = game.userOnOffense && (game.state === STATE.PRESNAP || game.state === STATE.LIVE) && rcv && rcv.group && !rcv.ragdolling;
   selRing.visible = !!selOn;
-  if (selOn) selRing.position.set(rcv.group.position.x, 0.03, rcv.group.position.z);
+  if (selOn) { selRing.position.set(rcv.group.position.x, 0.03, rcv.group.position.z); selRing.scale.set(1, 1, 1); } // (the user-catch cue pulses it; keep the pre-throw ring normal)
   // Blue concentric reticle on the controlled player (live play, or pre-snap D).
   const ctlOn = ctl && ctl.group && !ctl.ragdolling && (live || (game.state === STATE.PRESNAP && !game.userOnOffense));
   ctrlRing.visible = !!ctlOn;
@@ -1534,7 +1534,7 @@ function makeCharacter(team) {
   // clips are rotation-only they never restore positions, so we snap bones
   // back to rest when the ragdoll is cleared (else the lower body stays under
   // the field and the next hit snapshots a broken pose).
-  let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null;
+  let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null, leftHandBone = null;
   let headBone = null, headEnd = null, spineBone = null;
   const restPose = [];
   model.traverse((o) => {
@@ -1544,6 +1544,7 @@ function makeCharacter(team) {
       if (o.name === 'RightForeArm') foreArm = o;
       if (o.name === 'LeftArm') leftArm = o;
       if (o.name === 'LeftForeArm') leftForeArm = o;
+      if (o.name === 'LeftHand') leftHandBone = o;
       if (o.name === 'Head') headBone = o;
       if (o.name === 'head_end') headEnd = o;
       if (o.name === 'Spine01' || (!spineBone && o.name === 'Spine')) spineBone = o; // waist bend (battle/block)
@@ -1653,7 +1654,7 @@ function makeCharacter(team) {
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, mScale, mGroundY,
-    upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest,
+    upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest, leftHandBone,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet, headFix, bones: restPose.map((e) => e[0]), // bone list for replay capture
@@ -1725,6 +1726,22 @@ const TUNE_DEFAULTS = {
   catchLog: false,       // log catch telemetry (gap/height/branch) to the debug event log
   jumpReach: 1.0,        // weight of vertical reach in the jump-ball contest (0 = off, 2D)
   catchHeight: 1.0,      // × the catch collider's vertical reach (height)
+  // User catch (Phase 1 RAC + Phase 2 cue): on your own pass, press CATCH in the
+  // timing window to make the grab in stride. CPU receivers are unaffected.
+  userCatch: true,       // enable the user-controlled catch on your targeted receiver
+  catchWindow: 1.4,      // 3D gap (yd) at which the user-catch timing window opens as the ball drops in
+  userCatchBonus: 0.18,  // max catch-odds bonus added for a well-timed user catch
+  racBoost: 1.18,        // × baseSpeed burst out of a RAC (catch-in-stride) reception (YAC)
+  catchMissPenalty: 0.06,// catch-odds penalty for a clearly mistimed user press (vs a clean AI grab)
+  catchIK: 1.0,          // Phase 4: weight of the 2-bone hand IK that lands the hands on the ball (0 = off)
+  possCatch: 0.12,       // POSSESSION style: flat catch-odds bonus (secure, lowest drop), no YAC
+  aggContest: 0.16,      // AGGRESSIVE style: bonus to CONTESTED catches (high-point win)
+  aggSecurity: 0.10,     // AGGRESSIVE style: penalty to UNCONTESTED catches (riskier hands)
+  // Phase 3 — contested catches as physics (gate flag for all Phase-3 behavior).
+  contestPhysics: true,  // a contested breakup can TIP the ball LIVE + jarring-hit risk on contested catches
+  tipChance: 0.5,        // fraction of contested breakups that tip into a live loose ball (vs a clean incompletion)
+  catchHitRisk: 0.55,    // added fumble probability on the jarring hit right after an EXPOSED contested catch (× style)
+  catchExposeTime: 0.7,  // s a receiver stays exposed to a jarring hit after a contested catch
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -1786,6 +1803,7 @@ const game = {
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
+  gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
   quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -2343,8 +2361,39 @@ const TEAMS = {
   },
 };
 
-// Two fixed 7-man rosters: teamA = the player's red team, teamB = the CPU's
-// blue team. Each play, setupPossession() assigns offense/defense ROLES to
+// GAUNTLET MODE: face up to three opponents back to back, each tougher than the
+// last (rising rosters + difficulty + color). Win to advance; lose and the whole
+// run restarts from the first. Each entry overwrites TEAMS.away for its round.
+const GAUNTLET_OPPONENTS = [
+  { name: 'GHOULS', abbr: 'GHL', color: '#3fae5a', diff: 'rookie', players: [
+    { name: 'ROT', pos: 'QB', r: [60, 58, 72, 76, 40] },
+    { name: 'MOLD', pos: 'OL', r: [40, 84, 72, 30, 56] },
+    { name: 'SLIME', pos: 'OL', r: [44, 80, 70, 32, 52] },
+    { name: 'WISP', pos: 'WR', r: [83, 46, 64, 74, 32] },
+    { name: 'MURK', pos: 'WR', r: [78, 52, 68, 70, 38] },
+    { name: 'GLOOM', pos: 'WR', r: [80, 50, 66, 76, 36] },
+    { name: 'LURK', pos: 'RB', r: [76, 72, 74, 68, 50] },
+  ] },
+  { name: 'DEMONS', abbr: 'DMN', color: '#2f6bd6', diff: 'pro', players: [
+    { name: 'HEX', pos: 'QB', r: [72, 70, 82, 88, 50] },
+    { name: 'BRUTE', pos: 'OL', r: [50, 96, 82, 38, 66] },
+    { name: 'GORE', pos: 'OL', r: [54, 92, 80, 42, 62] },
+    { name: 'BLAZE', pos: 'WR', r: [95, 56, 74, 86, 40] },
+    { name: 'FANG', pos: 'WR', r: [89, 64, 80, 82, 48] },
+    { name: 'VEX', pos: 'WR', r: [91, 60, 78, 88, 46] },
+    { name: 'DREAD', pos: 'RB', r: [86, 84, 84, 80, 60] },
+  ] },
+  { name: 'TITANS', abbr: 'TTN', color: '#d6a82f', diff: 'allpro', players: [
+    { name: 'COLOSSUS', pos: 'QB', r: [80, 78, 88, 95, 58] },
+    { name: 'ATLAS', pos: 'OL', r: [58, 99, 90, 46, 74] },
+    { name: 'TITAN', pos: 'OL', r: [62, 99, 88, 50, 70] },
+    { name: 'BOLT', pos: 'WR', r: [99, 64, 82, 94, 48] },
+    { name: 'QUAKE', pos: 'WR', r: [96, 72, 88, 90, 56] },
+    { name: 'STORM', pos: 'WR', r: [98, 68, 86, 96, 54] },
+    { name: 'GOLIATH', pos: 'RB', r: [94, 92, 92, 88, 68] },
+  ] },
+];
+
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
@@ -3054,7 +3103,7 @@ function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null };
 
 // Floating joystick: it spawns under your thumb wherever you first touch the LEFT
 // half of the screen (so you never have to find a fixed pad), and tracks from
@@ -3206,6 +3255,18 @@ function updateUserStatsHUD() {
   };
   press(actionBtn, () => { input.action = true; input.actionEdge = true; }, () => { input.action = false; });
   press(turboBtn, () => { input.turbo = true; }, () => { input.turbo = false; });
+  // Catch-style buttons (shown only during a user pass in flight): tap to make the
+  // grab in that style. Edge press → input.catchEdge, consumed in updateUserCatch.
+  const cpress = (el, style) => {
+    if (!el) return;
+    const go = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); input.catchEdge = style; };
+    const up = (e) => { if (e) e.preventDefault(); el.classList.remove('active'); };
+    el.addEventListener('touchstart', go, { passive: false }); el.addEventListener('touchend', up, { passive: false }); el.addEventListener('touchcancel', up);
+    el.addEventListener('mousedown', go); window.addEventListener('mouseup', up);
+  };
+  cpress(document.getElementById('catch-rac'), 'rac');
+  cpress(document.getElementById('catch-poss'), 'poss');
+  cpress(document.getElementById('catch-agg'), 'agg');
   // Skip / sim controls (tap fires on press; trigger once).
   const tap = (el, fn) => {
     if (!el) return;
@@ -3388,9 +3449,9 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
-    if (e.code === 'Space') input.actionEdge = true;
-    if (e.code === 'KeyQ') input.spinEdge = true;   // spin / stiff-arm
-    if (e.code === 'KeyE') input.diveEdge = true;   // stiff arm
+    if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
+    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
+    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
@@ -3614,13 +3675,26 @@ function setAction(label, hot = false) {
   if (actionLabel) actionLabel.textContent = label; else actionBtn.textContent = label;
   actionBtn.classList.toggle('hot', hot);
 }
+// Catch-style chooser (Phase 1): three buttons shown while a user pass is in flight.
+// They light HOT when the ball is catchable and highlight the style you armed.
+const catchRowEl = document.getElementById('catch-row');
+const catchBtns = { rac: document.getElementById('catch-rac'), poss: document.getElementById('catch-poss'), agg: document.getElementById('catch-agg') };
+function showCatchRow(hot, armedStyle) {
+  if (!catchRowEl) return;
+  catchRowEl.classList.remove('hidden');
+  for (const k in catchBtns) { const b = catchBtns[k]; if (!b) continue; b.classList.toggle('hot', hot); b.classList.toggle('armed', armedStyle === k); }
+}
+function hideCatchRow() { if (catchRowEl) catchRowEl.classList.add('hidden'); }
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
   // PLAY ART (coach cam): callable pre-snap on either side of the ball.
   if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
-  else if (s === STATE.PRESNAP) { setAction(game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
+  else if (s === STATE.PRESNAP) {
+    const goLabel = (game.gauntlet && game.gauntlet.active) ? (game.gauntlet.champion ? 'AGAIN' : (game.scoreOff >= game.scoreDef ? 'NEXT' : 'RETRY')) : 'REMATCH';
+    setAction(game.gameOver ? goLabel : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn);
+  }
   else if (s === STATE.LIVE) { setAction(onO ? 'THROW' : 'SWITCH'); show(turboBtn); }
   else if (s === STATE.AIR) { onO ? hide(actionBtn) : setAction('SWITCH'); show(turboBtn); }
   else if (s === STATE.RUN) { onO ? refreshRunAction(game.carrier) : setAction('TACKLE'); show(turboBtn); }
@@ -3885,6 +3959,78 @@ function resetGame() {
   newPlay();
 }
 
+// ---- Gauntlet mode --------------------------------------------------------
+function relabelScoreboard() {
+  const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
+  if (tagOff) tagOff.textContent = TEAMS.home.abbr;
+  if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+}
+// Tear down and respawn both teams (used when the opponent's roster changes).
+function rebuildTeams() {
+  for (const ch of game.all || []) {
+    if (ch.ragdoll) { try { ch.ragdoll.dispose(); } catch (e) { /* ignore */ } }
+    if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group);
+  }
+  clearRagdolls();
+  spawnTeams();
+  if (TUNE.playerSize !== 1) applyPlayerSize();
+  try { applyLook(); } catch (e) { /* ignore */ }
+  try { buildPortraits(); } catch (e) { /* ignore */ }
+}
+// Swap in gauntlet opponent `i`: its roster, difficulty, color, scoreboard tag.
+function applyGauntletOpponent(i) {
+  const opp = GAUNTLET_OPPONENTS[i];
+  TEAMS.away = { name: opp.name, abbr: opp.abbr, color: opp.color, logo: TEAMS.away ? TEAMS.away.logo : null, players: opp.players };
+  game.diff = opp.diff;
+  TUNE.defenseTint = opp.color; // tint the CPU team to its color so each challenger looks distinct
+  rebuildTeams();
+  relabelScoreboard();
+  updateGauntletHud();
+}
+const gauntletHudEl = (typeof document !== 'undefined') ? document.getElementById('gauntlet-hud') : null;
+function updateGauntletHud() {
+  if (!gauntletHudEl) return;
+  const g = game.gauntlet;
+  if (!g || !g.active) { gauntletHudEl.classList.add('hidden'); return; }
+  const n = GAUNTLET_OPPONENTS.length;
+  const pips = GAUNTLET_OPPONENTS.map((o, i) => `<i class="${i < g.wins ? 'won' : i === g.round ? 'now' : ''}"></i>`).join('');
+  gauntletHudEl.innerHTML = `<b>GAUNTLET</b><span>${Math.min(g.round + 1, n)}/${n} · ${TEAMS.away.name}</span><div class="gx-pips">${pips}</div>`;
+  gauntletHudEl.classList.remove('hidden');
+}
+function startGauntlet() {
+  if (gameStarted) return;
+  game.gauntlet = { active: true, round: 0, wins: 0, champion: false };
+  applyGauntletOpponent(0); // round 1 opponent + respawn before kickoff
+  startGame();              // pregame cinematic -> play
+}
+// Pressed when a gauntlet game is over: advance on a win, restart the run on a loss.
+function gauntletNext() {
+  const g = game.gauntlet;
+  if (g.champion) { // continue after winning it all -> a fresh run
+    g.champion = false; g.round = 0; g.wins = 0;
+    applyGauntletOpponent(0); resetGame();
+    showBanner('NEW GAUNTLET', '#ffd23a'); return;
+  }
+  const won = game.scoreOff >= game.scoreDef;
+  if (won) {
+    g.wins++; g.round++;
+    if (g.round >= GAUNTLET_OPPONENTS.length) { // ran the whole gauntlet
+      g.champion = true;
+      showBanner('GAUNTLET CHAMPION! 🏆', '#ffd23a');
+      setStatus('You ran the gauntlet! Tap to play again');
+      updateGauntletHud();
+      return; // stay on the finale; next press starts a new run
+    }
+    applyGauntletOpponent(g.round); resetGame();
+    showBanner(`CHALLENGER ${g.round + 1}/${GAUNTLET_OPPONENTS.length} — ${TEAMS.away.name}`, '#3fe08a');
+  } else { // lost — start the whole gauntlet over
+    g.round = 0; g.wins = 0;
+    applyGauntletOpponent(0); resetGame();
+    showBanner('GAUNTLET FAILED — START OVER', '#ff5a3a');
+  }
+  updateGauntletHud();
+}
+
 // ---- Skip / simulate the clock ------------------------------------------
 // Believable points for a quarter we're fast-forwarding past (most quarters a
 // score or two each).
@@ -4113,7 +4259,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -4148,7 +4294,11 @@ function enterReset(teleport) {
     game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = TUNE.playClock;
     if (playSelectEl) playSelectEl.classList.add('hidden'); // never strand the play picker over the finale
     if (!game.finale) startFinale(); // kick off the winners' dance party
-    updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
+    updateButtons();
+    if (game.gauntlet && game.gauntlet.active && !game.gauntlet.champion) {
+      const won = game.scoreOff >= game.scoreDef;
+      setStatus(won ? `WON ${game.scoreOff}–${game.scoreDef} — tap NEXT` : `LOST ${game.scoreOff}–${game.scoreDef} — tap RETRY`);
+    } else setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
@@ -4588,6 +4738,11 @@ function throwBall(power) {
   ball.spin = 0; ball.spinRate = THREE.MathUtils.lerp(20, 52, p);
   ball.to.set(tx, 0, tz); ball.targetRecv = recv; ball.intRolled = false; ball.hitFence = false;
   ball.mode = 'flying';
+  // Arm the user catch on your own pass (the human makes the play on his receiver).
+  game.userCatch = (TUNE.userCatch && game.userOnOffense && recv && !recv.cpu)
+    ? { on: true, open: false, armed: false, armEarly: false, buffered: null, style: 'rac', score: 0, recv }
+    : { on: false };
+  if (!game.userCatch.on) hideCatchRow();
   if (game.play) { game.play.passer = game.qb; game.play.target = recv; game.play.viaPass = true; } // box score: the throw
   game.state = STATE.AIR; selRing.visible = false;
   // Procedural throwing motion, varied by the throw: face the target and let
@@ -5357,11 +5512,22 @@ function updateBall(dt) {
         if (Math.hypot(c.vel.x, c.vel.z) < 2) { const fwd = game.dir > 0 ? 0 : Math.PI, sp = c.baseSpeed * 0.5; c.vel.set(Math.sin(fwd) * sp, 0, Math.cos(fwd) * sp); }
       }
       if (ball.intercept) {
+        if (game.userCatch) game.userCatch.on = false; hideCatchRow(); // clear the user-catch cue on a pick
         ball.mode = 'carried'; ball.holder = c;
         if (game.play) game.play.intBy = c; // box score: the pick
         if (game.tally) game.tally.picks++;
         beginReturn(c, 'pick'); // live runback either way: CPU returns + you chase, or you return it
-      } else { ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; } if (game.userOnOffense) creditUserStat('catches', 'CATCH'); enterRun(c, 'Caught it! Run!'); }
+      } else {
+        ball.mode = 'carried'; if (game.play) { game.play.catcher = c; game.play.completed = true; }
+        if (game.userOnOffense) creditUserStat('catches', 'CATCH');
+        // RAC (Phase 1): a catch-in-stride bursts downfield instead of dead-stopping
+        // (possession/aggressive intentionally kill momentum — they planted/secured).
+        const uc = game.userCatch;
+        if (uc && uc.on && uc.armed && uc.style === 'rac' && c === uc.recv) { const h = c.heading, sp = c.baseSpeed * TUNE.racBoost; c.vel.set(Math.sin(h) * sp, 0, Math.cos(h) * sp); c.speed = sp; }
+        if (uc) uc.on = false;
+        hideCatchRow();
+        enterRun(c, 'Caught it! Run!');
+      }
     }
   }
 }
@@ -5379,8 +5545,25 @@ function startSecure(player, isInt) {
   if (isInt) {
     showBanner('PICKED OFF!', '#ff5a3a'); shake.add(0.3); audio.groan();
     burst(p.x, p.y, p.z, 0x8fbaff, 8, 5);
+    // Phase 3 defender high-point: a DB who picks a high/extended ball and isn't
+    // already leaping gets a genuine high-point grab clip (not just a flat snag).
+    if (!player.catchLeap) {
+      const reach = Math.hypot(player.group.position.x - p.x, player.group.position.z - p.z);
+      const high = p.y > player.group.position.y + 1.8;
+      if (player.actions.divecatch && (reach > 1.7 || high)) { playOneShot(player, 'divecatch', 0.6, true); player.catchLeap = true; player.catchPlant = true; }
+    }
   } else {
-    audio.catch(); audio.cheer(0.35); timeScale.slow(0.7, 0.18);
+    audio.catch(); audio.cheer(0.35);
+    // Phase 2 — weight the big ones: a contested / aggressive / leaping grab gets
+    // deeper slow-mo + more shake than a flat checkdown.
+    let nd = Infinity;
+    for (const d of game.defense) { if (d.ragdolling) continue; const dx = d.group.position.x - player.group.position.x, dz = d.group.position.z - player.group.position.z; const dist = Math.hypot(dx, dz); if (dist < nd) nd = dist; }
+    let drama = nd < CONTEST_R ? THREE.MathUtils.clamp(1 - nd / CONTEST_R, 0, 1) : 0;
+    if (player.catchLeap) drama = Math.max(drama, 0.4); // a leaping/extended grab is dramatic
+    const _uc = game.userCatch;
+    if (_uc && _uc.on && _uc.armed && player === _uc.recv && _uc.style === 'agg') drama = Math.max(drama, 0.6);
+    timeScale.slow(0.7 - drama * 0.35, 0.18 + drama * 0.32); // 0.7/0.18 flat .. 0.35/0.50 on a big contested grab
+    if (drama > 0.05) shake.add(0.06 + drama * 0.18);
     burst(p.x, p.y, p.z, 0xffffff, 8, 5);
     // Leaping reception: if the body is ALREADY in an anticipatory leap (fired during
     // the descent, see updateBall), don't restart a clip — the hands track the ball
@@ -5408,6 +5591,8 @@ function passBrokenUp(msg, color, swatter, swatType) {
   if (swatter) { swatter.catchLeap = false; swatter.catchPlant = false; swatter.heading = Math.atan2(p.x - swatter.group.position.x, p.z - swatter.group.position.z); triggerArmAction(swatter, swatType || 'swat', 0.4, p); }
   burst(p.x, Math.max(0.3, p.y), p.z, 0xdfe7ff, 9, 6); // swat
   shake.add(0.12);
+  if (game.userCatch) game.userCatch.on = false; // clear the user-catch cue on an incompletion
+  selRing.visible = false; selRing.scale.set(1, 1, 1); hideCatchRow();
   endPlay('incomplete', game.los); // endPlay blows the whistle
 }
 
@@ -5434,6 +5619,38 @@ function catchGap(ch, ballPos, intended) {
   const dV = ballPos.y > topY ? ballPos.y - topY : (ballPos.y < lowY ? lowY - ballPos.y : 0);
   return Math.hypot(dH, dV);
 }
+// Phase 1 (3 catch styles) + Phase 2 cue: while a pass is in the air to the USER's
+// receiver, a timing window opens as the ball drops into reach. Choose how to attack
+// it — RAC (catch in stride, keep momentum, biggest YAC) / POSSESSION (secure,
+// safest, no YAC) / AGGRESSIVE (high-point leap, wins contests, riskier). The armed
+// style overrides commitCatchReach and layers modifiers onto tryReception; CPU
+// receivers and your non-targeted WRs are untouched (they auto-resolve as before).
+function updateUserCatch(catchEdge) {
+  const uc = game.userCatch; if (!uc || !uc.on) return;
+  const recv = uc.recv;
+  if (!recv || recv.ragdolling || ball.mode !== 'flying') { selRing.visible = false; hideCatchRow(); return; }
+  const p = ball.mesh.position;
+  const gap = catchGap(recv, p, true);
+  const descending = ball.vy < 0;
+  const open = descending && gap < TUNE.catchWindow; // catchable now
+  if (catchEdge) { // press: arm a style; timing credit scales with how close the ball is
+    uc.armed = true; uc.style = catchEdge;
+    uc.armEarly = !open || gap > (TUNE.catchGrab + TUNE.catchWindow) * 0.55; // committed before/early in the window (aggressive needs this)
+    const q = 1 - THREE.MathUtils.clamp((gap - TUNE.catchGrab) / Math.max(0.1, TUNE.catchWindow - TUNE.catchGrab), 0, 1);
+    uc.score = Math.max(uc.score, descending ? q : 0);
+    if (!descending) uc.buffered = uc.style; // tapped early -> honor it the instant the window opens
+  }
+  if (open && uc.buffered) { uc.armed = true; uc.style = uc.buffered; uc.armEarly = true; uc.score = Math.max(uc.score, 0.6); uc.buffered = null; }
+  uc.open = open;
+  // Cue: light the style buttons hot + pulse the receiver's ring when catchable.
+  showCatchRow(open, uc.armed ? uc.style : null);
+  if (open || uc.armed) {
+    selRing.visible = true;
+    selRing.position.set(recv.group.position.x, 0.03, recv.group.position.z);
+    const pulse = 1 + Math.sin(performance.now() * 0.02) * 0.18;
+    selRing.scale.set(pulse, pulse, pulse);
+  } else { selRing.visible = false; }
+}
 // Anticipatory catch reach (Phase 3) + catch-style selection (Phase 4): as the
 // ball drops toward a player, commit the catch ANIMATION BEFORE the grab resolves
 // so the body is already up/extended/scooping when the ball arrives (instead of
@@ -5455,9 +5672,18 @@ function commitCatchReach(ch, ballPos) {
   const low = ballPos.y < g.y + 0.95;            // around the knees/shins
   const running = ch.speed > 4.5;
   ch.catchPlant = false;
-  if ((high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+  // Phase 1 style override on the user's targeted receiver: RAC/POSSESSION catch in
+  // stride (procedural reach, no planted leap — keep momentum); AGGRESSIVE forces the
+  // high-point leap (max vertical reach) even on a catchable ball.
+  const uc = game.userCatch;
+  const armed = (uc && uc.on && uc.armed && ch === uc.recv) ? uc.style : null;
+  const inStride = armed === 'rac' || armed === 'poss';
+  const forceLeap = armed === 'agg';
+  if (forceLeap && ch.actions.divecatch && ch.oneShotT <= 0) {
     playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
-  } else if (low && running && ch.actions.scoop && ch.oneShotT <= 0) {
+  } else if (!inStride && (high || far) && ch.actions.divecatch && ch.oneShotT <= 0) {
+    playOneShot(ch, 'divecatch', 0.7, true); ch.catchLeap = true; ch.catchPlant = true; ch.catchStyle = 'leap';
+  } else if (!inStride && low && running && ch.actions.scoop && ch.oneShotT <= 0) {
     playOneShot(ch, 'scoop', 0.55, true); ch.catchLeap = true; ch.catchStyle = 'scoop'; // low pickup on the run — no plant
   } else {
     ch.catchStyle = (running && ballPos.y > g.y + 1.45) ? 'overshoulder' : 'standing';
@@ -5496,9 +5722,27 @@ function tryReception() {
   const rxSkill = bestR.rt ? bestR.rt.skill : 0.8;
   const rxReach = vReach(bestR); // vertical reach (standing + leap)
   const cpuAdj = bestR.cpu ? diff().cpuCatch : 0; // difficulty: nudge CPU catch odds
+  // User catch (Phase 1): a well-timed press on YOUR receiver layers a style-based
+  // bonus on top of the AI odds. No press = baseline (nothing regresses); CPU = 0.
+  //   userBonus  — added to both clean and contested catch odds
+  //   userContest— added to CONTESTED odds only (aggressive high-point edge)
+  let userBonus = 0, userContest = 0;
+  const _uc = game.userCatch;
+  if (_uc && _uc.on && _uc.armed && bestR === _uc.recv) {
+    if (_uc.style === 'poss') {
+      // POSSESSION — widest timing leniency (timing matters least) + flat secure bonus.
+      userBonus = Math.max(_uc.score, 0.7) * TUNE.userCatchBonus + TUNE.possCatch;
+    } else if (_uc.style === 'agg' && _uc.armEarly) {
+      // AGGRESSIVE only pays off as a COMMITTED early high-point; armed late it's just a contested grab.
+      userBonus = _uc.score * TUNE.userCatchBonus - TUNE.aggSecurity; userContest = TUNE.aggContest;
+    } else { // RAC (neutral catch + YAC), or aggressive armed too late (no high-point edge)
+      userBonus = _uc.score * TUNE.userCatchBonus;
+    }
+    if (_uc.score <= 0.01) userBonus -= TUNE.catchMissPenalty; // a clearly mistimed mash is worse than a clean AI grab
+  }
   const contested = bestDef && dD <= CONTEST_R;
   if (!contested) {
-    let base = 0.84 + rxSkill * 0.14 + cpuAdj;
+    let base = 0.84 + rxSkill * 0.14 + cpuAdj + userBonus;
     if (ballY > rxReach) base -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // thrown over his head
     if (Math.random() < base) { startSecure(bestR, false); return true; }
     passBrokenUp('DROPPED!', '#dfe7ff', bestR, 'reach'); return true; // receiver lunges, drops it
@@ -5517,9 +5761,18 @@ function tryReception() {
   pCatch += high * THREE.MathUtils.clamp(rxReach - dbReachV, -1.5, 1.5) * 0.35 * TUNE.jumpReach;
   if (ballY > rxReach) pCatch -= (ballY - rxReach) * 0.7 * TUNE.jumpReach; // over the receiver's reach
   if (game.onFire) pCatch += 0.12;
-  pCatch += TUNE.catchBias; // global completion-odds nudge (debug knob)
+  pCatch += TUNE.catchBias + userBonus + userContest; // global nudge + user-catch timing/style bonus (+ aggressive contest edge)
   pCatch = THREE.MathUtils.clamp(pCatch, 0.05, 0.95);
-  if (Math.random() < pCatch) { startSecure(bestR, false); return true; } // contested grab
+  if (Math.random() < pCatch) {
+    // Possession-vs-hit (Phase 3): a contested catch leaves the receiver exposed to a
+    // jarring hit; the risk scales with the user's chosen style (POSSESSION most
+    // exposed — he planted and secured; RAC least — caught in stride).
+    if (TUNE.contestPhysics && _uc && _uc.on && _uc.armed && bestR === _uc.recv) {
+      bestR.catchExposed = TUNE.catchExposeTime;
+      bestR.catchExposeRisk = _uc.style === 'poss' ? 1.0 : _uc.style === 'agg' ? 0.7 : 0.35;
+    }
+    startSecure(bestR, false); return true; // contested grab
+  }
 
   // The receiver couldn't bring it in. In TIGHT coverage the DB can make a play
   // on the ball himself — a real interception — scaled by his ball skills and how
@@ -5532,6 +5785,9 @@ function tryReception() {
   pInt *= TUNE.intChance;                                                  // global pick-odds knob
   pInt = THREE.MathUtils.clamp(pInt, 0, 0.6);
   if (Math.random() < pInt) { startSecure(bestDef, true); return true; }   // picked off in coverage
+  // Phase 3: the swat can TIP it live (ball as a physics object) instead of always a
+  // scripted incompletion — a tipped ball is then up for grabs by either team.
+  if (TUNE.contestPhysics && Math.random() < TUNE.tipChance) { ballTippedLoose(bestDef); return true; }
   passBrokenUp('BROKEN UP!', '#9fd0ff', bestDef, 'swat'); return true;     // DB bats it away
 }
 const LUNGE_R = 2.7; // a pursuer who's closed within this DIVES to make the tackle
@@ -5744,6 +6000,7 @@ function updateBattle(dt) {
 function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
+  if (carrier.catchExposed > 0) force = true; // Phase 3: a hit right after a contested catch is a committed, jarring shot (no juke/battle out of it)
   if (game.play && game.defense.includes(lead)) game.play.tackler = lead; // box score: credit the tackle
   if (!physics || !TUNE.ragdolls) { endPlay('tackle', cp.z); return; } // no physics / ragdolls off: instant whistle
 
@@ -5758,7 +6015,7 @@ function beginTackle(lead, force = false) {
   const hl = Math.hypot(hitX, hitZ) || 1;
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
-  const big = lead.turbo || closing > 8; // Blitz: most square hits are violent
+  let big = lead.turbo || closing > 8; // Blitz: most square hits are violent (Phase 3 may force it on an exposed catch)
   const gang = gangSize >= 3;
   if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
 
@@ -5814,7 +6071,11 @@ function beginTackle(lead, force = false) {
   // tackles pop it more often — and a hit while TAUNTING strips it every time
   // (that's the risk of showboating). The carrier goes down and the ball pops
   // free for a live scramble (see startFumble) instead of the play ending.
-  if (carrier.tauntT > 0 || Math.random() < ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance) {
+  // A receiver hit RIGHT after a contested catch (Phase 3) is jarring + exposed: the
+  // ball pops loose far more often, scaled by the catch style he chose.
+  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance;
+  if (carrier.catchExposed > 0) { fProb += TUNE.catchHitRisk * (carrier.catchExposeRisk || 0.5); big = true; carrier.catchExposed = 0; }
+  if (carrier.tauntT > 0 || Math.random() < fProb) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
@@ -6061,6 +6322,26 @@ function ballLooseFromAir() {
   showBanner('OFF THE FENCE!', '#7fe0ff'); audio.fence(0.6); shake.add(0.15);
   setStatus('Loose ball — recover it!'); updateButtons();
 }
+// Phase 3: a defender's swat doesn't always kill the play — it can TIP the ball,
+// popping it live off the deflection point so either team can scramble for it (a
+// defense recovery counts as the interception, like a fence carom).
+function ballTippedLoose(deflector) {
+  const p = ball.mesh.position;
+  game.state = STATE.LOOSE; game.looseTimer = 5.0;
+  ball.mode = 'loose'; ball.holder = null; ball.catcher = null; ball.targetRecv = null;
+  ball.fromFence = true; ball.g = 24; ball.grabCd = 0.45; game.looseCrowdT = 0; // defense recovery = INT; let it bounce first
+  const ang = Math.random() * Math.PI * 2, sp = 4 + Math.random() * 5; // small random pop off the tip
+  ball.vx = Math.sin(ang) * sp; ball.vz = Math.cos(ang) * sp; ball.vy = 4 + Math.random() * 3;
+  ball.spin = 0; ball.spinRate = 16;
+  setFumbleGlow(true); landRing.visible = false;
+  if (deflector) { deflector.catchLeap = false; deflector.catchPlant = false; deflector.heading = Math.atan2(p.x - deflector.group.position.x, p.z - deflector.group.position.z); triggerArmAction(deflector, 'swat', 0.4, p); }
+  burst(p.x, Math.max(0.5, p.y), p.z, 0xdfe7ff, 12, 7); shake.add(0.18);
+  if (game.userCatch) game.userCatch.on = false;
+  selRing.visible = false; selRing.scale.set(1, 1, 1); hideCatchRow();
+  game.controlled = nearestTeamToBall(game.teamA); ctrlRing.visible = true;
+  showBanner('TIPPED!', '#9fd0ff'); audio.fence(0.45);
+  setStatus('Tipped — it\'s live!'); updateButtons();
+}
 function startFumble(carrier, hitX, hitZ) {
   if (game.tally) game.tally.fumbles++;
   game.state = STATE.LOOSE; game.looseTimer = 5.0;
@@ -6089,14 +6370,15 @@ function updateLoose(dt, turboOn, actionEdge) {
     p.y = gy;
     if (ball.vy < 0) { ball.vy = -ball.vy * 0.6; if (ball.vy < 1.0) ball.vy = 0; } // bouncier
     ball.vx *= 0.86; ball.vz *= 0.86;
-    // Erratic squirt off the point of the ball — a fumble takes crazy hops.
+    // Erratic squirt off the point of the ball — a fumble hops, but not so wildly
+    // that it can't be corralled.
     if (Math.abs(ball.vy) > 0.8 || Math.hypot(ball.vx, ball.vz) > 1.2) {
-      const a = Math.random() * Math.PI * 2, k = 1.5 + Math.random() * 4.5;
+      const a = Math.random() * Math.PI * 2, k = 0.8 + Math.random() * 2.0;
       ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k;
-      if (ball.vy < 1.5) ball.vy += Math.random() * 3; // occasional pop up
+      if (ball.vy < 1.2) ball.vy += Math.random() * 1.8; // occasional small pop up
     }
   }
-  ball.vx *= (1 - dt * 0.35); ball.vz *= (1 - dt * 0.35); // rolls a good while (gets clear of the pile)
+  ball.vx *= (1 - dt * 0.6); ball.vz *= (1 - dt * 0.6); // settles fairly quickly so it can be recovered
   ball.spin += (ball.spinRate + Math.hypot(ball.vx, ball.vz) * 1.2) * dt;
   ball.mesh.rotation.set(ball.spin * 0.6, ball.spin, ball.spin * 0.35); // chaotic tumble
   if (ball.flame) ball.flame.intensity = 2.6 + Math.sin(performance.now() * 0.02) * 1.4; // pulse
@@ -6107,11 +6389,21 @@ function updateLoose(dt, turboOn, actionEdge) {
   const nearA = game.teamA.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
   const nearB = game.teamB.filter((c) => !c.ragdolling).sort(byBall).slice(0, 3);
   const chasers = new Set([...nearA, ...nearB]);
+  const ballLow = p.y < 1.3;
   for (const ch of game.all) {
     if (ch.recoverT > 0) ch.recoverT -= dt;
+    if (ch.scoopDiveCd > 0) ch.scoopDiveCd -= dt;
     if (ch.ragdolling || ch === game.controlled) continue;
     if (chasers.has(ch)) {
-      ch.desired = addSteer(seek(px(ch), p.x, p.z), separation(ch, game.all, 2.2), 0.5); ch.turbo = true;
+      const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
+      // Players DIVE on the loose ball when they get close — lunge + scoop, which
+      // extends their reach/odds for a beat (same as the user's dive).
+      if (ballLow && d < 2.7 && ch.recoverT <= 0 && (ch.scoopDiveCd || 0) <= 0) {
+        const dx = p.x - ch.group.position.x, dz = p.z - ch.group.position.z, l = Math.hypot(dx, dz) || 1;
+        ch.vel.x = dx / l * ch.baseSpeed * 1.3; ch.vel.z = dz / l * ch.baseSpeed * 1.3; ch.heading = Math.atan2(dx, dz);
+        ch.recoverT = 0.5; ch.scoopDiveCd = 1.1;
+        if (ch.actions.scoop) playOneShot(ch, 'scoop', 0.6, true); else triggerArmAction(ch, 'pick', 0.45, p);
+      } else { ch.desired = addSteer(seek(px(ch), p.x, p.z), separation(ch, game.all, 2.2), 0.5); ch.turbo = true; }
     } else { ch.desired = { x: 0, z: 0 }; ch.turbo = false; } // the rest hold, don't pile on
   }
   if (game.controlled) {
@@ -6119,8 +6411,8 @@ function updateLoose(dt, turboOn, actionEdge) {
     controlledMove(game.controlled, dt, top);
     if (actionEdge) { // dive on the ball — extends your reach + recovery odds for a beat
       const o = game.controlled, dx = p.x - o.group.position.x, dz = p.z - o.group.position.z, l = Math.hypot(dx, dz) || 1;
-      o.vel.x = dx / l * o.baseSpeed * 1.35; o.vel.z = dz / l * o.baseSpeed * 1.35; o.heading = Math.atan2(dx, dz);
-      o.recoverT = 0.45;
+      o.vel.x = dx / l * o.baseSpeed * 1.4; o.vel.z = dz / l * o.baseSpeed * 1.4; o.heading = Math.atan2(dx, dz);
+      o.recoverT = 0.6;
       if (o.actions.scoop) playOneShot(o, 'scoop', 0.6, true); // diving scoop animation
       else triggerArmAction(o, 'pick', 0.45, p);          // procedural dive-reach fallback
     }
@@ -6129,22 +6421,22 @@ function updateLoose(dt, turboOn, actionEdge) {
   // Recovery: only a LOW, settling ball can be fallen on — and even then it can be
   // BOBBLED loose again (random). A hot, squirting ball can't be corralled at all.
   const hsp = Math.hypot(ball.vx, ball.vz);
-  if (ball.grabCd <= 0 && p.y < 1.0 && hsp < 6.5) {
+  if (ball.grabCd <= 0 && p.y < 1.3 && hsp < 7.5) {
     let rec = null, recD = Infinity;
     for (const ch of game.all) {
       if (ch.ragdolling) continue;
-      const reach = ch.recoverT > 0 ? 1.9 : 1.0;
+      const reach = ch.recoverT > 0 ? 2.6 : 1.4; // a dive reaches much farther; standing is generous too
       const d = Math.hypot(ch.group.position.x - p.x, ch.group.position.z - p.z);
       if (d <= reach && d < recD) { recD = d; rec = ch; }
     }
     if (rec) {
-      const settle = THREE.MathUtils.clamp(1 - hsp / 6.5, 0, 1); // 0 hot .. 1 dead
-      const pGet = 0.2 + settle * 0.45 + (rec.recoverT > 0 ? 0.28 : 0); // diving + a dead ball = near-sure
+      const settle = THREE.MathUtils.clamp(1 - hsp / 7.5, 0, 1); // 0 hot .. 1 dead
+      const pGet = 0.4 + settle * 0.5 + (rec.recoverT > 0 ? 0.35 : 0); // diving on a settling ball = near-sure
       if (Math.random() < pGet) { recoverFumble(rec); return; }
-      // MUFFED — kick it loose again with a random squirt; brief grab cooldown.
-      const a = Math.random() * Math.PI * 2, k = 3.5 + Math.random() * 5;
-      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k; ball.vy = 2.5 + Math.random() * 3.5;
-      ball.grabCd = 0.4; rec.recoverT = 0; shake.add(0.12);
+      // MUFFED — kick it loose again with a smaller squirt; brief grab cooldown.
+      const a = Math.random() * Math.PI * 2, k = 2 + Math.random() * 2.5;
+      ball.vx += Math.cos(a) * k; ball.vz += Math.sin(a) * k; ball.vy = 1.8 + Math.random() * 2.2;
+      ball.grabCd = 0.35; rec.recoverT = 0; shake.add(0.12);
     }
   }
   // Pile-up scrum: if 3+ players crowd a settled ball and nobody's fallen on it,
@@ -6204,13 +6496,18 @@ function endScrum(userWon) {
 }
 function recoverFumble(ch) {
   setFumbleGlow(false);
-  ball.mode = 'carried'; ball.holder = ch; game.carrier = ch; // ball follows the recoverer, not the downed runner
+  ball.mode = 'carried'; ball.holder = ch; game.carrier = ch; ball.targetRecv = null; // ball follows the recoverer
+  ball.mesh.visible = true; ball.mesh.position.set(ch.group.position.x, 1.0, ch.group.position.z); // snap it onto him — never leave it on the turf
+  ball.vx = ball.vy = ball.vz = 0;
   triggerArmAction(ch, 'pick', 0.5, ball.mesh.position); // procedural dive-on-the-ball
   audio.catch(); shake.add(0.25);
-  const spotZ = ch.group.position.z;
-  if (game.offense.includes(ch)) { showBanner('RECOVERED!', '#bfffd0'); endPlay('tackle', spotZ); } // offense recovers its own fumble — dead at the spot, keeps it
-  else if (ball.fromFence) beginReturn(ch, 'pick');     // overthrow caromed off the fence = pick; live runback
-  else beginReturn(ch, 'fumble');                       // defense scooped a live fumble = returnable runback
+  if (game.offense.includes(ch)) {
+    // Your own recovery is LIVE — scoop and score (advance it) instead of dead at the spot.
+    if (game.play) game.play.recovered = true;
+    showBanner('SCOOP & GO!', '#bfffd0');
+    enterRun(ch, 'Recovered — take it to the house!');
+  } else if (ball.fromFence) beginReturn(ch, 'pick');     // overthrow caromed off the fence = pick; live runback
+  else beginReturn(ch, 'fumble');                          // defense scooped a live fumble = returnable runback
 }
 function recoverDead(spotZ) {
   setFumbleGlow(false); ball.mode = 'rest';
@@ -6419,6 +6716,46 @@ function applyThrowPose(ch, dt, w = 1) {
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
 // high the ball is relative to the catcher's chest (high ball -> arms up, low
 // ball -> arms down) so it varies with the ball/player positions.
+// Phase 4 — Hand IK to the ball. A light two-bone CCD solver (aim the shoulder so
+// the hand points at the ball, then bend the elbow to reach it) run AFTER the
+// procedural catch pose, so the hands actually converge on the ball instead of just
+// approximating by angle. World-space, so it's robust to the rig's bone roll.
+const _ikBp = new THREE.Vector3(), _ikHp = new THREE.Vector3(), _ikCur = new THREE.Vector3(), _ikDes = new THREE.Vector3();
+const _ikQw = new THREE.Quaternion(), _ikQb = new THREE.Quaternion(), _ikBw = new THREE.Quaternion(), _ikPar = new THREE.Quaternion();
+function ik2(arm, fore, hand, target, w) {
+  if (!arm || !fore || !hand || w <= 0.01) return;
+  for (let pass = 0; pass < 2; pass++) {            // pass 0 = shoulder aim, pass 1 = elbow reach
+    const bone = pass === 0 ? arm : fore;
+    _ikBp.setFromMatrixPosition(bone.matrixWorld);
+    _ikHp.setFromMatrixPosition(hand.matrixWorld);
+    const cl = _ikCur.subVectors(_ikHp, _ikBp).length(); if (cl < 1e-4) continue; _ikCur.multiplyScalar(1 / cl);
+    const dl = _ikDes.subVectors(target, _ikBp).length(); if (dl < 1e-4) continue; _ikDes.multiplyScalar(1 / dl);
+    _ikQw.setFromUnitVectors(_ikCur, _ikDes);        // world rotation that aims the hand at the ball
+    _ikQb.identity().slerp(_ikQw, w);                // blend in by weight
+    bone.getWorldQuaternion(_ikBw); _ikBw.premultiply(_ikQb);
+    const par = bone.parent;
+    if (par) { par.getWorldQuaternion(_ikPar); bone.quaternion.copy(_ikPar.invert().multiply(_ikBw)); }
+    else bone.quaternion.copy(_ikBw);
+    bone.updateMatrixWorld(true);                    // refresh the subtree for the next pass
+  }
+}
+function ikHandsToBall(ch, target, twoHand, w) {
+  if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
+  w = Math.min(1, w * TUNE.catchIK);
+  ch.group.updateWorldMatrix(true, true);            // fresh world matrices for the posed arm chain
+  const dx = target.x - ch.group.position.x, dz = target.z - ch.group.position.z;
+  const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
+  const right = side >= 0;
+  const pa = right ? ch.upperArm : ch.leftArm, pf = right ? ch.foreArm : ch.leftForeArm, ph = right ? ch.handBone : ch.leftHandBone;
+  ik2(pa, pf, ph, target, w);
+  if (twoHand) ik2(right ? ch.leftArm : ch.upperArm, right ? ch.leftForeArm : ch.foreArm, right ? ch.leftHandBone : ch.handBone, target, w * 0.9);
+}
+// The live ball target for a hand reach: only while this player is actually playing
+// the ball in the air (or securing it). Null otherwise (no IK on idle arms).
+function catchBallTarget(ch) {
+  if ((ball.mode === 'flying' || ball.mode === 'secured') && (ch === ball.catcher || ch === ball.targetRecv)) return ball.mesh.position;
+  return null;
+}
 function applyCatchPose(ch, ballPos, dt, w = 1) {
   w *= TUNE.animCatch;
   if (!ch.upperArm || !ch.upperArmRest) return;
@@ -6447,6 +6784,8 @@ function applyCatchPose(ch, ballPos, dt, w = 1) {
   blendBone(ch.foreArm, ch.foreArmRest, -0.55 * (side >= 0 ? 1 : 1 - oneH * 0.7), w);
   blendBone(ch.leftArm, ch.leftArmRest, leftReach, w);
   blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55 * (side < 0 ? 1 : 1 - oneH * 0.7), w);
+  // Phase 4: refine the posed arms so the hand(s) actually land on the ball.
+  ikHandsToBall(ch, ballPos, oneH < 0.5, w);
 }
 // Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
 // poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
@@ -6488,6 +6827,9 @@ function applyArmAction(ch, dt, bw = 1) {
     blendBone(ch.foreArm, ch.foreArmRest, -0.5 * w, bw);
     blendBone(ch.leftArm, ch.leftArmRest, reach * w, bw);
     blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5 * w, bw);
+    // Phase 4: IK the in-stride reach onto the LIVE ball so the hands meet it.
+    const ikT = catchBallTarget(ch);
+    if (ikT) ikHandsToBall(ch, ikT, true, bw * w);
   }
 }
 // Ball-security threat: how imminent is contact on the ball carrier (0 none .. 1
@@ -6909,6 +7251,7 @@ const turboFillEl = document.getElementById('turbo-fill');
 // ===========================================================================
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
+  const catchEdge = input.catchEdge; input.catchEdge = null; // user-catch style press (rac/poss/agg)
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
@@ -6916,7 +7259,7 @@ function updatePlay(dt) {
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
-    if (game.gameOver) { updateFinale(dt); if (actionEdge) resetGame(); }
+    if (game.gameOver) { updateFinale(dt); if (actionEdge) { if (game.gauntlet && game.gauntlet.active) gauntletNext(); else resetGame(); } }
     else if (!game.choosing) {
       if (game.userOnOffense) {
         if (actionEdge) snap();             // QB holds his spot — just snap it
@@ -6944,6 +7287,8 @@ function updatePlay(dt) {
     game.throwCharge = 0; game.throwArmed = false; // not live: never carry a stale charge
     // On defense, the action button switches you to the defender nearest the ball.
     if (actionEdge && !game.userOnOffense && (game.state === STATE.LIVE || game.state === STATE.AIR)) switchDefender();
+    // On your own pass in flight, the action button is the CATCH (Phase 1 RAC).
+    else if (game.userOnOffense && game.state === STATE.AIR && game.userCatch && game.userCatch.on) updateUserCatch(catchEdge);
   }
 
   // Blitz turbo meter: drains while held, refills when released; ON FIRE =
@@ -7010,6 +7355,7 @@ function updatePlay(dt) {
       if (c.jukeTimer > 0) c.jukeTimer -= dt;
       if (c.jukeCd > 0) c.jukeCd -= dt;
       if (c.spinT > 0) c.spinT -= dt;
+      if (c.catchExposed > 0) c.catchExposed -= dt; // exposure after a contested catch fades fast
       if (c.cageJumpCd > 0) c.cageJumpCd -= dt;
       if (c.tauntCd > 0) c.tauntCd -= dt;
       if (c.tauntT > 0) { c.tauntT -= dt; if (c.tauntT <= 0) game.turboMeter = Math.min(1, game.turboMeter + 0.25); } // survived the showboat -> turbo pop
@@ -7205,7 +7551,7 @@ const CINE_SHOTS = [
 const CINE_DUR = CINE_SHOTS.reduce((s, x) => s + x.dur, 0);
 const CINE_SPOT_COLS = [0xfff2e0, 0xffd9a0, 0xbcd2ff]; // stage spotlight tints (warm key + amber/cool)
 const _cineLookV = new THREE.Vector3();
-const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q']; // gameplay UI hidden during the cinematic
+const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q', 'gauntlet-hud']; // gameplay UI hidden during the cinematic
 let _cineSkipEl = null, _cineSkipFn = null;
 function setGroups(list, v) { if (!list) return; for (const ch of list) if (ch.group) ch.group.visible = v; }
 function setCineHud(hidden) { for (const id of CINE_HIDE_HUD) { const el = document.getElementById(id); if (el) el.style.visibility = hidden ? 'hidden' : ''; } }
@@ -7506,6 +7852,17 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'onFireBoost', label: 'On-fire speed ×', min: 1, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'catchBias', label: 'Catch odds +/-', min: -0.3, max: 0.3, step: 0.02, fmt: (v) => (v >= 0 ? '+' : '') + v.toFixed(2) },
   { tab: 'Gameplay', key: 'intChance', label: 'Interception odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'userCatch', label: 'User catch', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Gameplay', key: 'catchWindow', label: 'Catch window (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Gameplay', key: 'userCatchBonus', label: 'User catch bonus', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'racBoost', label: 'RAC burst ×', min: 1, max: 1.6, step: 0.02, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'catchMissPenalty', label: 'Mistimed catch −', min: 0, max: 0.3, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'possCatch', label: 'Possession bonus', min: 0, max: 0.4, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'aggContest', label: 'Aggressive contest+', min: 0, max: 0.5, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'aggSecurity', label: 'Aggressive risk−', min: 0, max: 0.4, step: 0.02, fmt: (v) => '−' + v.toFixed(2) },
+  { tab: 'Gameplay', key: 'contestPhysics', label: 'Contest physics', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Gameplay', key: 'tipChance', label: 'Tipped-ball chance', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Gameplay', key: 'catchHitRisk', label: 'Contest-catch fumble', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'fatigueDrain', label: 'Fatigue drain ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
   { tab: 'Gameplay', key: 'playClock', label: 'Play clock (s)', min: 5, max: 30, step: 1, fmt: (v) => String(v | 0) },
@@ -7529,6 +7886,7 @@ const DBG_KNOBS = [
   { tab: 'Colliders', key: 'catchLog', label: 'Catch log', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
   { tab: 'Colliders', key: 'jumpReach', label: 'Jump-ball weight', min: 0, max: 2, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'catchHeight', label: 'Catch height ×', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Colliders', key: 'catchIK', label: 'Hand IK', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'engageReach', label: 'Block engage (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Colliders', key: 'bodyFit', label: 'Body collider × (model)', min: 0.3, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Colliders', key: 'playerSize', label: 'Player size ×', min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyPlayerSize() },
@@ -8094,7 +8452,10 @@ function buildStartMenu() {
           <div class="sm-difflabel">DIFFICULTY</div>
           <div class="sm-diffs">${diffBtns}</div>
         </div>
-        <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+        <div class="sm-startwrap">
+          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+          <button id="sm-gauntlet" class="sm-start sm-gauntlet"><span>GAUNTLET</span><span class="sm-sub">3 teams · win or restart</span></button>
+        </div>
       </div>
     </div>`;
   startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
@@ -8103,6 +8464,8 @@ function buildStartMenu() {
   }));
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
+  const gbtn = document.getElementById('sm-gauntlet');
+  if (gbtn) gbtn.addEventListener('click', startGauntlet, { once: true });
 }
 let gameStarted = false;
 let _loopStarted = false;
@@ -8132,10 +8495,8 @@ function startGame() {
   if (_musicPrimed) audio.setMusicGain(GAME_MUSIC_GAIN);
   else { _musicPrimed = true; audio.playMusic(MUSIC_URL, { gain: GAME_MUSIC_GAIN }); }
   if (startMenuEl) startMenuEl.classList.add('hidden');
-  // Label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff).
-  const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
-  if (tagOff) tagOff.textContent = TEAMS.home.abbr;
-  if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+  relabelScoreboard(); // label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff)
+  updateGauntletHud();
   startCinematic(); // pregame dancer cinematic; hands off to newPlay() when it ends/skips
   startLoop();
 }
@@ -8159,6 +8520,13 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
+
+
+
+
+
 
 
 
