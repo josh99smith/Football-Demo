@@ -194,6 +194,9 @@
     </div>
     <!-- Category filter chips (offense only): All / Pass / Run -->
     <div class="ps-cats" id="ps-cats"></div>
+    <!-- Scouting hint (offense): the CPU defense's recent tendency, so you can
+         pick a beater (Phase 6). -->
+    <div class="ps-scout hidden" id="ps-scout"></div>
     <div class="ps-deck">
       <button class="ps-arrow" id="ps-prev" aria-label="Previous plays">‹</button>
       <div class="ps-grid">
@@ -237,6 +240,10 @@
 
   <!-- Coach cam: pre-snap only, draws the called play's route art on the field. -->
   <button id="coach-btn" class="coach-btn hidden" aria-label="Coach cam: show the play art">▦&nbsp;PLAY&nbsp;ART</button>
+
+  <!-- Audible (offense pre-snap): re-open the play picker to change the call after
+       reading the defensive shell — the same coverage stays, so you adjust to it. -->
+  <button id="audible-btn" class="coach-btn audible-btn hidden" aria-label="Audible — change the play">↺&nbsp;AUDIBLE</button>
 
   <!-- Skip / simulate controls: jump to the next quarter, or fast-forward the
        whole game to the final whistle. Relocated into the pause menu (Phase 2);

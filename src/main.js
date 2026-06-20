@@ -1809,6 +1809,7 @@ const TUNE_DEFAULTS = {
   // Play-calling matchup: how much a concept-vs-coverage edge swings coverage
   // separation (0 = calls are cosmetic; 1 = a beaten call gives a clear step).
   matchupLeverage: 1.0,
+  onFireLeverage: 0.6, // extra leverage while ON FIRE (Phase 5: a hot player is uncoverable)
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1856,6 +1857,7 @@ const game = {
   // Play-calling matchup (Phase 1): the concept-vs-coverage edge resolved at snap.
   // coverLev > 0 = offense beat the call (receivers get a step); < 0 = blanketed.
   matchup: null, coverLev: 0, coverClose: 1, cpuDefIdx: 0, cpuOffIdx: 0,
+  defLocked: false, // the CPU's coverage is decided at lineup (so you can read the shell + audible)
   tend: { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }, // recent play/coverage calls per actor (tendency memory)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
@@ -2389,6 +2391,39 @@ const PLAYS = [
       return [P(sx, 5)];                                          // WRs stalk-block
     },
   },
+  {
+    name: 'SMASH', sub: 'Corner + hitch hi-lo', type: 'pass', concept: 'Smash', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const toSide = Math.sign(sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 6, 1), P(sx - 12, 3)];          // RB checkdown
+      if (e === 1) return [P(sx, 6), P(sx, 5)];                   // slot hitch (sit underneath)
+      return [P(sx, 12), P(sx + toSide * 9, 22)];                 // outside corner (high)
+    },
+  },
+  {
+    name: 'VERTS', sub: 'Four verticals', type: 'pass', concept: 'Verticals', beats: ['man'], losesTo: ['zone'],
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 5, 2), P(sx + toMid * 3, 10)];  // RB seam release
+      return [P(sx, 18), P(sx, 40)];                              // streak
+    },
+  },
+  {
+    name: 'DRAW', sub: 'HB delayed draw', run: true, type: 'run', concept: 'Draw', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 2, -1), P(0, 6), P(2, 24)];     // settle, then burst up the gut
+      return [P(sx, 3)];                                          // WRs stalk-block
+    },
+  },
+  {
+    name: 'COUNTER', sub: 'HB counter misdirect', run: true, type: 'run', concept: 'Counter', beats: ['spy'], losesTo: ['blitz'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 6, 1), P(12, 5), P(15, 23)];    // step one way, cut back the other and up
+      return [P(sx, 4)];                                          // WRs/OL down-block
+    },
+  },
 ];
 
 // Render a play's actual routes as a little SVG diagram for the call screen.
@@ -2860,7 +2895,11 @@ function updateDefense() {
     if (carrierIsRunning && carrier) {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
-      d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
+      // Run-call matchup: a run that beats the front (good blocking matchup) lets
+      // the back hit the lane before the front rallies; a bad matchup gets swarmed.
+      const runClose = (game.matchup && game.matchup.off && game.matchup.off.type === 'run') ? (game.coverClose || 1) : 1;
+      const tt = 3 / Math.max(0.5, runClose);
+      d.turbo = dist2(dp, px(carrier)) > tt * tt; // turbo to run the ball carrier down
       d.pursuit = true;
       // A blocker in his lane screens this pursuer (slows him — opens a lane).
       // Lenient on a run: a blocker near and ahead of him counts as a block.
@@ -3231,7 +3270,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#coach-btn,#audible-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -3340,6 +3379,14 @@ if (coachBtn) coachBtn.addEventListener('click', (e) => {
   coachBtn.classList.toggle('on', game.coachCam);
   updateCoachArt();
 });
+// Audible (Phase 4): re-open the call screen pre-snap to change the play after
+// reading the shell. The locked coverage is kept, so you're adjusting to it.
+const audibleBtn = document.getElementById('audible-btn');
+if (audibleBtn) {
+  const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); if (game.state === STATE.PRESNAP && !game.choosing && game.userOnOffense) { audio.juke(); openPlaySelect(); } };
+  audibleBtn.addEventListener('touchstart', go, { passive: false });
+  audibleBtn.addEventListener('mousedown', go);
+}
 // User-action tracker HUD (your tackles / catches / interceptions).
 const userStatsEl = document.getElementById('userstats');
 const usEls = { tackles: document.getElementById('us-tkl'), catches: document.getElementById('us-cat'), ints: document.getElementById('us-int') };
@@ -3875,9 +3922,26 @@ function openPlaySelect() {
   const sel = off ? game.playIndex : game.defCall;
   game.psPage = Math.floor((sel || 0) / PS_PAGE);
   renderPSCats();
+  renderScout();
   renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
+}
+// Scouting (Phase 6): surface the OPPONENT's recent tendency on your call screen
+// so you can pick a beater — the mirror of the CPU adapting to you.
+const psScoutEl = (typeof document !== 'undefined') ? document.getElementById('ps-scout') : null;
+function renderScout() {
+  if (!psScoutEl) return;
+  // Offense: scout the CPU's coverage habits; Defense: scout the CPU's concepts.
+  const hist = game.userOnOffense ? game.tend.cpuDef : game.tend.cpuOff;
+  const book = game.userOnOffense ? DEF_PLAYS : PLAYS;
+  if (!hist || hist.length < 2) { psScoutEl.classList.add('hidden'); return; }
+  const fav = modeOf(hist, 2);
+  const recent = hist.slice(-3).map((i) => (book[i] || {}).name || '?').reverse().join(' · ');
+  const tip = fav != null ? `likes <b>${(book[fav] || {}).name}</b>` : `recent <b>${recent}</b>`;
+  const who = game.userOnOffense ? 'DEF' : 'OFF';
+  psScoutEl.innerHTML = `<span class="ps-scout-k">SCOUT</span> ${who} ${tip}`;
+  psScoutEl.classList.remove('hidden');
 }
 function psFlip(dir) {
   const pages = psPageCount();
@@ -3888,8 +3952,13 @@ function psFlip(dir) {
 function choosePlay(i) {
   const len = game.userOnOffense ? PLAYS.length : DEF_PLAYS.length;
   if (i < 0 || i >= len) return;
-  if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
-  else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
+  if (game.userOnOffense) {
+    game.playIndex = i;
+    // Lock the defense's coverage on the FIRST call this down, so the shell read
+    // + an audible adjust to the SAME look (re-picks keep it).
+    if (!game.defLocked) { game.cpuDefIdx = cpuDefCall(); game.defLocked = true; }
+    setStatus(`${PLAYS[i].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE`);
+  } else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
   audio.catch();
   game.choosing = false;
   if (playSelectEl) playSelectEl.classList.add('hidden');
@@ -3984,6 +4053,7 @@ function yardResult(gained) {
 function matchupReason(result, gained) {
   const m = game.matchup; if (!m || !m.off) return '';
   const off = m.off.name, cov = (DEF_PLAYS[m.defIdx] || {}).name || 'coverage', p = game.play || {};
+  if (m.onFire && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 6))) return 'ON FIRE — uncoverable!';
   if (p.sack) return m.cov === 'blitz' ? 'Blitz got home!' : 'Coverage sack!';
   if (result === 'intercept') return m.lev < 0 ? `${cov} jumped it!` : 'Picked off!';
   if (m.lev > 0 && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 4))) return `${off} beat ${cov}!`;
@@ -4185,6 +4255,8 @@ function updateButtons() {
   actionBtn.classList.remove('hot');
   // PLAY ART (coach cam): callable pre-snap on either side of the ball.
   if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
+  // AUDIBLE: re-open the call screen pre-snap on offense (read the shell, adjust).
+  if (audibleBtn) audibleBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver && game.userOnOffense));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) {
     const goLabel = (game.gauntlet && game.gauntlet.active) ? (game.gauntlet.champion ? 'AGAIN' : (game.scoreOff >= game.scoreDef ? 'NEXT' : 'RETRY')) : 'REMATCH';
@@ -4478,6 +4550,7 @@ function resetGame() {
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
+  game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
@@ -4885,6 +4958,7 @@ function enterReset(teleport) {
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
+  game.defLocked = false; // fresh coverage read each down
   openPlaySelect(); // call a play EVERY down — offense playbook, or a defensive call
   updateButtons();
 }
@@ -4931,7 +5005,9 @@ function finalizeReset() {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
   } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
-  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
+  setStatus(game.userOnOffense
+    ? (game.defLocked ? `${PLAYS[game.playIndex].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE` : `${PLAYS[game.playIndex].name} — tap SNAP`)
+    : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
 }
 
 // --- Instant replay -------------------------------------------------------
@@ -5199,31 +5275,66 @@ function matchupLeverage(offPlay, defIdx) {
   if (offPlay.losesTo && offPlay.losesTo.includes(cov)) return -1;
   return 0;
 }
+// Pre-snap read (Phase 4): the defensive SHELL the offense can see at the line
+// (a partial tell — PRESS could be man or blitz — so reads aren't certainties).
+function preSnapShell(idx) {
+  const sh = (DEF_PLAYS[idx] || {}).shell;
+  return sh === 'two' ? 'TWO-HIGH' : sh === 'single' ? 'SINGLE-HIGH' : 'PRESS';
+}
 // Lock in the matchup for this snap: who called what, the leverage, and the
 // derived coverage cushion/closing factors the defense AI reads.
 function setMatchup(offPlay, defIdx) {
   const lev = matchupLeverage(offPlay, defIdx);
-  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev };
-  game.coverLev = lev * TUNE.matchupLeverage;
-  game.coverClose = 1 - game.coverLev * 0.28; // <1 = beaten DBs close slower (separation)
+  let cl = lev * TUNE.matchupLeverage;
+  // ON FIRE special (Phase 5): a hot player is uncoverable — every concept gets
+  // extra separation, so even a neutral/bad matchup still pops open while you burn.
+  const onFire = game.onFire && game.userOnOffense;
+  if (onFire) cl += TUNE.onFireLeverage;
+  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev, onFire };
+  game.coverLev = cl;
+  game.coverClose = 1 - cl * 0.28; // <1 = beaten DBs close slower (separation)
 }
 // Situational CPU coverage call (replaces pure-random): keyed on down & distance,
 // with a difficulty-scaled read and a dash of unpredictability.
-function cpuDefCall() {
-  const togo = toGoYds(), down = game.down, r = Math.random();
-  const sharp = diff().cpuRead != null ? diff().cpuRead : 0.5; // 0..1 how well it reads (set per difficulty)
-  // Occasionally just mix it up so it's never fully predictable.
-  if (r < 0.16 * (1 - sharp * 0.6)) return (Math.random() * 4) | 0;
-  if (togo <= 3) return r < 0.5 ? 2 : (r < 0.78 ? 0 : 3);          // short: blitz / man / spy
-  if (down >= 3 && togo >= 8) return r < 0.62 ? 1 : 0;             // 3rd-and-long: zone shell
-  if (togo >= 8) return r < 0.42 ? 1 : (r < 0.82 ? 0 : 2);         // medium: zone-lean mix
-  return r < 0.4 ? 0 : (r < 0.7 ? 1 : (r < 0.9 ? 2 : 3));          // default mix
+// Weighted random index over a weight array (negatives clamped to 0).
+function weightedPick(w) {
+  let s = 0; for (const x of w) s += Math.max(0, x);
+  if (s <= 0) return (Math.random() * w.length) | 0;
+  let r = Math.random() * s;
+  for (let i = 0; i < w.length; i++) { r -= Math.max(0, w[i]); if (r <= 0) return i; }
+  return w.length - 1;
 }
-// CPU offensive concept pick. (Phase 1: non-repeating random; Phase 2 upgrades
-// this to a situational, tendency-aware caller.)
+// CPU coverage call (Phase 2): situational by down & distance, plus tendency —
+// leans to a coverage the user's favorite concept loses to (difficulty-scaled).
+function cpuDefCall() {
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1]; // MAN, ZONE, BLITZ, SPY
+  if (togo <= 3) { w[2] += 1.8; w[0] += 1.2; w[3] += 0.8; }                 // short: pressure / man / spy
+  else if (down >= 3 && togo >= 8) { w[1] += 2.0; w[0] += 0.6; }            // 3rd-and-long: zone shell
+  else if (togo >= 8) { w[1] += 1.2; w[0] += 1.0; w[2] += 0.5; }            // medium: zone-lean mix
+  else { w[0] += 0.8; w[1] += 0.8; w[2] += 0.5; w[3] += 0.4; }              // default mix
+  const favOff = modeOf(game.tend.userOff);                                 // exploit the user's favorite concept
+  if (favOff != null && PLAYS[favOff] && PLAYS[favOff].losesTo)
+    for (let d = 0; d < 4; d++) if (PLAYS[favOff].losesTo.includes(COVER_ID[d])) w[d] += 1.8 * read;
+  for (let i = 0; i < 4; i++) w[i] += Math.random() * 0.6 * (1 - read);     // softer reads = noisier
+  return weightedPick(w);
+}
+// CPU offensive concept pick (Phase 2): situational by down & distance, field
+// position, score & clock — and tendency-aware (leans on a concept that beats the
+// user's favorite coverage, scaled by the difficulty's read).
 function cpuOffCall() {
-  let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
-  return idx;
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1, 1, 1]; // BOMBS, SLANTS, MESH, FLOOD, DIVE, SWEEP
+  if (togo <= 3) { w[4] += 2.4; w[5] += 1.6; w[1] += 1.0; }                          // short: run + quick game
+  else if (togo >= 9 || (down >= 3 && togo >= 7)) { w[0] += 2.2; w[3] += 1.3; w[2] += 0.6; } // long: shots + flood
+  else { w[1] += 0.8; w[2] += 0.9; w[3] += 0.6; w[4] += 0.4; }                       // medium: balanced
+  const toGoal = game.dir * (GOAL_Z - game.los);
+  if (toGoal > 0 && toGoal <= 20) { w[2] += 1.2; w[3] += 1.0; w[0] -= 0.8; }         // red zone: rubs/fades over deep shots
+  if (game.quarter >= 4 && (game.scoreDef - game.scoreOff) > 0) { w[0] += 1.6; w[3] += 0.8; } // CPU (away) behind late: take shots
+  const favCov = modeOf(game.tend.userDef);                                          // exploit the user's favorite coverage
+  if (favCov != null) for (let i = 0; i < PLAYS.length; i++) if (PLAYS[i].beats && PLAYS[i].beats.includes(COVER_ID[favCov])) w[i] += 1.7 * read;
+  if (game.cpuLastPlay >= 0) w[game.cpuLastPlay] *= 0.45;                            // discourage an immediate repeat
+  return weightedPick(w);
 }
 // Tendency memory: remember each actor's recent calls so the CPU can adapt and
 // the scouting HUD (Phase 6) can surface them.
@@ -5285,7 +5396,7 @@ function snap() {
     applyDefCall(defIdx);
     if (!game.controlled || !game.defense.includes(game.controlled)) game.controlled = nearestToBallDefender();
     ctrlRing.visible = true; selRing.visible = false;
-  } else { defIdx = cpuDefCall(); applyDefCall(defIdx); }
+  } else { defIdx = game.defLocked ? game.cpuDefIdx : cpuDefCall(); applyDefCall(defIdx); }
   game.cpuDefIdx = defIdx;
   // Resolve the concept-vs-coverage matchup for this snap (drives the leverage
   // the coverage AI reads + the post-play "why").
