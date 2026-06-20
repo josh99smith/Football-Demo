@@ -3418,7 +3418,7 @@ function uiTabs(tabs) {
   };
   tabs.forEach((t, i) => {
     const tb = document.createElement('button'); tb.className = 'ui-tab'; tb.textContent = t.label;
-    tb.addEventListener('click', () => select(i));
+    tb.addEventListener('click', () => { uiSound('nav'); select(i); });
     const pane = document.createElement('div'); pane.className = 'ui-pane';
     if (t.build) t.build(pane);
     bar.appendChild(tb); panes.appendChild(pane);
@@ -3468,12 +3468,28 @@ function uiSegmented(label, options, value, onChange) {
     b.classList.toggle('on', o.value === value);
     b.addEventListener('click', () => {
       seg.querySelectorAll('.ui-seg-btn').forEach((x) => x.classList.remove('on'));
-      b.classList.add('on'); audio.unlock(); onChange(o.value);
+      b.classList.add('on'); audio.unlock(); uiSound('nav'); onChange(o.value);
     });
     seg.appendChild(b);
   });
   wrap.appendChild(seg);
   return wrap;
+}
+// Menu-navigation sound hook — handed to the audio session: it implements
+// audio.menu(kind) if/when it wants menu SFX; until then this is a silent no-op
+// (we stay out of the audio lane and don't invent sounds here).
+function uiSound(kind) { try { if (audio && audio.menu) audio.menu(kind); } catch (e) { /* ignore */ } }
+// Graceful modal close shared by every .ui-modal: play the close transition, then
+// hide — or hide instantly when Reduced motion is on. One motion language for all
+// the menus (pause / settings / …).
+function uiHideModal(el) {
+  if (!el || el.classList.contains('hidden')) return;
+  if (_reducedMotion) { el.classList.remove('ui-closing'); el.classList.add('hidden'); return; }
+  el.classList.add('ui-closing');
+  let done = false;
+  const finish = () => { if (done) return; done = true; el.classList.remove('ui-closing'); el.classList.add('hidden'); };
+  el.addEventListener('animationend', finish, { once: true });
+  setTimeout(finish, 240); // fallback if animationend doesn't fire (e.g. display change)
 }
 
 // ===========================================================================
@@ -3548,13 +3564,15 @@ function openPause() {
   if (!pauseMenuEl || game.paused || !pauseAllowed()) return;
   game.paused = true;
   document.body.classList.add('paused');
-  pauseMenuEl.classList.remove('hidden');
+  pauseMenuEl.classList.remove('ui-closing', 'hidden');
+  uiSound('open');
 }
 function closePause() {
   if (!game.paused) return;
   game.paused = false;
   document.body.classList.remove('paused');
-  if (pauseMenuEl) pauseMenuEl.classList.add('hidden');
+  uiHideModal(pauseMenuEl);
+  uiSound('close');
 }
 function togglePause() { if (game.paused) closePause(); else openPause(); }
 // Cleanest reliable return to the matchup screen: reload (the start menu gates the
@@ -3679,8 +3697,8 @@ function buildSettings() {
   settingsMenuEl.appendChild(panel);
   settingsMenuEl.addEventListener('pointerdown', (e) => { if (e.target === settingsMenuEl) closeSettings(); });
 }
-function openSettings() { if (!settingsMenuEl) return; buildSettings(); settingsMenuEl.classList.remove('hidden'); }
-function closeSettings() { if (settingsMenuEl) settingsMenuEl.classList.add('hidden'); }
+function openSettings() { if (!settingsMenuEl) return; buildSettings(); settingsMenuEl.classList.remove('ui-closing', 'hidden'); uiSound('open'); }
+function closeSettings() { uiHideModal(settingsMenuEl); uiSound('close'); }
 // Keep the start-menu difficulty buttons in step when difficulty is changed here.
 function syncStartDiff() {
   if (!startMenuEl) return;

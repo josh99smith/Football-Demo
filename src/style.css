@@ -1311,7 +1311,7 @@ body.replay-mode .replay-btn { display: none !important; }
 /* ---------- Debug panel (live knob tuning + test triggers) ---------- */
 #build-badge { cursor: pointer; pointer-events: auto; } /* tap the version badge to open the debug panel */
 #debugpanel {
-  position: fixed; z-index: 60;
+  position: fixed; z-index: var(--z-debug);
   right: max(6px, env(safe-area-inset-right)); top: max(6px, env(safe-area-inset-top));
   width: min(94vw, 360px); max-height: calc(100vh - 12px); overflow-y: auto;
   display: flex; flex-direction: column;
@@ -1401,7 +1401,7 @@ body.replay-mode .replay-btn { display: none !important; }
 /* Touch entry to debug mode (revealed by ?debug). Top-left, clear of the
    scoreboard (centered) and the controls (bottom). */
 #dbg-fab {
-  position: fixed; z-index: 61;
+  position: fixed; z-index: var(--z-debug);
   left: max(8px, env(safe-area-inset-left));
   top: calc(max(5px, env(safe-area-inset-top)) + 30px); /* below the FPS readout */
   width: 46px; height: 36px; border-radius: 9px;
@@ -1427,7 +1427,7 @@ body.lab-mode #coach-btn, body.lab-mode #userstats, body.lab-mode #replay-btn,
 body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel {
   position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left));
-  z-index: 70; width: min(92vw, 310px);
+  z-index: var(--z-debug); width: min(92vw, 310px);
   background: rgba(8,11,16,0.88); border: 1px solid rgba(255,255,255,0.18); border-radius: 12px;
   padding: 10px 11px; color: #eef2f7; backdrop-filter: blur(8px);
   font-family: inherit; -webkit-tap-highlight-color: transparent;
@@ -1482,6 +1482,11 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
   animation: uiPop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
 @keyframes uiPop { from { transform: translateY(10px) scale(0.98); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Graceful close (driven by uiHideModal): one motion language for every menu. */
+.ui-modal.ui-closing { animation: uiFadeOut 0.16s ease both; pointer-events: none; }
+.ui-modal.ui-closing .ui-panel { animation: uiPopOut 0.18s ease both; }
+@keyframes uiFadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes uiPopOut { from { transform: none; opacity: 1; } to { transform: translateY(8px) scale(0.98); opacity: 0; } }
 .ui-panel-head {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border);
@@ -1627,9 +1632,17 @@ body.reduced-motion #flash,
 body.reduced-motion #impact,
 body.reduced-motion #slowmo { display: none !important; }
 body.reduced-motion .ui-modal,
-body.reduced-motion .ui-panel,
+body.reduced-motion .ui-modal .ui-panel,
+body.reduced-motion .ui-modal.ui-closing,
+body.reduced-motion .ui-modal.ui-closing .ui-panel,
 body.reduced-motion #status.flash,
-body.reduced-motion .action-btn.hot { animation: none !important; }
+body.reduced-motion .action-btn.hot,
+body.reduced-motion .ps-head,
+body.reduced-motion .ps-cats,
+body.reduced-motion .ps-deck,
+body.reduced-motion #banner,
+body.reduced-motion #banner.pop,
+body.reduced-motion #startmenu * { animation: none !important; }
 
 /* Accessibility: high contrast — solidify the UI-kit surfaces + borders. */
 body.high-contrast .ui-panel { background: #06090e; border-color: rgba(255, 255, 255, 0.5); }
