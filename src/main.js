@@ -5158,7 +5158,9 @@ const REPLAY_ANGLES = [
   { name: 'REVERSE',   az: -Math.PI * 0.42, dist: 13, height: 3.4, fov: 40, orbit: -0.0016 },
   { name: 'END ZONE',  az: 0,               dist: 16, height: 4.2, fov: 38, orbit: 0.0009 },
   { name: 'LOW ANGLE', az: Math.PI * 0.7,   dist: 9,  height: 1.7, fov: 50, orbit: 0.0018 },
+  { name: 'HIT CAM',   az: Math.PI * 0.6,   dist: 6.5, height: 1.3, fov: 56, orbit: 0.0026 }, // Phase 5: low + tight, auto-chosen for big hits
 ];
+const HITCAM_IDX = 5;
 const REPLAY_SEG = 3.2; // seconds on one camera angle before a broadcast cut to the next
 const rpFadeEl = document.getElementById('rp-fade');
 const rpAngleEl = document.getElementById('rp-angle');
@@ -5177,7 +5179,7 @@ function startReplay(highlight = false) {
   r.rate = highlight ? 0.45 : 0.85; // slow-mo on the highlight pass
   r.i = highlight ? Math.max(0, Math.floor(last * 0.55)) : 0; // start near the hit
   r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
-  r.angleIdx = highlight ? 4 /* LOW ANGLE */ : Math.floor(Math.random() * REPLAY_ANGLES.length);
+  r.angleIdx = highlight ? (r.bigHit ? HITCAM_IDX : 4 /* LOW ANGLE */) : Math.floor(Math.random() * REPLAY_ANGLES.length); // Phase 5: big hits open on the HIT CAM
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
@@ -6999,13 +7001,19 @@ function beginTackle(lead, force = false) {
     const power = hitPower(lead, closing, gangSize, big);
     // The most violent square hits (turbo + huge closing) read as a DIRTY HIT.
     const dirty = big && lead.turbo && closing > 10.5;
+    const earned = hitStyle === 'high'; // a player-earned hit-stick big hit gets extra punch
     if (dirty) { timeScale.bulletTime(0.05, 0.95, 1.45); hitZoom(2.2, 1.7); shake.add(0.85); impactFlash(true); }      // deepest slow-mo, tightest punch-in
     else if (gang) { timeScale.bulletTime(0.07, 0.85, 1.25); hitZoom(2.0, 1.45); shake.add(0.72); impactFlash(true); }
-    else { timeScale.bulletTime(0.09, 0.75, 1.15); hitZoom(1.7, 1.35); shake.add(0.5); impactFlash(false); }
+    else { timeScale.bulletTime(earned ? 0.07 : 0.09, earned ? 0.85 : 0.75, 1.15); hitZoom(earned ? 1.95 : 1.7, earned ? 1.5 : 1.35); shake.add(earned ? 0.62 : 0.5); impactFlash(earned); }
+    if (earned) shake.kick(hitX, hitZ, 1.15); // Phase 5: directional camera shove on a clean hit-stick
     audio.bigHit();
+    // Phase 5 contact FX: a burst of sweat/mist on a big collision over the dust.
+    burst(cp.x, 1.35, cp.z, 0xffffff, dirty || gang ? 16 : 12, 4.5);
     // Gore: most often the helmet pops off; rarely the whole body is RIPPED IN
-    // HALF at the waist (head stays with the top). The two are mutually exclusive.
-    const tear = (big || gang) && Math.random() < 0.4;
+    // HALF at the waist (head stays with the top). Frequency scales with the EARNED
+    // power (a harder hit tears more often) × the gore knob.
+    const tearP = THREE.MathUtils.clamp(0.18 + (power - 70) / 110, 0.12, 0.6) * (TUNE.gore ? 1 : 0);
+    const tear = (big || gang) && Math.random() < tearP;
     if (tear) tearInHalf(carrier, hitX, hitZ, power);
     else if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
