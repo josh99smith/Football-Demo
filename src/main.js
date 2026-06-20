@@ -5161,21 +5161,45 @@ function setMatchup(offPlay, defIdx) {
 }
 // Situational CPU coverage call (replaces pure-random): keyed on down & distance,
 // with a difficulty-scaled read and a dash of unpredictability.
-function cpuDefCall() {
-  const togo = toGoYds(), down = game.down, r = Math.random();
-  const sharp = diff().cpuRead != null ? diff().cpuRead : 0.5; // 0..1 how well it reads (set per difficulty)
-  // Occasionally just mix it up so it's never fully predictable.
-  if (r < 0.16 * (1 - sharp * 0.6)) return (Math.random() * 4) | 0;
-  if (togo <= 3) return r < 0.5 ? 2 : (r < 0.78 ? 0 : 3);          // short: blitz / man / spy
-  if (down >= 3 && togo >= 8) return r < 0.62 ? 1 : 0;             // 3rd-and-long: zone shell
-  if (togo >= 8) return r < 0.42 ? 1 : (r < 0.82 ? 0 : 2);         // medium: zone-lean mix
-  return r < 0.4 ? 0 : (r < 0.7 ? 1 : (r < 0.9 ? 2 : 3));          // default mix
+// Weighted random index over a weight array (negatives clamped to 0).
+function weightedPick(w) {
+  let s = 0; for (const x of w) s += Math.max(0, x);
+  if (s <= 0) return (Math.random() * w.length) | 0;
+  let r = Math.random() * s;
+  for (let i = 0; i < w.length; i++) { r -= Math.max(0, w[i]); if (r <= 0) return i; }
+  return w.length - 1;
 }
-// CPU offensive concept pick. (Phase 1: non-repeating random; Phase 2 upgrades
-// this to a situational, tendency-aware caller.)
+// CPU coverage call (Phase 2): situational by down & distance, plus tendency —
+// leans to a coverage the user's favorite concept loses to (difficulty-scaled).
+function cpuDefCall() {
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1]; // MAN, ZONE, BLITZ, SPY
+  if (togo <= 3) { w[2] += 1.8; w[0] += 1.2; w[3] += 0.8; }                 // short: pressure / man / spy
+  else if (down >= 3 && togo >= 8) { w[1] += 2.0; w[0] += 0.6; }            // 3rd-and-long: zone shell
+  else if (togo >= 8) { w[1] += 1.2; w[0] += 1.0; w[2] += 0.5; }            // medium: zone-lean mix
+  else { w[0] += 0.8; w[1] += 0.8; w[2] += 0.5; w[3] += 0.4; }              // default mix
+  const favOff = modeOf(game.tend.userOff);                                 // exploit the user's favorite concept
+  if (favOff != null && PLAYS[favOff] && PLAYS[favOff].losesTo)
+    for (let d = 0; d < 4; d++) if (PLAYS[favOff].losesTo.includes(COVER_ID[d])) w[d] += 1.8 * read;
+  for (let i = 0; i < 4; i++) w[i] += Math.random() * 0.6 * (1 - read);     // softer reads = noisier
+  return weightedPick(w);
+}
+// CPU offensive concept pick (Phase 2): situational by down & distance, field
+// position, score & clock — and tendency-aware (leans on a concept that beats the
+// user's favorite coverage, scaled by the difficulty's read).
 function cpuOffCall() {
-  let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
-  return idx;
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1, 1, 1]; // BOMBS, SLANTS, MESH, FLOOD, DIVE, SWEEP
+  if (togo <= 3) { w[4] += 2.4; w[5] += 1.6; w[1] += 1.0; }                          // short: run + quick game
+  else if (togo >= 9 || (down >= 3 && togo >= 7)) { w[0] += 2.2; w[3] += 1.3; w[2] += 0.6; } // long: shots + flood
+  else { w[1] += 0.8; w[2] += 0.9; w[3] += 0.6; w[4] += 0.4; }                       // medium: balanced
+  const toGoal = game.dir * (GOAL_Z - game.los);
+  if (toGoal > 0 && toGoal <= 20) { w[2] += 1.2; w[3] += 1.0; w[0] -= 0.8; }         // red zone: rubs/fades over deep shots
+  if (game.quarter >= 4 && (game.scoreDef - game.scoreOff) > 0) { w[0] += 1.6; w[3] += 0.8; } // CPU (away) behind late: take shots
+  const favCov = modeOf(game.tend.userDef);                                          // exploit the user's favorite coverage
+  if (favCov != null) for (let i = 0; i < PLAYS.length; i++) if (PLAYS[i].beats && PLAYS[i].beats.includes(COVER_ID[favCov])) w[i] += 1.7 * read;
+  if (game.cpuLastPlay >= 0) w[game.cpuLastPlay] *= 0.45;                            // discourage an immediate repeat
+  return weightedPick(w);
 }
 // Tendency memory: remember each actor's recent calls so the CPU can adapt and
 // the scouting HUD (Phase 6) can surface them.
