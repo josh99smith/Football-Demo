@@ -1060,6 +1060,16 @@ body.replay-mode .replay-btn { display: none !important; }
 .ps-cat.on { color: #06120b; background: var(--ps-accent); border-color: var(--ps-accent); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); }
 .ps-cat:active { transform: scale(0.94); }
 
+/* Scouting hint (Phase 6): the opponent's recent tendency on the call screen. */
+.ps-scout {
+  font-size: clamp(10px, 2.5vw, 12.5px); font-weight: 700; letter-spacing: 0.4px;
+  color: #dbe7f5; background: rgba(8, 16, 12, 0.55); border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px; padding: 5px 13px; animation: psPop 0.26s ease both;
+}
+.ps-scout.hidden { display: none; }
+.ps-scout .ps-scout-k { font-weight: 900; letter-spacing: 1.4px; color: var(--accent); margin-right: 6px; }
+.ps-scout b { color: #fff; font-weight: 900; font-style: italic; }
+
 /* "LAST" tag: the play you ran on the previous snap (when it's not your current pick). */
 .ps-card.last::after {
   content: "LAST"; position: absolute; top: 7px; left: 9px;

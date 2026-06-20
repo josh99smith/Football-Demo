@@ -3937,9 +3937,26 @@ function openPlaySelect() {
   const sel = off ? game.playIndex : game.defCall;
   game.psPage = Math.floor((sel || 0) / PS_PAGE);
   renderPSCats();
+  renderScout();
   renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
+}
+// Scouting (Phase 6): surface the OPPONENT's recent tendency on your call screen
+// so you can pick a beater — the mirror of the CPU adapting to you.
+const psScoutEl = (typeof document !== 'undefined') ? document.getElementById('ps-scout') : null;
+function renderScout() {
+  if (!psScoutEl) return;
+  // Offense: scout the CPU's coverage habits; Defense: scout the CPU's concepts.
+  const hist = game.userOnOffense ? game.tend.cpuDef : game.tend.cpuOff;
+  const book = game.userOnOffense ? DEF_PLAYS : PLAYS;
+  if (!hist || hist.length < 2) { psScoutEl.classList.add('hidden'); return; }
+  const fav = modeOf(hist, 2);
+  const recent = hist.slice(-3).map((i) => (book[i] || {}).name || '?').reverse().join(' · ');
+  const tip = fav != null ? `likes <b>${(book[fav] || {}).name}</b>` : `recent <b>${recent}</b>`;
+  const who = game.userOnOffense ? 'DEF' : 'OFF';
+  psScoutEl.innerHTML = `<span class="ps-scout-k">SCOUT</span> ${who} ${tip}`;
+  psScoutEl.classList.remove('hidden');
 }
 function psFlip(dir) {
   const pages = psPageCount();
@@ -4540,6 +4557,7 @@ function resetGame() {
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
+  game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
