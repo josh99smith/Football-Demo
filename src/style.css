@@ -977,7 +977,9 @@ body.replay-mode .replay-btn { display: none !important; }
 .ps-deck {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
+  width: min(540px, 94vw); /* cap the whole row so the arrows stay on-screen */
   animation: psPop 0.28s ease both;
 }
 .ps-arrow {
@@ -1003,7 +1005,8 @@ body.replay-mode .replay-btn { display: none !important; }
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  width: min(420px, 78vw);
+  flex: 1 1 0; /* fill the space between the two fixed arrows */
+  min-width: 0; /* …and actually shrink (default min-width:auto shoved the arrows off-screen) */
 }
 .ps-card {
   position: relative;
