@@ -1768,6 +1768,14 @@ const TUNE_DEFAULTS = {
   tipChance: 0.5,        // fraction of contested breakups that tip into a live loose ball (vs a clean incompletion)
   catchHitRisk: 0.55,    // added fumble probability on the jarring hit right after an EXPOSED contested catch (× style)
   catchExposeTime: 0.7,  // s a receiver stays exposed to a jarring hit after a contested catch
+  // Tackling overhaul (see docs/tackling-overhaul-plan.md).
+  tackleLog: false,      // Phase 0: log each tackle (type/closing/angle/gang/variant) to the debug event log
+  ragdollBrace: 0.5,     // Phase 1: active-ragdoll bracing strength (0 = limp dummy; >0 arms come out / carrier curls to protect)
+  contactIK: 1.0,        // Phase 1: weight of the tackler hand IK onto the carrier (0 = fixed fan-slot offsets)
+  hitStick: true,        // Phase 3: enable the user hit-stick (wrap / high / low choice when you tackle)
+  hitStickWindow: 2.2,   // Phase 3: yd from the carrier where the hit-stick timing window opens
+  hitStickBonus: 0.22,   // Phase 3: well-timed high-hit fumble/power bonus; low-hit reliability
+  armTackleChance: 0.5,  // Phase 4: chance an off-angle/late arrival is only an arm tackle (drag-down vs slip-through)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -6755,6 +6763,24 @@ function updateBattle(dt) {
   if (b.val <= 0 || b.timer <= 0) { endBattle(false); return; }
 }
 
+// Phase 0 telemetry: record how each tackle resolved (type/closing/angle/gang/variant)
+// so the later phases are measurable + tunable. game.lastTackle holds the most recent
+// for the YAC log at endPlay.
+function logTackle(type, info) {
+  game.lastTackle = type;
+  if (!TUNE.tackleLog) return;
+  const s = (n) => (Number.isFinite(n) ? n.toFixed(1) : '?');
+  dbgLogPush(`<b>TKL</b> ${type} · close ${s(info.closing)} · ang ${s(info.angle)}° · gang ${info.gang || 1}${info.variant ? ' · ' + info.variant : ''}${info.style ? ' · ' + info.style : ''}`);
+}
+// Pursuit angle (deg) between the tackler's approach velocity and the line to the
+// carrier: 0 = square-on, 90 = pure side angle. Drives arm-tackle odds + telemetry.
+function pursuitAngle(lead, carrier) {
+  const dx = carrier.group.position.x - lead.group.position.x, dz = carrier.group.position.z - lead.group.position.z;
+  const dl = Math.hypot(dx, dz) || 1, vl = Math.hypot(lead.vel.x, lead.vel.z);
+  if (vl < 0.5) return 0; // standing still -> treat as square
+  const dot = (lead.vel.x * dx + lead.vel.z * dz) / (vl * dl);
+  return Math.acos(THREE.MathUtils.clamp(dot, -1, 1)) * 180 / Math.PI;
+}
 function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
@@ -6773,6 +6799,7 @@ function beginTackle(lead, force = false) {
   const hl = Math.hypot(hitX, hitZ) || 1;
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
+  const angle = pursuitAngle(lead, carrier);
   let big = lead.turbo || closing > 8; // Blitz: most square hits are violent (Phase 3 may force it on an exposed catch)
   const gang = gangSize >= 3;
   if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
@@ -6784,6 +6811,7 @@ function beginTackle(lead, force = false) {
     knockdownDefender(lead);
     shake.add(0.15);
     setStatus('WHIFF!');
+    logTackle('whiff', { closing, angle, gang: gangSize });
     return;
   }
 
@@ -6796,6 +6824,7 @@ function beginTackle(lead, force = false) {
   const helpers = game.defense.reduce((n, d) =>
     n + (d !== lead && !d.ragdolling && distXZ(px(d), cp) <= BATTLE_SOLO_R ? 1 : 0), 0);
   if (!force && game.userOnOffense && helpers === 0 && game.battle.cd <= 0 && Math.random() < TUNE.battleChance) {
+    logTackle('battle', { closing, angle, gang: gangSize });
     startBattle(lead, big);
     return;
   }
@@ -6809,6 +6838,7 @@ function beginTackle(lead, force = false) {
     shake.add(0.2);
     shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
     showBanner('BROKE IT!', '#bfffd0');
+    logTackle('broken', { closing, angle, gang: gangSize });
     return;
   }
 
@@ -6838,6 +6868,7 @@ function beginTackle(lead, force = false) {
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
     lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'tackle', 0.45);
+    logTackle('fumble', { closing, angle, gang: gangSize, variant });
     startFumble(carrier, hitX, hitZ);
     return;
   }
@@ -6853,6 +6884,7 @@ function beginTackle(lead, force = false) {
   // a WRAP & DRAG-DOWN: the tacklers latch on and bring him down over a beat,
   // longer for a lone man and quicker as the gang piles on.
   if (!(force || (big && Math.random() < 0.6))) {
+    logTackle('drag', { closing, angle, gang: gangSize });
     beginDrag(carrier, pile, big, hitDir, closing);
     return;
   }
@@ -6871,6 +6903,7 @@ function beginTackle(lead, force = false) {
   // recoil the other way (varied so a pile isn't a mirror image).
   const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
   const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
+  logTackle(big && gang ? 'instant-big-gang' : big ? 'instant-big' : 'instant', { closing, angle, gang: gangSize, variant });
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
   const back = hitDir.clone().negate();
   // Lead tackler makes the hit with a head-down lunge (no roll) instead of
@@ -8607,6 +8640,21 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'battleChance', label: 'Battle trigger odds', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  // ---- Tackle tab: the tackling-overhaul knobs in one place ----
+  { tab: 'Tackle', key: 'tackleLog', label: 'Tackle log', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Tackle', key: 'ragdollBrace', label: 'Ragdoll brace', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'contactIK', label: 'Tackler hand IK', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'hitStick', label: 'Hit-stick', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Tackle', key: 'hitStickWindow', label: 'Hit-stick window (yd)', min: 1, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'hitStickBonus', label: 'Hit-stick bonus', min: 0, max: 0.6, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Tackle', key: 'armTackleChance', label: 'Arm-tackle chance', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { tab: 'Tackle', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'swarmRadius', label: 'Gang radius (yd)', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'battleChance', label: 'Battle odds', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { tab: 'Tackle', key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
+  { tab: 'Tackle', key: 'gapGrab', label: 'Wrap radius (yd)', min: 0.12, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
