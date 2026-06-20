@@ -745,6 +745,8 @@ body.replay-mode #fps { display: none !important; }
 .coach-btn.on { background: rgba(255, 213, 74, 0.9); color: #1b2a1f; border-color: rgba(255, 213, 74, 0.9); }
 .coach-btn.hidden { display: none; }
 body.replay-mode .coach-btn { visibility: hidden; }
+/* Audible sits just below the PLAY ART button (pre-snap, offense). */
+.audible-btn { top: max(194px, calc(env(safe-area-inset-top) + 190px)); }
 
 /* ---------- Skip / Sim controls ---------- */
 #simbar {

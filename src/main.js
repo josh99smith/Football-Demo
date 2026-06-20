@@ -1881,6 +1881,7 @@ const game = {
   // Play-calling matchup (Phase 1): the concept-vs-coverage edge resolved at snap.
   // coverLev > 0 = offense beat the call (receivers get a step); < 0 = blanketed.
   matchup: null, coverLev: 0, coverClose: 1, cpuDefIdx: 0, cpuOffIdx: 0,
+  defLocked: false, // the CPU's coverage is decided at lineup (so you can read the shell + audible)
   tend: { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }, // recent play/coverage calls per actor (tendency memory)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
@@ -3293,7 +3294,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#coach-btn,#audible-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -3402,6 +3403,14 @@ if (coachBtn) coachBtn.addEventListener('click', (e) => {
   coachBtn.classList.toggle('on', game.coachCam);
   updateCoachArt();
 });
+// Audible (Phase 4): re-open the call screen pre-snap to change the play after
+// reading the shell. The locked coverage is kept, so you're adjusting to it.
+const audibleBtn = document.getElementById('audible-btn');
+if (audibleBtn) {
+  const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); if (game.state === STATE.PRESNAP && !game.choosing && game.userOnOffense) { audio.juke(); openPlaySelect(); } };
+  audibleBtn.addEventListener('touchstart', go, { passive: false });
+  audibleBtn.addEventListener('mousedown', go);
+}
 // User-action tracker HUD (your tackles / catches / interceptions).
 const userStatsEl = document.getElementById('userstats');
 const usEls = { tackles: document.getElementById('us-tkl'), catches: document.getElementById('us-cat'), ints: document.getElementById('us-int') };
@@ -3967,8 +3976,13 @@ function psFlip(dir) {
 function choosePlay(i) {
   const len = game.userOnOffense ? PLAYS.length : DEF_PLAYS.length;
   if (i < 0 || i >= len) return;
-  if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
-  else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
+  if (game.userOnOffense) {
+    game.playIndex = i;
+    // Lock the defense's coverage on the FIRST call this down, so the shell read
+    // + an audible adjust to the SAME look (re-picks keep it).
+    if (!game.defLocked) { game.cpuDefIdx = cpuDefCall(); game.defLocked = true; }
+    setStatus(`${PLAYS[i].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE`);
+  } else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
   audio.catch();
   game.choosing = false;
   if (playSelectEl) playSelectEl.classList.add('hidden');
@@ -4264,6 +4278,8 @@ function updateButtons() {
   actionBtn.classList.remove('hot');
   // PLAY ART (coach cam): callable pre-snap on either side of the ball.
   if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
+  // AUDIBLE: re-open the call screen pre-snap on offense (read the shell, adjust).
+  if (audibleBtn) audibleBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver && game.userOnOffense));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) {
     const goLabel = (game.gauntlet && game.gauntlet.active) ? (game.gauntlet.champion ? 'AGAIN' : (game.scoreOff >= game.scoreDef ? 'NEXT' : 'RETRY')) : 'REMATCH';
@@ -4922,6 +4938,7 @@ function enterReset(teleport) {
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
+  game.defLocked = false; // fresh coverage read each down
   openPlaySelect(); // call a play EVERY down — offense playbook, or a defensive call
   updateButtons();
 }
@@ -4968,7 +4985,9 @@ function finalizeReset() {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
   } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
-  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
+  setStatus(game.userOnOffense
+    ? (game.defLocked ? `${PLAYS[game.playIndex].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE` : `${PLAYS[game.playIndex].name} — tap SNAP`)
+    : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
 }
 
 // --- Instant replay -------------------------------------------------------
@@ -5236,6 +5255,12 @@ function matchupLeverage(offPlay, defIdx) {
   if (offPlay.losesTo && offPlay.losesTo.includes(cov)) return -1;
   return 0;
 }
+// Pre-snap read (Phase 4): the defensive SHELL the offense can see at the line
+// (a partial tell — PRESS could be man or blitz — so reads aren't certainties).
+function preSnapShell(idx) {
+  const sh = (DEF_PLAYS[idx] || {}).shell;
+  return sh === 'two' ? 'TWO-HIGH' : sh === 'single' ? 'SINGLE-HIGH' : 'PRESS';
+}
 // Lock in the matchup for this snap: who called what, the leverage, and the
 // derived coverage cushion/closing factors the defense AI reads.
 function setMatchup(offPlay, defIdx) {
@@ -5346,7 +5371,7 @@ function snap() {
     applyDefCall(defIdx);
     if (!game.controlled || !game.defense.includes(game.controlled)) game.controlled = nearestToBallDefender();
     ctrlRing.visible = true; selRing.visible = false;
-  } else { defIdx = cpuDefCall(); applyDefCall(defIdx); }
+  } else { defIdx = game.defLocked ? game.cpuDefIdx : cpuDefCall(); applyDefCall(defIdx); }
   game.cpuDefIdx = defIdx;
   // Resolve the concept-vs-coverage matchup for this snap (drives the leverage
   // the coverage AI reads + the post-play "why").

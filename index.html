@@ -241,6 +241,10 @@
   <!-- Coach cam: pre-snap only, draws the called play's route art on the field. -->
   <button id="coach-btn" class="coach-btn hidden" aria-label="Coach cam: show the play art">▦&nbsp;PLAY&nbsp;ART</button>
 
+  <!-- Audible (offense pre-snap): re-open the play picker to change the call after
+       reading the defensive shell — the same coverage stays, so you adjust to it. -->
+  <button id="audible-btn" class="coach-btn audible-btn hidden" aria-label="Audible — change the play">↺&nbsp;AUDIBLE</button>
+
   <!-- Skip / simulate controls: jump to the next quarter, or fast-forward the
        whole game to the final whistle. Relocated into the pause menu (Phase 2);
        kept in the DOM so the existing handlers still drive these actions. -->
