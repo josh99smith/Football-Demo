@@ -1803,6 +1803,7 @@ const game = {
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
+  gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
   quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -2360,8 +2361,39 @@ const TEAMS = {
   },
 };
 
-// Two fixed 7-man rosters: teamA = the player's red team, teamB = the CPU's
-// blue team. Each play, setupPossession() assigns offense/defense ROLES to
+// GAUNTLET MODE: face up to three opponents back to back, each tougher than the
+// last (rising rosters + difficulty + color). Win to advance; lose and the whole
+// run restarts from the first. Each entry overwrites TEAMS.away for its round.
+const GAUNTLET_OPPONENTS = [
+  { name: 'GHOULS', abbr: 'GHL', color: '#3fae5a', diff: 'rookie', players: [
+    { name: 'ROT', pos: 'QB', r: [60, 58, 72, 76, 40] },
+    { name: 'MOLD', pos: 'OL', r: [40, 84, 72, 30, 56] },
+    { name: 'SLIME', pos: 'OL', r: [44, 80, 70, 32, 52] },
+    { name: 'WISP', pos: 'WR', r: [83, 46, 64, 74, 32] },
+    { name: 'MURK', pos: 'WR', r: [78, 52, 68, 70, 38] },
+    { name: 'GLOOM', pos: 'WR', r: [80, 50, 66, 76, 36] },
+    { name: 'LURK', pos: 'RB', r: [76, 72, 74, 68, 50] },
+  ] },
+  { name: 'DEMONS', abbr: 'DMN', color: '#2f6bd6', diff: 'pro', players: [
+    { name: 'HEX', pos: 'QB', r: [72, 70, 82, 88, 50] },
+    { name: 'BRUTE', pos: 'OL', r: [50, 96, 82, 38, 66] },
+    { name: 'GORE', pos: 'OL', r: [54, 92, 80, 42, 62] },
+    { name: 'BLAZE', pos: 'WR', r: [95, 56, 74, 86, 40] },
+    { name: 'FANG', pos: 'WR', r: [89, 64, 80, 82, 48] },
+    { name: 'VEX', pos: 'WR', r: [91, 60, 78, 88, 46] },
+    { name: 'DREAD', pos: 'RB', r: [86, 84, 84, 80, 60] },
+  ] },
+  { name: 'TITANS', abbr: 'TTN', color: '#d6a82f', diff: 'allpro', players: [
+    { name: 'COLOSSUS', pos: 'QB', r: [80, 78, 88, 95, 58] },
+    { name: 'ATLAS', pos: 'OL', r: [58, 99, 90, 46, 74] },
+    { name: 'TITAN', pos: 'OL', r: [62, 99, 88, 50, 70] },
+    { name: 'BOLT', pos: 'WR', r: [99, 64, 82, 94, 48] },
+    { name: 'QUAKE', pos: 'WR', r: [96, 72, 88, 90, 56] },
+    { name: 'STORM', pos: 'WR', r: [98, 68, 86, 96, 54] },
+    { name: 'GOLIATH', pos: 'RB', r: [94, 92, 92, 88, 68] },
+  ] },
+];
+
 // whichever team has the ball, so the same AI drives either side.
 function spawnTeams() {
   game.teamA = []; game.teamB = [];
@@ -3659,7 +3691,10 @@ function updateButtons() {
   // PLAY ART (coach cam): callable pre-snap on either side of the ball.
   if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
-  else if (s === STATE.PRESNAP) { setAction(game.gameOver ? 'REMATCH' : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn); }
+  else if (s === STATE.PRESNAP) {
+    const goLabel = (game.gauntlet && game.gauntlet.active) ? (game.gauntlet.champion ? 'AGAIN' : (game.scoreOff >= game.scoreDef ? 'NEXT' : 'RETRY')) : 'REMATCH';
+    setAction(game.gameOver ? goLabel : (onO ? 'SNAP' : 'SWITCH')); hide(turboBtn);
+  }
   else if (s === STATE.LIVE) { setAction(onO ? 'THROW' : 'SWITCH'); show(turboBtn); }
   else if (s === STATE.AIR) { onO ? hide(actionBtn) : setAction('SWITCH'); show(turboBtn); }
   else if (s === STATE.RUN) { onO ? refreshRunAction(game.carrier) : setAction('TACKLE'); show(turboBtn); }
@@ -3922,6 +3957,78 @@ function resetGame() {
   game.fireCount = 0; douseFire();
   showBanner('KICKOFF', '#ffd23a');
   newPlay();
+}
+
+// ---- Gauntlet mode --------------------------------------------------------
+function relabelScoreboard() {
+  const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
+  if (tagOff) tagOff.textContent = TEAMS.home.abbr;
+  if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+}
+// Tear down and respawn both teams (used when the opponent's roster changes).
+function rebuildTeams() {
+  for (const ch of game.all || []) {
+    if (ch.ragdoll) { try { ch.ragdoll.dispose(); } catch (e) { /* ignore */ } }
+    if (ch.group && ch.group.parent) ch.group.parent.remove(ch.group);
+  }
+  clearRagdolls();
+  spawnTeams();
+  if (TUNE.playerSize !== 1) applyPlayerSize();
+  try { applyLook(); } catch (e) { /* ignore */ }
+  try { buildPortraits(); } catch (e) { /* ignore */ }
+}
+// Swap in gauntlet opponent `i`: its roster, difficulty, color, scoreboard tag.
+function applyGauntletOpponent(i) {
+  const opp = GAUNTLET_OPPONENTS[i];
+  TEAMS.away = { name: opp.name, abbr: opp.abbr, color: opp.color, logo: TEAMS.away ? TEAMS.away.logo : null, players: opp.players };
+  game.diff = opp.diff;
+  TUNE.defenseTint = opp.color; // tint the CPU team to its color so each challenger looks distinct
+  rebuildTeams();
+  relabelScoreboard();
+  updateGauntletHud();
+}
+const gauntletHudEl = (typeof document !== 'undefined') ? document.getElementById('gauntlet-hud') : null;
+function updateGauntletHud() {
+  if (!gauntletHudEl) return;
+  const g = game.gauntlet;
+  if (!g || !g.active) { gauntletHudEl.classList.add('hidden'); return; }
+  const n = GAUNTLET_OPPONENTS.length;
+  const pips = GAUNTLET_OPPONENTS.map((o, i) => `<i class="${i < g.wins ? 'won' : i === g.round ? 'now' : ''}"></i>`).join('');
+  gauntletHudEl.innerHTML = `<b>GAUNTLET</b><span>${Math.min(g.round + 1, n)}/${n} · ${TEAMS.away.name}</span><div class="gx-pips">${pips}</div>`;
+  gauntletHudEl.classList.remove('hidden');
+}
+function startGauntlet() {
+  if (gameStarted) return;
+  game.gauntlet = { active: true, round: 0, wins: 0, champion: false };
+  applyGauntletOpponent(0); // round 1 opponent + respawn before kickoff
+  startGame();              // pregame cinematic -> play
+}
+// Pressed when a gauntlet game is over: advance on a win, restart the run on a loss.
+function gauntletNext() {
+  const g = game.gauntlet;
+  if (g.champion) { // continue after winning it all -> a fresh run
+    g.champion = false; g.round = 0; g.wins = 0;
+    applyGauntletOpponent(0); resetGame();
+    showBanner('NEW GAUNTLET', '#ffd23a'); return;
+  }
+  const won = game.scoreOff >= game.scoreDef;
+  if (won) {
+    g.wins++; g.round++;
+    if (g.round >= GAUNTLET_OPPONENTS.length) { // ran the whole gauntlet
+      g.champion = true;
+      showBanner('GAUNTLET CHAMPION! 🏆', '#ffd23a');
+      setStatus('You ran the gauntlet! Tap to play again');
+      updateGauntletHud();
+      return; // stay on the finale; next press starts a new run
+    }
+    applyGauntletOpponent(g.round); resetGame();
+    showBanner(`CHALLENGER ${g.round + 1}/${GAUNTLET_OPPONENTS.length} — ${TEAMS.away.name}`, '#3fe08a');
+  } else { // lost — start the whole gauntlet over
+    g.round = 0; g.wins = 0;
+    applyGauntletOpponent(0); resetGame();
+    showBanner('GAUNTLET FAILED — START OVER', '#ff5a3a');
+  }
+  updateGauntletHud();
 }
 
 // ---- Skip / simulate the clock ------------------------------------------
@@ -4187,7 +4294,11 @@ function enterReset(teleport) {
     game.state = STATE.PRESNAP; game.choosing = false; game.snapClock = TUNE.playClock;
     if (playSelectEl) playSelectEl.classList.add('hidden'); // never strand the play picker over the finale
     if (!game.finale) startFinale(); // kick off the winners' dance party
-    updateButtons(); setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
+    updateButtons();
+    if (game.gauntlet && game.gauntlet.active && !game.gauntlet.champion) {
+      const won = game.scoreOff >= game.scoreDef;
+      setStatus(won ? `WON ${game.scoreOff}–${game.scoreDef} — tap NEXT` : `LOST ${game.scoreOff}–${game.scoreDef} — tap RETRY`);
+    } else setStatus(`FINAL ${game.scoreOff}–${game.scoreDef} — tap REMATCH`);
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
@@ -7148,7 +7259,7 @@ function updatePlay(dt) {
   tickClock(dt); // game clock / play clock (may auto-snap on delay of game)
 
   if (game.state === STATE.PRESNAP) {
-    if (game.gameOver) { updateFinale(dt); if (actionEdge) resetGame(); }
+    if (game.gameOver) { updateFinale(dt); if (actionEdge) { if (game.gauntlet && game.gauntlet.active) gauntletNext(); else resetGame(); } }
     else if (!game.choosing) {
       if (game.userOnOffense) {
         if (actionEdge) snap();             // QB holds his spot — just snap it
@@ -7440,7 +7551,7 @@ const CINE_SHOTS = [
 const CINE_DUR = CINE_SHOTS.reduce((s, x) => s + x.dur, 0);
 const CINE_SPOT_COLS = [0xfff2e0, 0xffd9a0, 0xbcd2ff]; // stage spotlight tints (warm key + amber/cool)
 const _cineLookV = new THREE.Vector3();
-const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q']; // gameplay UI hidden during the cinematic
+const CINE_HIDE_HUD = ['hud', 'joystick', 'action-btn', 'turbo-btn', 'replay-btn', 'playresult', 'sim-q', 'gauntlet-hud']; // gameplay UI hidden during the cinematic
 let _cineSkipEl = null, _cineSkipFn = null;
 function setGroups(list, v) { if (!list) return; for (const ch of list) if (ch.group) ch.group.visible = v; }
 function setCineHud(hidden) { for (const id of CINE_HIDE_HUD) { const el = document.getElementById(id); if (el) el.style.visibility = hidden ? 'hidden' : ''; } }
@@ -8341,7 +8452,10 @@ function buildStartMenu() {
           <div class="sm-difflabel">DIFFICULTY</div>
           <div class="sm-diffs">${diffBtns}</div>
         </div>
-        <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+        <div class="sm-startwrap">
+          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+          <button id="sm-gauntlet" class="sm-start sm-gauntlet"><span>GAUNTLET</span><span class="sm-sub">3 teams · win or restart</span></button>
+        </div>
       </div>
     </div>`;
   startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
@@ -8350,6 +8464,8 @@ function buildStartMenu() {
   }));
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
+  const gbtn = document.getElementById('sm-gauntlet');
+  if (gbtn) gbtn.addEventListener('click', startGauntlet, { once: true });
 }
 let gameStarted = false;
 let _loopStarted = false;
@@ -8379,10 +8495,8 @@ function startGame() {
   if (_musicPrimed) audio.setMusicGain(GAME_MUSIC_GAIN);
   else { _musicPrimed = true; audio.playMusic(MUSIC_URL, { gain: GAME_MUSIC_GAIN }); }
   if (startMenuEl) startMenuEl.classList.add('hidden');
-  // Label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff).
-  const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
-  if (tagOff) tagOff.textContent = TEAMS.home.abbr;
-  if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+  relabelScoreboard(); // label the scoreboard with the two clubs (teamA/REAPERS = the user = scoreOff)
+  updateGauntletHud();
   startCinematic(); // pregame dancer cinematic; hands off to newPlay() when it ends/skips
   startLoop();
 }
@@ -8406,6 +8520,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
