@@ -3384,6 +3384,43 @@ function updateUserStatsHUD() {
   document.addEventListener('webkitfullscreenchange', sync);
 })();
 
+// ===========================================================================
+// Reusable UI kit (Phase 1): vanilla factories for the design-system components
+// (.ui-* classes in style.css). One button, one tabbed panel — reused across the
+// pause menu, settings, the front-end, and (later) the debug panel, so every
+// surface shares styling and behavior instead of being hand-built ad hoc.
+// ===========================================================================
+// A styled button. variant: 'primary' | 'ghost' | 'danger'. Fires onClick on a
+// real tap (unlocks audio first, like the rest of the controls).
+function uiButton(label, variant, onClick) {
+  const b = document.createElement('button');
+  b.className = `ui-btn ui-btn-${variant || 'ghost'}`;
+  b.innerHTML = label; // labels may carry an inline glyph
+  b.addEventListener('click', (e) => { e.preventDefault(); audio.unlock(); if (onClick) onClick(e); });
+  return b;
+}
+// A tabbed panel. tabs = [{ label, build(paneEl) }]. Returns the wired { bar,
+// panes } elements (caller appends them) plus a select(i) to switch tabs.
+function uiTabs(tabs) {
+  const bar = document.createElement('div'); bar.className = 'ui-tabbar';
+  const panes = document.createElement('div'); panes.className = 'ui-panes';
+  const tabEls = [], paneEls = [];
+  const select = (i) => {
+    tabEls.forEach((t, k) => t.classList.toggle('on', k === i));
+    paneEls.forEach((p, k) => p.classList.toggle('on', k === i));
+  };
+  tabs.forEach((t, i) => {
+    const tb = document.createElement('button'); tb.className = 'ui-tab'; tb.textContent = t.label;
+    tb.addEventListener('click', () => select(i));
+    const pane = document.createElement('div'); pane.className = 'ui-pane';
+    if (t.build) t.build(pane);
+    bar.appendChild(tb); panes.appendChild(pane);
+    tabEls.push(tb); paneEls.push(pane);
+  });
+  select(0);
+  return { bar, panes, select };
+}
+
 // PWA: register the service worker and show an "Install" prompt on launch (in a
 // browser tab). Uses the native beforeinstallprompt where available, with an
 // iOS Share-sheet hint as the fallback. Snoozes for a week when dismissed.
