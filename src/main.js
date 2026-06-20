@@ -6606,7 +6606,7 @@ function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
   if (!physics) return false;
   if (!ch.ragdoll) { ch.ragdoll = new TackleRagdoll(physics); ch.ragdoll.bind(ch.model); }
   ch.group.updateWorldMatrix(true, true); // snapshot the CURRENT animated pose
-  ch.ragdoll.spawn(carryVel, hitDir, hitSpeed, bit, variant);
+  ch.ragdoll.spawn(carryVel, hitDir, hitSpeed, bit, variant, TUNE.ragdollBrace || 0); // Phase 1: arms brace the fall
   ch.ragdolling = ch.ragdoll.active;
   return ch.ragdolling;
 }
@@ -7697,6 +7697,17 @@ function applyBattleArms(ch, isTackler, w = 1) {
       _tq.setFromAxisAngle(_xAxisL, 0.55 * w); ch.headBone.quaternion.multiply(_tq); // head down into the hit
       _tq.setFromAxisAngle(_YAX, 0.5 * w); ch.headBone.quaternion.multiply(_tq);      // turned to the side
       ch.headBone.updateMatrixWorld(true);
+    }
+    // Phase 1 contact IK: drive the wrap hands ONTO the carrier's torso so they grip
+    // the body instead of clamping a fixed offset in the air.
+    if (TUNE.contactIK && game.drag.active && game.carrier && ch !== game.carrier && ch.handBone) {
+      const tb = game.carrier.spineBone || game.carrier.headBone;
+      if (tb) {
+        tb.updateWorldMatrix(true, false); _hips.setFromMatrixPosition(tb.matrixWorld);
+        ch.group.updateWorldMatrix(true, true);
+        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * TUNE.contactIK);
+        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * TUNE.contactIK);
+      }
     }
   } else {
     // Carrier lowers his shoulder and braces THROUGH the hit: bends into it at the
@@ -9344,6 +9355,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
