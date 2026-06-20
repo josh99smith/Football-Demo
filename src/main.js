@@ -8882,7 +8882,7 @@ function buildStartMenu() {
         <button id="sm-vol" class="sm-vol" aria-label="Audio settings">🔊</button>
         <button id="sm-settings" class="sm-iconbtn" aria-label="Settings">⚙</button>
         <div class="sm-startwrap">
-          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-sub">Exhibition · one game</span><span class="sm-arrow">▸</span></button>
           <button id="sm-gauntlet" class="sm-start sm-gauntlet"><span>GAUNTLET</span><span class="sm-sub">3 teams · win or restart</span></button>
         </div>
       </div>
