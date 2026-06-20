@@ -2414,6 +2414,39 @@ const PLAYS = [
       return [P(sx, 5)];                                          // WRs stalk-block
     },
   },
+  {
+    name: 'SMASH', sub: 'Corner + hitch hi-lo', type: 'pass', concept: 'Smash', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const toSide = Math.sign(sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 6, 1), P(sx - 12, 3)];          // RB checkdown
+      if (e === 1) return [P(sx, 6), P(sx, 5)];                   // slot hitch (sit underneath)
+      return [P(sx, 12), P(sx + toSide * 9, 22)];                 // outside corner (high)
+    },
+  },
+  {
+    name: 'VERTS', sub: 'Four verticals', type: 'pass', concept: 'Verticals', beats: ['man'], losesTo: ['zone'],
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 5, 2), P(sx + toMid * 3, 10)];  // RB seam release
+      return [P(sx, 18), P(sx, 40)];                              // streak
+    },
+  },
+  {
+    name: 'DRAW', sub: 'HB delayed draw', run: true, type: 'run', concept: 'Draw', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 2, -1), P(0, 6), P(2, 24)];     // settle, then burst up the gut
+      return [P(sx, 3)];                                          // WRs stalk-block
+    },
+  },
+  {
+    name: 'COUNTER', sub: 'HB counter misdirect', run: true, type: 'run', concept: 'Counter', beats: ['spy'], losesTo: ['blitz'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 6, 1), P(12, 5), P(15, 23)];    // step one way, cut back the other and up
+      return [P(sx, 4)];                                          // WRs/OL down-block
+    },
+  },
 ];
 
 // Render a play's actual routes as a little SVG diagram for the call screen.
@@ -2885,7 +2918,11 @@ function updateDefense() {
     if (carrierIsRunning && carrier) {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
-      d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
+      // Run-call matchup: a run that beats the front (good blocking matchup) lets
+      // the back hit the lane before the front rallies; a bad matchup gets swarmed.
+      const runClose = (game.matchup && game.matchup.off && game.matchup.off.type === 'run') ? (game.coverClose || 1) : 1;
+      const tt = 3 / Math.max(0.5, runClose);
+      d.turbo = dist2(dp, px(carrier)) > tt * tt; // turbo to run the ball carrier down
       d.pursuit = true;
       // A blocker in his lane screens this pursuer (slows him — opens a lane).
       // Lenient on a run: a blocker near and ahead of him counts as a block.
