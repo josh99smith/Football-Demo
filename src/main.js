@@ -1816,7 +1816,7 @@ const game = {
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
   cut: { phase: null, t: 0, mid: null },// broadcast fade dip that hides the reset snap
-  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub)
+  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false, dir: 1 }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub). dir = the recorded play's attack direction so the replay frames it like the live view (not mirrored).
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
   playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
@@ -4269,6 +4269,7 @@ function preparePlay(teleport) {
   }
   setFumbleGlow(false);
   setupPossession();   // assign offense/defense roles for whoever has the ball
+  game.replay.dir = game.dir; // freeze this play's attack direction so its replay frames it like live (giveBallTo flips game.dir at the next turnover)
   placeFormation(teleport);
   // Pop the downed players up where they fell (they then jog back during RESET).
   for (const ch of downed) if (ch.actions.getup) { ch.heading = ch.resetHeading || 0; playOneShot(ch, 'getup', 1.5, true); }
@@ -7690,7 +7691,10 @@ function updateCamera(dt) {
     // camera so the new shot is already framed when we fade back up.
     const r = game.replay, ang = REPLAY_ANGLES[r.angleIdx];
     const b = ball.mesh.position;
-    const a = ang.az + r.i * ang.orbit;
+    // Orient by the recorded play's direction so the replay isn't mirrored vs the
+    // live view (the live chase-cam faces game.dir; a -Z play would otherwise show
+    // the teams on swapped sides). Rotate the preset 180° for a -Z play.
+    const a = ang.az + (r.dir < 0 ? Math.PI : 0) + r.i * ang.orbit;
     _tp.set(b.x + Math.sin(a) * ang.dist, ang.height, b.z + Math.cos(a) * ang.dist);
     if (r.snap) { cam.pos.copy(_tp); cam.lookCur.copy(b); r.snap = false; }
     else { cam.pos.lerp(_tp, Math.min(1, dt * 3)); cam.lookCur.lerp(b, Math.min(1, dt * 5)); }
@@ -8520,6 +8524,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
