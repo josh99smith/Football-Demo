@@ -1774,6 +1774,8 @@ const TUNE_DEFAULTS = {
   // World + audio
   fogColor: '#12203f', fogNear: 130, fogFar: 330,  // night haze
   masterVolume: 0.5,                               // master audio gain
+  musicVolume: 0.8, sfxVolume: 1, voiceVolume: 1,  // per-channel mix (music / SFX / commentary)
+  audioMuted: 0,                                   // 1 = mute everything
   // Debug visualization overlays (0/1)
   vizColliders: 0, vizVectors: 0, vizLabels: 0, vizLog: 0,
   // Difficulty fine-tune (multiply/offset on top of the rookie/pro/all-pro preset)
@@ -1804,6 +1806,7 @@ const game = {
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
+  paused: false, // soft-pause: the pause menu is open and the sim loop is frozen
   quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -1816,10 +1819,11 @@ const game = {
   scrum: { active: false, val: 0.5, timer: 0, x: 0, z: 0, cd: 0, crew: [] }, // loose-ball pile mash
   resetTimer: 0,                        // between-plays walk-back countdown
   cut: { phase: null, t: 0, mid: null },// broadcast fade dip that hides the reset snap
-  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub)
+  replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false, dir: 1 }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub). dir = the recorded play's attack direction so the replay frames it like the live view (not mirrored).
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
-  playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
+  playIndex: 0, defCall: 0, choosing: false, psPage: 0, psCat: 'all', cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / play-select category filter / CPU last call / CPU snap timer
+  lastPlayIndex: -1, // the offensive play actually run last (for the "LAST" tag in play-select)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -2017,7 +2021,81 @@ function applyLook() {
 function applyFog() {
   if (scene.fog) { scene.fog.color.set(TUNE.fogColor); scene.fog.near = TUNE.fogNear; scene.fog.far = TUNE.fogFar; }
 }
-function applyAudio() { try { if (audio && audio.master) audio.master.gain.value = TUNE.masterVolume; } catch (e) { /* audio not ready */ } }
+function applyAudio() {
+  try {
+    audio.applyVolumes({
+      master: TUNE.masterVolume, music: TUNE.musicVolume,
+      sfx: TUNE.sfxVolume, voice: TUNE.voiceVolume, muted: !!TUNE.audioMuted,
+    });
+  } catch (e) { /* audio not ready */ }
+  syncVolUI();
+}
+// Persist just the audio knobs into the shared tune store (coexists with the
+// debug panel's Save — only the volume keys are touched).
+function persistAudio() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const cur = JSON.parse(localStorage.getItem(TUNE_STORE_KEY) || '{}');
+    for (const k of ['masterVolume', 'musicVolume', 'sfxVolume', 'voiceVolume', 'audioMuted']) cur[k] = TUNE[k];
+    localStorage.setItem(TUNE_STORE_KEY, JSON.stringify(cur));
+  } catch (e) { /* ignore */ }
+}
+// Player-facing volume controls: master + music/SFX/commentary sliders and a mute
+// toggle, in a popover (the 🔊 HUD button) and mirrored on the start menu.
+const VOL_CHANNELS = [
+  { key: 'masterVolume', label: 'Master' }, { key: 'musicVolume', label: 'Music' },
+  { key: 'sfxVolume', label: 'Sound FX' }, { key: 'voiceVolume', label: 'Commentary' },
+];
+function syncVolUI() {
+  const muted = !!TUNE.audioMuted;
+  const vb = document.getElementById('vol-btn');
+  if (vb) { vb.classList.toggle('muted', muted); vb.textContent = muted ? '🔇' : '🔊'; }
+  document.querySelectorAll('.sm-vol').forEach((b) => { b.classList.toggle('muted', muted); b.textContent = muted ? '🔇' : '🔊'; });
+  const panel = document.getElementById('volpanel');
+  if (panel && !panel.classList.contains('hidden')) {
+    panel.querySelectorAll('input[type=range]').forEach((s) => {
+      const v = TUNE[s.dataset.key]; s.value = String(v);
+      const out = panel.querySelector(`.vp-val[data-key="${s.dataset.key}"]`); if (out) out.textContent = Math.round(v * 100) + '%';
+    });
+    const mb = panel.querySelector('.vp-mute'); if (mb) mb.classList.toggle('on', muted);
+  }
+}
+function buildVolPanel() {
+  const panel = document.getElementById('volpanel'); if (!panel || panel.dataset.built) return;
+  panel.dataset.built = '1';
+  const rows = VOL_CHANNELS.map(({ key, label }) =>
+    `<div class="vp-row"><label>${label}<span class="vp-val" data-key="${key}">${Math.round(TUNE[key] * 100)}%</span></label>
+     <input type="range" min="0" max="1" step="0.05" value="${TUNE[key]}" data-key="${key}" aria-label="${label} volume"></div>`).join('');
+  panel.innerHTML = `<div class="vp-head"><span>Audio</span><button class="vp-mute" type="button">Mute</button></div>${rows}`;
+  panel.addEventListener('input', (e) => {
+    const s = e.target; if (!s.dataset || !s.dataset.key) return;
+    audio.unlock(); // a slider drag is a gesture — make sure sound is live
+    TUNE[s.dataset.key] = +s.value;
+    applyAudio(); persistAudio();
+  });
+  panel.querySelector('.vp-mute').addEventListener('click', () => { audio.unlock(); toggleMute(); });
+}
+function toggleMute() { TUNE.audioMuted = TUNE.audioMuted ? 0 : 1; applyAudio(); persistAudio(); }
+function toggleVolPanel(force) {
+  buildVolPanel();
+  const panel = document.getElementById('volpanel'); if (!panel) return;
+  const show = force !== undefined ? force : panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !show);
+  if (show) { audio.unlock(); syncVolUI(); }
+}
+function setupVolumeUI() {
+  const vb = document.getElementById('vol-btn');
+  if (vb) vb.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleVolPanel(); });
+  // Tap-away / Escape closes the popover.
+  document.addEventListener('pointerdown', (e) => {
+    const panel = document.getElementById('volpanel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (panel.contains(e.target) || (vb && vb.contains(e.target))) return;
+    toggleVolPanel(false);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleVolPanel(false); });
+  syncVolUI();
+}
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
   // spark physics (gravity + air drag + fade; glitter twinkles)
@@ -3112,7 +3190,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -3281,6 +3359,9 @@ function updateUserStatsHUD() {
 // Fullscreen toggle — on mobile this hides the browser address bar so the play
 // isn't cut off at the top. (No-op on iOS Safari, which lacks the API; use Add
 // to Home Screen there.)
+// Exposed so the pause menu's "Fullscreen" button can drive the same toggle
+// (the on-field #fs-btn is now hidden — relocated into the menu).
+let toggleFullscreen = null, fsAvailable = false;
 (function fullscreen() {
   const fsBtn = document.getElementById('fs-btn');
   const root = document.documentElement;
@@ -3289,6 +3370,7 @@ function updateUserStatsHUD() {
   // can't work — hide it and tell the player how to get there instead.
   const canFs = !!(root.requestFullscreen || root.webkitRequestFullscreen);
   if (!canFs) { fsBtn.style.display = 'none'; return; }
+  fsAvailable = true;
   const active = () => document.fullscreenElement || document.webkitFullscreenElement;
   const sync = () => fsBtn.classList.toggle('on', !!active());
   let lastTouch = 0;
@@ -3304,9 +3386,324 @@ function updateUserStatsHUD() {
   // reliably registers, and guard the synthetic click so it doesn't re-toggle.
   fsBtn.addEventListener('touchend', (e) => { lastTouch = Date.now(); toggle(e); }, { passive: false });
   fsBtn.addEventListener('click', (e) => { if (Date.now() - lastTouch < 700) return; toggle(e); });
+  toggleFullscreen = () => toggle({ preventDefault() {}, stopPropagation() {} });
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('webkitfullscreenchange', sync);
 })();
+
+// ===========================================================================
+// Reusable UI kit (Phase 1): vanilla factories for the design-system components
+// (.ui-* classes in style.css). One button, one tabbed panel — reused across the
+// pause menu, settings, the front-end, and (later) the debug panel, so every
+// surface shares styling and behavior instead of being hand-built ad hoc.
+// ===========================================================================
+// A styled button. variant: 'primary' | 'ghost' | 'danger'. Fires onClick on a
+// real tap (unlocks audio first, like the rest of the controls).
+function uiButton(label, variant, onClick) {
+  const b = document.createElement('button');
+  b.className = `ui-btn ui-btn-${variant || 'ghost'}`;
+  b.innerHTML = label; // labels may carry an inline glyph
+  b.addEventListener('click', (e) => { e.preventDefault(); audio.unlock(); if (onClick) onClick(e); });
+  return b;
+}
+// A tabbed panel. tabs = [{ label, build(paneEl) }]. Returns the wired { bar,
+// panes } elements (caller appends them) plus a select(i) to switch tabs.
+function uiTabs(tabs) {
+  const bar = document.createElement('div'); bar.className = 'ui-tabbar';
+  const panes = document.createElement('div'); panes.className = 'ui-panes';
+  const tabEls = [], paneEls = [];
+  const select = (i) => {
+    tabEls.forEach((t, k) => t.classList.toggle('on', k === i));
+    paneEls.forEach((p, k) => p.classList.toggle('on', k === i));
+  };
+  tabs.forEach((t, i) => {
+    const tb = document.createElement('button'); tb.className = 'ui-tab'; tb.textContent = t.label;
+    tb.addEventListener('click', () => { uiSound('nav'); select(i); });
+    const pane = document.createElement('div'); pane.className = 'ui-pane';
+    if (t.build) t.build(pane);
+    bar.appendChild(tb); panes.appendChild(pane);
+    tabEls.push(tb); paneEls.push(pane);
+  });
+  select(0);
+  return { bar, panes, select };
+}
+
+// A labeled slider row. opts: { min, max, step, value, format(v), onInput(v) }.
+function uiSlider(label, opts) {
+  const wrap = document.createElement('label'); wrap.className = 'ui-field';
+  const top = document.createElement('div'); top.className = 'ui-field-top';
+  const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+  const val = document.createElement('span'); val.className = 'ui-field-val';
+  const fmt = opts.format || ((v) => v);
+  const range = document.createElement('input'); range.type = 'range';
+  range.min = opts.min; range.max = opts.max; range.step = opts.step != null ? opts.step : 1; range.value = opts.value;
+  val.textContent = fmt(+range.value);
+  range.addEventListener('input', () => { const v = +range.value; val.textContent = fmt(v); if (opts.onInput) opts.onInput(v); });
+  top.appendChild(name); top.appendChild(val);
+  wrap.appendChild(top); wrap.appendChild(range);
+  return wrap;
+}
+// A labeled on/off toggle (styled switch).
+function uiToggle(label, value, onChange) {
+  const wrap = document.createElement('label'); wrap.className = 'ui-field ui-toggle';
+  const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+  const sw = document.createElement('button'); sw.type = 'button'; sw.className = 'ui-switch'; sw.setAttribute('role', 'switch');
+  const set = (v) => { sw.classList.toggle('on', !!v); sw.setAttribute('aria-checked', String(!!v)); };
+  set(value);
+  sw.addEventListener('click', () => { const v = !sw.classList.contains('on'); set(v); audio.unlock(); onChange(v); });
+  wrap.appendChild(name); wrap.appendChild(sw);
+  return wrap;
+}
+// A segmented control (mutually exclusive). options = [{ label, value }].
+function uiSegmented(label, options, value, onChange) {
+  const wrap = document.createElement('div'); wrap.className = 'ui-field';
+  if (label) {
+    const top = document.createElement('div'); top.className = 'ui-field-top';
+    const name = document.createElement('span'); name.className = 'ui-field-label'; name.textContent = label;
+    top.appendChild(name); wrap.appendChild(top);
+  }
+  const seg = document.createElement('div'); seg.className = 'ui-seg';
+  options.forEach((o) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'ui-seg-btn'; b.textContent = o.label;
+    b.classList.toggle('on', o.value === value);
+    b.addEventListener('click', () => {
+      seg.querySelectorAll('.ui-seg-btn').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on'); audio.unlock(); uiSound('nav'); onChange(o.value);
+    });
+    seg.appendChild(b);
+  });
+  wrap.appendChild(seg);
+  return wrap;
+}
+// Menu-navigation sound hook — handed to the audio session: it implements
+// audio.menu(kind) if/when it wants menu SFX; until then this is a silent no-op
+// (we stay out of the audio lane and don't invent sounds here).
+function uiSound(kind) { try { if (audio && audio.menu) audio.menu(kind); } catch (e) { /* ignore */ } }
+// Graceful modal close shared by every .ui-modal: play the close transition, then
+// hide — or hide instantly when Reduced motion is on. One motion language for all
+// the menus (pause / settings / …).
+function uiHideModal(el) {
+  if (!el || el.classList.contains('hidden')) return;
+  if (_reducedMotion) { el.classList.remove('ui-closing'); el.classList.add('hidden'); return; }
+  el.classList.add('ui-closing');
+  let done = false;
+  const finish = () => { if (done) return; done = true; el.classList.remove('ui-closing'); el.classList.add('hidden'); };
+  el.addEventListener('animationend', finish, { once: true });
+  setTimeout(finish, 240); // fallback if animationend doesn't fire (e.g. display change)
+}
+
+// ===========================================================================
+// Pause menu (Phase 2): the single reachable hub for control. Soft-pauses the
+// sim (game.paused gates the loop in simStep) and presents Resume / Game
+// utilities / How-to-play in a tabbed modal built from the Phase-1 UI kit.
+// Reachable any time a game is in progress: the top-right button or Esc / P.
+// ===========================================================================
+const pauseBtn = document.getElementById('pause-btn');
+const pauseMenuEl = document.getElementById('pausemenu');
+
+// Controls reference shown in the How-to-play tab.
+const PAUSE_HOWTO_HTML = `
+  <dt>Move</dt><dd>Left joystick (touch) or WASD / arrow keys.</dd>
+  <dt>Turbo</dt><dd>The TURBO button or hold Shift — a burst of speed; the meter drains and recharges.</dd>
+  <dt>Action</dt><dd>The right ACTION button is contextual: SNAP the ball, THROW, JUKE, HURDLE, STIFF-ARM, DIVE, or TACKLE depending on the moment.</dd>
+  <dt>Switch (on defense)</dt><dd>Tap ACTION / SWITCH to take control of the defender nearest the ball.</dd>
+  <dt>Catch your pass</dt><dd>While your throw is in the air, pick a style — RAC (run after catch), POSSESSION (secure), or AGGRESSIVE (high-point). Desktop: Space / Q / E.</dd>
+  <dt>Pitch</dt><dd>Press F to lateral the ball to a trailing teammate.</dd>
+  <dt>Pause</dt><dd>This menu — Esc or P, or the ❚❚ button.</dd>
+`;
+
+function buildPauseMenu() {
+  if (!pauseMenuEl) return;
+  pauseMenuEl.innerHTML = '';
+  const panel = document.createElement('div'); panel.className = 'ui-panel';
+
+  const head = document.createElement('div'); head.className = 'ui-panel-head';
+  const title = document.createElement('div'); title.className = 'ui-panel-title'; title.textContent = 'PAUSED';
+  const close = document.createElement('button'); close.className = 'ui-panel-close'; close.setAttribute('aria-label', 'Resume'); close.textContent = '×';
+  close.addEventListener('click', () => closePause());
+  head.appendChild(title); head.appendChild(close);
+
+  const { bar, panes } = uiTabs([
+    { label: 'Resume', build: (p) => {
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        stack.appendChild(uiButton('▶&nbsp; RESUME', 'primary', () => closePause()));
+        stack.appendChild(uiButton('⚙&nbsp; SETTINGS', 'ghost', () => openSettings()));
+        const note = document.createElement('div'); note.className = 'pm-resume-note';
+        note.textContent = 'The game is frozen while this menu is open. Tap outside, press Esc, or hit Resume to get back to the action.';
+        stack.appendChild(note);
+        p.appendChild(stack);
+    } },
+    { label: 'Game', build: (p) => {
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        const row = document.createElement('div'); row.className = 'ui-btnrow';
+        row.appendChild(uiButton('SKIP QTR&nbsp;⏭', 'ghost', () => { closePause(); skipQuarter(); }));
+        row.appendChild(uiButton('SIM GAME&nbsp;⏭⏭', 'ghost', () => { closePause(); simToGameEnd(); }));
+        stack.appendChild(row);
+        if (fsAvailable) stack.appendChild(uiButton('TOGGLE FULLSCREEN&nbsp;⛶', 'ghost', () => { if (toggleFullscreen) toggleFullscreen(); }));
+        stack.appendChild(uiButton('RESTART GAME', 'ghost', () => { closePause(); resetGame(); }));
+        stack.appendChild(uiButton('QUIT TO MENU', 'danger', () => quitToMenu()));
+        p.appendChild(stack);
+    } },
+    { label: 'How to Play', build: (p) => {
+        const dl = document.createElement('dl'); dl.className = 'pm-how';
+        dl.innerHTML = PAUSE_HOWTO_HTML;
+        p.appendChild(dl);
+    } },
+  ]);
+
+  panel.appendChild(head); panel.appendChild(bar); panel.appendChild(panes);
+  pauseMenuEl.appendChild(panel);
+  // Tap the scrim (outside the panel) to resume.
+  pauseMenuEl.addEventListener('pointerdown', (e) => { if (e.target === pauseMenuEl) closePause(); });
+}
+
+// Pause is reachable whenever a game is actually in progress (not the start menu,
+// the pregame cinematic, or the Contact Lab).
+function pauseAllowed() { return gameStarted && !game.lab && !game.cinematic; }
+function openPause() {
+  if (!pauseMenuEl || game.paused || !pauseAllowed()) return;
+  game.paused = true;
+  document.body.classList.add('paused');
+  pauseMenuEl.classList.remove('ui-closing', 'hidden');
+  uiSound('open');
+}
+function closePause() {
+  if (!game.paused) return;
+  game.paused = false;
+  document.body.classList.remove('paused');
+  uiHideModal(pauseMenuEl);
+  uiSound('close');
+}
+function togglePause() { if (game.paused) closePause(); else openPause(); }
+// Cleanest reliable return to the matchup screen: reload (the start menu gates the
+// kickoff again). The demo holds nothing in memory that needs preserving.
+function quitToMenu() {
+  closePause();
+  if (typeof location !== 'undefined' && location.reload) location.reload();
+}
+// Show the pause button only while a game is in progress.
+function syncPauseBtn() {
+  if (!pauseBtn) return;
+  const show = pauseAllowed();
+  pauseBtn.classList.toggle('hidden', !show);
+  if (!show && game.paused) closePause(); // never strand the menu open across a mode change
+}
+(function wirePause() {
+  buildPauseMenu();
+  if (!pauseBtn) return;
+  const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); togglePause(); };
+  pauseBtn.addEventListener('touchstart', go, { passive: false });
+  pauseBtn.addEventListener('mousedown', go);
+})();
+
+// ===========================================================================
+// Settings (Phase 4): a standalone tabbed modal reachable from the pause menu
+// and the start menu. Every control binds to an EXISTING live knob (TUNE.* read
+// each frame, or an apply* call) — no new plumbing — and persists to localStorage
+// so a player's setup survives reloads. Audio defers to the audio session's mixer
+// (#volpanel) so we stay out of that lane (no edits to src/audio.js).
+// ===========================================================================
+const settingsMenuEl = document.getElementById('settingsmenu');
+const SETTINGS_KEY = 'rfSettings';
+let _reducedMotion = false; // gated in ScreenShake (tames the camera shake)
+// Player-facing settings and their live state (seeded from the current knobs).
+const settings = {
+  showFps: false,
+  brightness: TUNE.exposure,   // renderer tone-mapping exposure
+  shake: TUNE.shakeAmt,        // × screen shake
+  camDist: TUNE.camDist,       // × chase distance
+  camHeight: TUNE.camHeight,   // × chase height
+  quarterLen: TUNE.quarterLen, // seconds per quarter (applies next quarter)
+  diff: game.diff,             // rookie / pro / allpro
+  textScale: 1.0,              // UI text scale (hooks the fluid-type tokens)
+  highContrast: false,
+  reducedMotion: false,
+};
+function applySetting(key) {
+  const v = settings[key];
+  switch (key) {
+    case 'showFps': if (fpsEl) fpsEl.style.display = v ? '' : 'none'; break;
+    case 'brightness': TUNE.exposure = v; try { applyLighting(); } catch (e) { /* pre-scene */ } break;
+    case 'shake': TUNE.shakeAmt = v; break;
+    case 'camDist': TUNE.camDist = v; break;
+    case 'camHeight': TUNE.camHeight = v; break;
+    case 'quarterLen': TUNE.quarterLen = v; break;
+    case 'diff': game.diff = v; break;
+    case 'textScale': document.documentElement.style.setProperty('--ui-scale', v); break;
+    case 'highContrast': document.body.classList.toggle('high-contrast', !!v); break;
+    case 'reducedMotion': _reducedMotion = !!v; document.body.classList.toggle('reduced-motion', !!v); break;
+  }
+}
+function applyAllSettings() { for (const k in settings) applySetting(k); }
+function saveSettings() {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ }
+}
+function loadSettings() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      for (const k in settings) if (s[k] !== undefined) settings[k] = s[k];
+    }
+  } catch (e) { /* ignore corrupt storage */ }
+  applyAllSettings();
+}
+// Set + apply + persist in one shot (the onChange for every control).
+function setSetting(key, v) { settings[key] = v; applySetting(key); saveSettings(); }
+
+function buildSettings() {
+  if (!settingsMenuEl) return;
+  settingsMenuEl.innerHTML = '';
+  const panel = document.createElement('div'); panel.className = 'ui-panel';
+  const head = document.createElement('div'); head.className = 'ui-panel-head';
+  const title = document.createElement('div'); title.className = 'ui-panel-title'; title.textContent = 'SETTINGS';
+  const close = document.createElement('button'); close.className = 'ui-panel-close'; close.setAttribute('aria-label', 'Close'); close.textContent = '×';
+  close.addEventListener('click', () => closeSettings());
+  head.appendChild(title); head.appendChild(close);
+
+  const note = (text) => { const d = document.createElement('div'); d.className = 'ui-section-note'; d.textContent = text; return d; };
+  const { bar, panes } = uiTabs([
+    { label: 'Audio', build: (p) => {
+        p.appendChild(note('Master, music, SFX, and commentary levels live in the audio mixer.'));
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        // Close Settings first so the mixer (the audio session's #volpanel) isn't
+        // hidden behind this modal.
+        stack.appendChild(uiButton('🔊&nbsp; OPEN AUDIO MIXER', 'primary', () => { closeSettings(); if (typeof toggleVolPanel === 'function') toggleVolPanel(true); }));
+        p.appendChild(stack);
+    } },
+    { label: 'Video', build: (p) => {
+        p.appendChild(uiSlider('Brightness', { min: 0.7, max: 2.0, step: 0.05, value: settings.brightness, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('brightness', v) }));
+        p.appendChild(uiToggle('Show FPS counter', settings.showFps, (v) => setSetting('showFps', v)));
+    } },
+    { label: 'Gameplay', build: (p) => {
+        p.appendChild(uiSegmented('Difficulty', [
+          { label: DIFF.rookie.label, value: 'rookie' }, { label: DIFF.pro.label, value: 'pro' }, { label: DIFF.allpro.label, value: 'allpro' },
+        ], settings.diff, (v) => { setSetting('diff', v); syncStartDiff(); }));
+        p.appendChild(uiSlider('Quarter length', { min: 30, max: 180, step: 15, value: settings.quarterLen, format: (v) => `${v}s`, onInput: (v) => setSetting('quarterLen', v) }));
+        p.appendChild(note('Quarter length applies from the next quarter.'));
+    } },
+    { label: 'Camera', build: (p) => {
+        p.appendChild(uiSlider('Chase distance', { min: 0.7, max: 1.5, step: 0.05, value: settings.camDist, format: (v) => `${v.toFixed(2)}×`, onInput: (v) => setSetting('camDist', v) }));
+        p.appendChild(uiSlider('Chase height', { min: 0.7, max: 1.5, step: 0.05, value: settings.camHeight, format: (v) => `${v.toFixed(2)}×`, onInput: (v) => setSetting('camHeight', v) }));
+        p.appendChild(uiSlider('Screen shake', { min: 0, max: 1.5, step: 0.05, value: settings.shake, format: (v) => v === 0 ? 'off' : `${Math.round(v * 100)}%`, onInput: (v) => setSetting('shake', v) }));
+    } },
+    { label: 'Access', build: (p) => {
+        p.appendChild(uiSlider('Text size', { min: 0.9, max: 1.3, step: 0.05, value: settings.textScale, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('textScale', v) }));
+        p.appendChild(uiToggle('Reduced motion', settings.reducedMotion, (v) => setSetting('reducedMotion', v)));
+        p.appendChild(uiToggle('High contrast', settings.highContrast, (v) => setSetting('highContrast', v)));
+        p.appendChild(note('Reduced motion tames the camera shake and big-hit flashes.'));
+    } },
+  ]);
+  panel.appendChild(head); panel.appendChild(bar); panel.appendChild(panes);
+  settingsMenuEl.appendChild(panel);
+  settingsMenuEl.addEventListener('pointerdown', (e) => { if (e.target === settingsMenuEl) closeSettings(); });
+}
+function openSettings() { if (!settingsMenuEl) return; buildSettings(); settingsMenuEl.classList.remove('ui-closing', 'hidden'); uiSound('open'); }
+function closeSettings() { uiHideModal(settingsMenuEl); uiSound('close'); }
+// Keep the start-menu difficulty buttons in step when difficulty is changed here.
+function syncStartDiff() {
+  if (!startMenuEl) return;
+  startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b.dataset.diff === game.diff));
+}
 
 // PWA: register the service worker and show an "Install" prompt on launch (in a
 // browser tab). Uses the native beforeinstallprompt where available, with an
@@ -3375,23 +3772,44 @@ const psPrev = document.getElementById('ps-prev');
 const psNext = document.getElementById('ps-next');
 const psDots = document.getElementById('ps-dots');
 const playCards = playSelectEl ? [...playSelectEl.querySelectorAll('.ps-card')] : [];
-// Precompute card bodies once: offense = route art, defense = a scheme tag.
-const offCardHTML = PLAYS.map((pl, i) => `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>`);
-const defCardHTML = DEF_PLAYS.map((d, i) => `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>`);
-function psList() { return game.userOnOffense ? offCardHTML : defCardHTML; }
+const psCatsEl = document.getElementById('ps-cats');
+// Each entry carries its ABSOLUTE play index (so a filtered/paged view still maps
+// back to the real PLAYS/DEF_PLAYS index when chosen) + a category for filtering.
+const offEntries = PLAYS.map((pl, i) => ({ idx: i, cat: pl.run ? 'run' : 'pass', html: `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>` }));
+const defEntries = DEF_PLAYS.map((d, i) => ({ idx: i, cat: 'all', html: `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>` }));
+// Offense play-call categories (filter chips). Defense (4 calls) shows no chips.
+const PS_CATS = [{ id: 'all', label: 'ALL' }, { id: 'pass', label: 'PASS' }, { id: 'run', label: 'RUN' }];
+function psList() {
+  if (!game.userOnOffense) return defEntries;
+  return game.psCat === 'all' ? offEntries : offEntries.filter((e) => e.cat === game.psCat);
+}
 function psPageCount() { return Math.max(1, Math.ceil(psList().length / PS_PAGE)); }
+// Filter chips: build once, reflect the active category; hidden on defense.
+function renderPSCats() {
+  if (!psCatsEl) return;
+  if (!game.userOnOffense) { psCatsEl.classList.add('hidden'); psCatsEl.innerHTML = ''; return; }
+  psCatsEl.classList.remove('hidden');
+  psCatsEl.innerHTML = PS_CATS.map((c) => `<button class="ps-cat${c.id === game.psCat ? ' on' : ''}" data-cat="${c.id}">${c.label}</button>`).join('');
+  psCatsEl.querySelectorAll('.ps-cat').forEach((b) => {
+    const go = (e) => { e.preventDefault(); audio.unlock(); if (game.psCat === b.dataset.cat) return; game.psCat = b.dataset.cat; game.psPage = 0; audio.juke(); renderPSCats(); renderPSPage(); };
+    b.addEventListener('touchstart', go, { passive: false });
+    b.addEventListener('mousedown', go);
+  });
+}
 // Render the cards for the current page, plus arrows + dot indicators.
 function renderPSPage() {
-  const off = game.userOnOffense, html = psList(), sel = off ? game.playIndex : game.defCall;
+  const off = game.userOnOffense, list = psList(), sel = off ? game.playIndex : game.defCall;
   const pages = psPageCount();
   game.psPage = Math.max(0, Math.min(game.psPage, pages - 1));
   const start = game.psPage * PS_PAGE;
   playSelectEl.classList.toggle('def-call', !off);
   playCards.forEach((c, slot) => {
-    const idx = start + slot;
-    if (idx < html.length) {
-      c.innerHTML = html[idx]; c.dataset.idx = idx;
-      c.classList.toggle('chosen', idx === sel); c.classList.remove('hidden');
+    const entry = list[start + slot];
+    if (entry) {
+      c.innerHTML = entry.html; c.dataset.idx = entry.idx;
+      c.classList.toggle('chosen', entry.idx === sel);
+      c.classList.toggle('last', off && entry.idx === game.lastPlayIndex && entry.idx !== sel);
+      c.classList.remove('hidden');
     } else { c.classList.add('hidden'); c.dataset.idx = -1; }
   });
   // Arrows only matter when there's more than one page.
@@ -3409,9 +3827,11 @@ function openPlaySelect() {
   const off = game.userOnOffense;
   if (psTitle) psTitle.textContent = off ? 'CHOOSE YOUR PLAY' : 'CALL YOUR DEFENSE';
   if (psSide) psSide.textContent = off ? 'OFFENSE' : 'DEFENSE';
+  game.psCat = 'all'; // always open on the full list; the chips are an optional filter
   // Open on the page that holds the current selection.
   const sel = off ? game.playIndex : game.defCall;
   game.psPage = Math.floor((sel || 0) / PS_PAGE);
+  renderPSCats();
   renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
@@ -3449,6 +3869,11 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
+    // Pause menu: P toggles it, Esc closes it. While paused the sim is frozen, so
+    // swallow gameplay keys (so a press doesn't queue an action for the resume).
+    if (e.code === 'KeyP' && !dbgCam.on) { togglePause(); keys[e.code] = true; return; }
+    if (e.code === 'Escape' && game.paused) { closePause(); keys[e.code] = true; return; }
+    if (game.paused) { keys[e.code] = true; return; }
     if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
     if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
     if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
@@ -3464,7 +3889,7 @@ window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyP') { dbgCam.shot = true; return; }
     }
     if (game.choosing) {
-      if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
+      if (/^Digit[1-4]$/.test(e.code)) { const card = playCards[+e.code.slice(5) - 1]; const idx = card ? +card.dataset.idx : -1; if (idx >= 0) choosePlay(idx); } // pick the Nth VISIBLE card (honors the active filter/page)
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
       else if (e.code === 'ArrowRight' || e.code === 'KeyD') psFlip(1);
     }
@@ -3560,11 +3985,16 @@ function playerCardHTML(player, kind) {
   const vals = RAT_KEYS.map((k) => player.rt[k + 'R']);
   const team = game.teamA && game.teamA.includes(player) ? 'home' : 'away';
   const port = portraitCache[`${team}_${kind}`];
-  const img = port ? `<img class="pc-portrait" src="${port}" alt="">` : '<div class="pc-portrait"></div>';
-  return `<div class="pc-card pc-${team}">${img}<div class="pc-ovr">${ovr(vals)}</div>`
-    + `<div class="pc-body"><div class="pc-name">${player.surname || ''}</div>`
-    + `<div class="pc-pos">${player.pos || player.role} · ${KIND_LABEL[kind]}</div>`
-    + `<div class="pc-stat">${statLine(player.stats || blankStats(), kind)}</div></div></div>`;
+  const img = port ? `<img class="pc-portrait" src="${port}" alt="">` : '';
+  return `<div class="pc-card pc-${team}">`
+    + `<div class="pc-shine"></div>${img}`
+    + `<div class="pc-kind">${KIND_LABEL[kind]}</div>`
+    + `<div class="pc-ovr"><b>${ovr(vals)}</b><i>OVR</i></div>`
+    + `<div class="pc-body">`
+    + `<div class="pc-name">${player.surname || ''}</div>`
+    + `<div class="pc-pos">${player.pos || player.role || ''}</div>`
+    + `<div class="pc-stat">${statLine(player.stats || blankStats(), kind)}</div>`
+    + `</div></div>`;
 }
 function showPlayerCards(result) {
   if (!playerCardsEl) return;
@@ -3596,13 +4026,16 @@ function restoreCardPose(ch) {
 function buildPortraits() {
   if (!charTemplate || !game.teamA || !game.teamA.length) return;
   try {
-    const W = 320, H = 360;
+    const W = 340, H = 440;
     const rt = new THREE.WebGLRenderTarget(W, H, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
     const pScene = new THREE.Scene();
-    pScene.add(new THREE.HemisphereLight(0xffffff, 0x55555f, 1.8));
-    pScene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    const dl = new THREE.DirectionalLight(0xffffff, 2.0); dl.position.set(2.5, 4, 3.5); pScene.add(dl);
-    const rim = new THREE.DirectionalLight(0x9ec0ff, 0.9); rim.position.set(-3, 2, -2); pScene.add(rim);
+    // Dramatic-but-readable studio light: a strong key + a camera-side fill so the
+    // dark Reaper armor reads, plus a cool rim for edge separation against any bg.
+    pScene.add(new THREE.HemisphereLight(0xffffff, 0x44485a, 2.4));
+    pScene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const dl = new THREE.DirectionalLight(0xffffff, 3.4); dl.position.set(2.6, 4.2, 3.6); pScene.add(dl);
+    const fill = new THREE.DirectionalLight(0xfff2e0, 1.5); fill.position.set(-1.6, 1.6, 4.2); pScene.add(fill); // warm camera-side fill
+    const rim = new THREE.DirectionalLight(0x9ec8ff, 1.9); rim.position.set(-3.2, 2.8, -2.6); pScene.add(rim); // cool back rim
     const pCam = new THREE.PerspectiveCamera(30, W / H, 0.1, 100);
     const ball = new THREE.Mesh(new THREE.SphereGeometry(0.5, 18, 12), new THREE.MeshStandardMaterial({ color: 0x6f3a18, roughness: 0.65 }));
     ball.scale.set(0.42, 0.42, 0.66);
@@ -3621,7 +4054,9 @@ function buildPortraits() {
         rep.group.updateMatrixWorld(true);
         if (kind !== 'def' && rep.handBone) { rep.handBone.getWorldPosition(_wp); ball.position.copy(_wp).add(new THREE.Vector3(0, 0, 0.12)); pScene.add(ball); }
         else pScene.remove(ball);
-        pCam.position.set(0.12, 1.5, 2.25); pCam.lookAt(0, 1.42, 0); // bust framing: helmet + upper body
+        // Frame the full dynamic figure (helmet → mid-thigh) with headroom so a
+        // raised throwing arm / the ball never clips the top of the crop.
+        pCam.position.set(0.1, 1.5, 3.7); pCam.lookAt(0, 1.3, 0);
         renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
         renderer.render(pScene, pCam);
         renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
@@ -3703,6 +4138,37 @@ function updateButtons() {
   else if (s === STATE.BATTLE) { setAction('MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
 }
+
+// ---- UI state machine (Phase 3): progressive disclosure -------------------
+// Map the game state to a coarse UI phase and publish it on <body data-ui>, so
+// HUD visibility is DECLARED IN ONE PLACE (the data-ui rules in style.css) rather
+// than scattered across .hidden toggles. Each phase reveals only its essentials:
+//   live      — scoreboard + the contextual ACTION/TURBO + joystick (nothing else)
+//   presnap   — scoreboard + SNAP/SWITCH + coach-cam toggle + the matchup cards
+//   choosing  — the play-select deck only; the field stays calm
+//   dead      — the post-play result readout + cards
+//   replay / cinematic / gameover / menu / lab — handled by their own chrome
+let _uiPhase = '';
+function uiPhaseFor() {
+  if (game.lab) return 'lab';
+  if (game.cinematic) return 'cinematic';
+  if (!gameStarted) return 'menu';
+  const s = game.state;
+  if (s === STATE.REPLAY) return 'replay';
+  if (game.gameOver) return 'gameover';
+  if (s === STATE.PRESNAP) return game.choosing ? 'choosing' : 'presnap';
+  if (s === STATE.DEAD || s === STATE.RESET) return 'dead';
+  return 'live'; // LIVE / AIR / RUN / RETURN / LOOSE / TACKLE / BATTLE — ball in play
+}
+function applyUIState() {
+  const p = uiPhaseFor();
+  if (p !== _uiPhase) { _uiPhase = p; document.body.dataset.ui = p; }
+  // Cinematic moments (a touchdown celebration, the end-game finale, or the
+  // broadcast cut between plays): clear the gameplay controls so the camera work
+  // reads clean. The FX layers already run; we just gate the HUD group.
+  const cineMoment = !!(game.celebrating || game.finale || (game.cut && game.cut.phase));
+  document.body.classList.toggle('cine-moment', cineMoment);
+}
 // Decide what the contextual ACTION does for the ball carrier right now, and the
 // label to show. Captures the exact defender in the path and gates on cooldown,
 // so HURDLE / STIFF ARM only light up when they're actually available.
@@ -3761,6 +4227,8 @@ class ScreenShake {
       oy += (Math.random() * 2 - 1) * maxOffset * 0.5 * s;
       this.trauma = Math.max(0, this.trauma - dt * 1.6);
     }
+    // Reduced-motion (accessibility): hold the camera steady — no shake/kick.
+    if (_reducedMotion) { ox = oz = oy = 0; this.kickX = this.kickZ = 0; }
     this.offX = ox * TUNE.shakeAmt; this.offY = oy * TUNE.shakeAmt; this.offZ = oz * TUNE.shakeAmt;
     const k = Math.max(0, 1 - dt * 11); // snappy lurch-out, recovers in ~0.18s
     this.kickX *= k; this.kickZ *= k;
@@ -3964,6 +4432,11 @@ function relabelScoreboard() {
   const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
   if (tagOff) tagOff.textContent = TEAMS.home.abbr;
   if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+  // Publish the team colors at the root so the broadcast scoreboard carries team
+  // identity (home/away accent bars) instead of the generic OFF/DEF palette.
+  const root = document.documentElement.style;
+  root.setProperty('--home', TEAMS.home.color);
+  root.setProperty('--away', TEAMS.away.color);
 }
 // Tear down and respawn both teams (used when the opponent's roster changes).
 function rebuildTeams() {
@@ -4269,6 +4742,7 @@ function preparePlay(teleport) {
   }
   setFumbleGlow(false);
   setupPossession();   // assign offense/defense roles for whoever has the ball
+  game.replay.dir = game.dir; // freeze this play's attack direction so its replay frames it like live (giveBallTo flips game.dir at the next turnover)
   placeFormation(teleport);
   // Pop the downed players up where they fell (they then jog back during RESET).
   for (const ch of downed) if (ch.actions.getup) { ch.heading = ch.resetHeading || 0; playOneShot(ch, 'getup', 1.5, true); }
@@ -4620,6 +5094,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
+  if (game.userOnOffense) game.lastPlayIndex = game.playIndex; // remember the call we ran (for the "LAST" tag next play-select)
   game.clockStopped = false; // the snap starts the clock running again
   cam.fovKick = 5; // quick zoom punch on the snap
   cam.special = null; // drop the pre-snap hero shot
@@ -7690,7 +8165,10 @@ function updateCamera(dt) {
     // camera so the new shot is already framed when we fade back up.
     const r = game.replay, ang = REPLAY_ANGLES[r.angleIdx];
     const b = ball.mesh.position;
-    const a = ang.az + r.i * ang.orbit;
+    // Orient by the recorded play's direction so the replay isn't mirrored vs the
+    // live view (the live chase-cam faces game.dir; a -Z play would otherwise show
+    // the teams on swapped sides). Rotate the preset 180° for a -Z play.
+    const a = ang.az + (r.dir < 0 ? Math.PI : 0) + r.i * ang.orbit;
     _tp.set(b.x + Math.sin(a) * ang.dist, ang.height, b.z + Math.cos(a) * ang.dist);
     if (r.snap) { cam.pos.copy(_tp); cam.lookCur.copy(b); r.snap = false; }
     else { cam.pos.lerp(_tp, Math.min(1, dt * 3)); cam.lookCur.lerp(b, Math.min(1, dt * 5)); }
@@ -7937,6 +8415,9 @@ const DBG_KNOBS = [
   { tab: 'World', key: 'fogNear', label: 'Fog near', min: 0, max: 300, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'fogFar', label: 'Fog far', min: 50, max: 600, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'masterVolume', label: 'Volume', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'musicVolume', label: 'Music vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'sfxVolume', label: 'SFX vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'voiceVolume', label: 'Voice vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
   // --- Viz: AI / hitbox debug overlays ---
   { tab: 'Viz', key: 'vizColliders', label: 'Collider rings', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
   { tab: 'Viz', key: 'vizVectors', label: 'Velocity + assignments', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
@@ -8330,6 +8811,8 @@ function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
   updateDbg(); // balance telemetry overlay (toggle with I)
   updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
+  syncPauseBtn(); // show the pause/menu button only while a game is in progress
+  applyUIState(); // publish the UI phase for progressive-disclosure HUD rules
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Contact Lab: only the two posed players + an orbit camera; no sim, no gameplay.
   if (game.lab) {
@@ -8374,6 +8857,7 @@ function simStep(realDt) {
   const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
   const dt = realDt * tsf;
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
+  if (game.paused) return; // soft-pause: sim frozen; animate() still renders the held frame under the menu
   updateCut(realDt); // broadcast dip between plays (runs the reset at the dark peak)
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
@@ -8452,16 +8936,23 @@ function buildStartMenu() {
           <div class="sm-difflabel">DIFFICULTY</div>
           <div class="sm-diffs">${diffBtns}</div>
         </div>
+        <button id="sm-vol" class="sm-vol" aria-label="Audio settings">🔊</button>
+        <button id="sm-settings" class="sm-iconbtn" aria-label="Settings">⚙</button>
         <div class="sm-startwrap">
-          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
+          <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-sub">Exhibition · one game</span><span class="sm-arrow">▸</span></button>
           <button id="sm-gauntlet" class="sm-start sm-gauntlet"><span>GAUNTLET</span><span class="sm-sub">3 teams · win or restart</span></button>
         </div>
       </div>
     </div>`;
   startMenuEl.querySelectorAll('.sm-diff').forEach((el) => el.addEventListener('click', () => {
-    game.diff = el.dataset.diff;
+    setSetting('diff', el.dataset.diff); // persists; game.diff is kept in step
     startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b === el));
   }));
+  const smVol = document.getElementById('sm-vol');
+  if (smVol) smVol.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleVolPanel(); });
+  const smSettings = document.getElementById('sm-settings');
+  if (smSettings) smSettings.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSettings(); });
+  syncVolUI();
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
   const gbtn = document.getElementById('sm-gauntlet');
@@ -8514,12 +9005,15 @@ loadAssets().then(async () => {
   applyLighting(); applyLook(); applyFog(); applyAudio(); // honor saved Look/Lighting/World/Audio knobs
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
+  setupVolumeUI();
+  loadSettings(); // player-facing settings (Phase 4) — apply before the first render
   buildStartMenu();
   // Boot straight into the Contact Lab with ?lab; otherwise the matchup menu gates the kickoff.
   const wantLab = (typeof location !== 'undefined') && /\blab\b/.test(location.search + ' ' + location.hash);
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
