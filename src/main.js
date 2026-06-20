@@ -6642,7 +6642,9 @@ function updateKnockdownRecovery(dt) {
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
     if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
-    if (d.actions.getup) playOneShot(d, 'getup', 1.5, true); // play the full get-up clip (fit to 1.5s), held during it, then pursue
+    // Phase 2: a minor knockdown (settled quickly, not far from his feet) pops up
+    // fast; a big tumble takes the full get-up.
+    if (d.actions.getup) playOneShot(d, 'getup', d.downT < TUNE.knockdownRecover + 0.5 ? 0.85 : 1.5, true);
   }
 }
 
