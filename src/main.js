@@ -1822,7 +1822,8 @@ const game = {
   replay: { frames: [], fx: [], events: [], pool: [], fxPool: [], evPool: [], i: 0, hold: 0, seg: 0, rate: 0.85, bigHit: false, phase: 'play', fade: 0, angleIdx: 0, loops: 0, snap: false, manual: false, paused: false }, // instant-replay buffer (+ per-frame flame fx, + helmet-pop events, + free-lists of recycled buffers) + looping multi-angle cam (manual = user-driven cam + scrub)
   pendingReplay: false, celebrating: false, // defer the replay until after the dead-ball beat (lets a TD celebration play)
   finale: null, // end-of-game dance party: { active, t, winners, losers, center } (see startFinale)
-  playIndex: 0, defCall: 0, choosing: false, psPage: 0, cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / CPU last call / CPU snap timer
+  playIndex: 0, defCall: 0, choosing: false, psPage: 0, psCat: 'all', cpuLastPlay: -1, autoSnapT: 0, // offense play / def call / select / page / play-select category filter / CPU last call / CPU snap timer
+  lastPlayIndex: -1, // the offensive play actually run last (for the "LAST" tag in play-select)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
   // Possession: the player (red team) attacks +Z; the CPU (blue) attacks -Z.
@@ -3753,23 +3754,44 @@ const psPrev = document.getElementById('ps-prev');
 const psNext = document.getElementById('ps-next');
 const psDots = document.getElementById('ps-dots');
 const playCards = playSelectEl ? [...playSelectEl.querySelectorAll('.ps-card')] : [];
-// Precompute card bodies once: offense = route art, defense = a scheme tag.
-const offCardHTML = PLAYS.map((pl, i) => `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>`);
-const defCardHTML = DEF_PLAYS.map((d, i) => `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>`);
-function psList() { return game.userOnOffense ? offCardHTML : defCardHTML; }
+const psCatsEl = document.getElementById('ps-cats');
+// Each entry carries its ABSOLUTE play index (so a filtered/paged view still maps
+// back to the real PLAYS/DEF_PLAYS index when chosen) + a category for filtering.
+const offEntries = PLAYS.map((pl, i) => ({ idx: i, cat: pl.run ? 'run' : 'pass', html: `${makePlayArtSVG(pl)}<i>${i + 1}</i><b>${pl.name}</b><span>${pl.sub}</span>` }));
+const defEntries = DEF_PLAYS.map((d, i) => ({ idx: i, cat: 'all', html: `<div class="ps-art ps-defart" style="color:${d.col}">${d.tag}</div><i>${i + 1}</i><b>${d.name}</b><span>${d.sub}</span>` }));
+// Offense play-call categories (filter chips). Defense (4 calls) shows no chips.
+const PS_CATS = [{ id: 'all', label: 'ALL' }, { id: 'pass', label: 'PASS' }, { id: 'run', label: 'RUN' }];
+function psList() {
+  if (!game.userOnOffense) return defEntries;
+  return game.psCat === 'all' ? offEntries : offEntries.filter((e) => e.cat === game.psCat);
+}
 function psPageCount() { return Math.max(1, Math.ceil(psList().length / PS_PAGE)); }
+// Filter chips: build once, reflect the active category; hidden on defense.
+function renderPSCats() {
+  if (!psCatsEl) return;
+  if (!game.userOnOffense) { psCatsEl.classList.add('hidden'); psCatsEl.innerHTML = ''; return; }
+  psCatsEl.classList.remove('hidden');
+  psCatsEl.innerHTML = PS_CATS.map((c) => `<button class="ps-cat${c.id === game.psCat ? ' on' : ''}" data-cat="${c.id}">${c.label}</button>`).join('');
+  psCatsEl.querySelectorAll('.ps-cat').forEach((b) => {
+    const go = (e) => { e.preventDefault(); audio.unlock(); if (game.psCat === b.dataset.cat) return; game.psCat = b.dataset.cat; game.psPage = 0; audio.juke(); renderPSCats(); renderPSPage(); };
+    b.addEventListener('touchstart', go, { passive: false });
+    b.addEventListener('mousedown', go);
+  });
+}
 // Render the cards for the current page, plus arrows + dot indicators.
 function renderPSPage() {
-  const off = game.userOnOffense, html = psList(), sel = off ? game.playIndex : game.defCall;
+  const off = game.userOnOffense, list = psList(), sel = off ? game.playIndex : game.defCall;
   const pages = psPageCount();
   game.psPage = Math.max(0, Math.min(game.psPage, pages - 1));
   const start = game.psPage * PS_PAGE;
   playSelectEl.classList.toggle('def-call', !off);
   playCards.forEach((c, slot) => {
-    const idx = start + slot;
-    if (idx < html.length) {
-      c.innerHTML = html[idx]; c.dataset.idx = idx;
-      c.classList.toggle('chosen', idx === sel); c.classList.remove('hidden');
+    const entry = list[start + slot];
+    if (entry) {
+      c.innerHTML = entry.html; c.dataset.idx = entry.idx;
+      c.classList.toggle('chosen', entry.idx === sel);
+      c.classList.toggle('last', off && entry.idx === game.lastPlayIndex && entry.idx !== sel);
+      c.classList.remove('hidden');
     } else { c.classList.add('hidden'); c.dataset.idx = -1; }
   });
   // Arrows only matter when there's more than one page.
@@ -3787,9 +3809,11 @@ function openPlaySelect() {
   const off = game.userOnOffense;
   if (psTitle) psTitle.textContent = off ? 'CHOOSE YOUR PLAY' : 'CALL YOUR DEFENSE';
   if (psSide) psSide.textContent = off ? 'OFFENSE' : 'DEFENSE';
+  game.psCat = 'all'; // always open on the full list; the chips are an optional filter
   // Open on the page that holds the current selection.
   const sel = off ? game.playIndex : game.defCall;
   game.psPage = Math.floor((sel || 0) / PS_PAGE);
+  renderPSCats();
   renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
@@ -3847,7 +3871,7 @@ window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyP') { dbgCam.shot = true; return; }
     }
     if (game.choosing) {
-      if (/^Digit[1-4]$/.test(e.code)) choosePlay(game.psPage * PS_PAGE + (+e.code.slice(5) - 1));
+      if (/^Digit[1-4]$/.test(e.code)) { const card = playCards[+e.code.slice(5) - 1]; const idx = card ? +card.dataset.idx : -1; if (idx >= 0) choosePlay(idx); } // pick the Nth VISIBLE card (honors the active filter/page)
       else if (e.code === 'ArrowLeft' || e.code === 'KeyA') psFlip(-1);
       else if (e.code === 'ArrowRight' || e.code === 'KeyD') psFlip(1);
     }
@@ -5041,6 +5065,7 @@ function applyDefCall(call) {
 }
 function snap() {
   game.state = STATE.LIVE;
+  if (game.userOnOffense) game.lastPlayIndex = game.playIndex; // remember the call we ran (for the "LAST" tag next play-select)
   game.clockStopped = false; // the snap starts the clock running again
   cam.fovKick = 5; // quick zoom punch on the snap
   cam.special = null; // drop the pre-snap hero shot

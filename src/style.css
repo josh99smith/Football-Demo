@@ -1034,12 +1034,37 @@ body.replay-mode .replay-btn { display: none !important; }
 }
 .ps-art {
   width: 100%;
-  height: 60px;
+  height: 66px;
   display: block;
   margin-bottom: 6px;
   border-radius: 10px;
   background: linear-gradient(180deg, rgba(40, 96, 56, 0.6), rgba(22, 54, 34, 0.6));
   border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+/* Selected card: brighter route preview so the pick reads at a glance. */
+.ps-card.chosen .ps-art {
+  background: linear-gradient(180deg, rgba(60, 132, 80, 0.7), rgba(28, 70, 44, 0.7));
+  border-color: var(--ps-accent);
+}
+
+/* Category filter chips (offense): All / Pass / Run. */
+.ps-cats { display: flex; gap: var(--sp-2); animation: psPop 0.26s ease both; }
+.ps-cats.hidden { display: none; }
+.ps-cat {
+  font-family: inherit; font-size: clamp(11px, 2.8vw, 13px); font-weight: 800; letter-spacing: 1px;
+  padding: 8px 18px; min-height: 40px; border-radius: 999px; cursor: pointer; touch-action: manipulation;
+  color: #dbe7f5; background: rgba(8, 16, 12, 0.62); border: 1.5px solid rgba(255, 255, 255, 0.2);
+  transition: transform 0.08s ease, background 0.12s ease;
+}
+.ps-cat.on { color: #06120b; background: var(--ps-accent); border-color: var(--ps-accent); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); }
+.ps-cat:active { transform: scale(0.94); }
+
+/* "LAST" tag: the play you ran on the previous snap (when it's not your current pick). */
+.ps-card.last::after {
+  content: "LAST"; position: absolute; top: 7px; left: 9px;
+  font-size: 8.5px; font-weight: 900; letter-spacing: 1px; line-height: 1;
+  padding: 3px 6px; border-radius: 6px; color: #06120b; background: rgba(255, 255, 255, 0.85);
 }
 .ps-card i {
   position: absolute;
