@@ -59,8 +59,15 @@ export class AudioManager {
     this.music = null;   // currently-playing music source/gain
     this.muted = false;  // master mute (settings can flip this)
     this.voEnabled = true;
+    // Per-channel volumes (0..1). master scales everything; music/sfx/voice are
+    // sub-buses so the player can balance the mix. Applied to gain nodes on unlock.
+    this.vol = { master: 0.5, music: 1, sfx: 1, voice: 1 };
     this._fetchSamples(); // start downloading immediately (decode later)
   }
+  // Output buses (fall back to master until the context exists).
+  get _sfxOut() { return this.sfxBus || this.master; }
+  get _musicOut() { return this.musicBus || this.master; }
+  get _voiceOut() { return this.voiceBus || this.master; }
 
   // Pull the encoded audio as ArrayBuffers now; decode once we have a context.
   _fetchSamples() {
@@ -107,6 +114,14 @@ export class AudioManager {
         this.master = this.ctx.createGain();
         this.master.gain.value = 0.5;
         this.master.connect(this.ctx.destination);
+        // Sub-buses so music / SFX / commentary can be balanced independently.
+        this.musicBus = this.ctx.createGain();
+        this.sfxBus = this.ctx.createGain();
+        this.voiceBus = this.ctx.createGain();
+        this.musicBus.connect(this.master);
+        this.sfxBus.connect(this.master);
+        this.voiceBus.connect(this.master);
+        this._applyVol();
         // One second of white noise, reused for hits / whooshes / crowd.
         const n = this.ctx.sampleRate;
         this.noiseBuf = this.ctx.createBuffer(1, n, n);
@@ -137,6 +152,24 @@ export class AudioManager {
     } catch (e) { /* audio may be unavailable — ignore */ }
   }
 
+  // Set channel volumes (any subset of master/music/sfx/voice) and/or mute.
+  applyVolumes({ master, music, sfx, voice, muted } = {}) {
+    if (master !== undefined) this.vol.master = master;
+    if (music !== undefined) this.vol.music = music;
+    if (sfx !== undefined) this.vol.sfx = sfx;
+    if (voice !== undefined) this.vol.voice = voice;
+    if (muted !== undefined) this.muted = muted;
+    this._applyVol();
+  }
+  _applyVol() {
+    if (!this.ctx) return;
+    const m = this.muted ? 0 : 1;
+    if (this.master) this.master.gain.value = this.vol.master * m;
+    if (this.musicBus) this.musicBus.gain.value = this.vol.music;
+    if (this.sfxBus) this.sfxBus.gain.value = this.vol.sfx;
+    if (this.voiceBus) this.voiceBus.gain.value = this.vol.voice;
+  }
+
   get t() { return this.ctx.currentTime; }
 
   // Play a decoded sample. Returns true if it fired (so callers can skip their
@@ -147,7 +180,7 @@ export class AudioManager {
     const t = this.t + delay;
     const src = this.ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
     const g = this.ctx.createGain(); g.gain.value = gain;
-    src.connect(g); g.connect(this.master);
+    src.connect(g); g.connect(this._sfxOut);
     if (duration != null) src.start(t, offset, duration); else src.start(t, offset);
     return true;
   }
@@ -160,7 +193,7 @@ export class AudioManager {
     const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 520; bp.Q.value = 0.5;
     const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1100;
     const g = this.ctx.createGain(); g.gain.value = 0.035;
-    src.connect(bp); bp.connect(lp); lp.connect(g); g.connect(this.master);
+    src.connect(bp); bp.connect(lp); lp.connect(g); g.connect(this._sfxOut);
     src.start(); this.amb = g;
   }
   swell(amount = 0.5) {
@@ -181,7 +214,7 @@ export class AudioManager {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(this.master);
+    o.connect(g); g.connect(this._sfxOut);
     o.start(t); o.stop(t + dur + 0.02);
   }
 
@@ -193,7 +226,7 @@ export class AudioManager {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(this.master);
+    src.connect(f); f.connect(g); g.connect(this._sfxOut);
     src.start(t); src.stop(t + dur + 0.02);
   }
 
@@ -237,7 +270,7 @@ export class AudioManager {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(0.18 * amount, t + 0.25);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(this.master);
+    src.connect(f); f.connect(g); g.connect(this._sfxOut);
     src.start(t); src.stop(t + dur + 0.05);
   }
   groan() {
@@ -247,7 +280,7 @@ export class AudioManager {
     const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 420;
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.16, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
-    src.connect(f); f.connect(g); g.connect(this.master);
+    src.connect(f); f.connect(g); g.connect(this._sfxOut);
     src.start(t); src.stop(t + 0.95);
   }
   // Real referee whistle (clipped to one blast); synth pair as fallback.
@@ -298,7 +331,7 @@ export class AudioManager {
         if (swell) this.swell(swell);
         const src = this.ctx.createBufferSource(); src.buffer = b;
         const g = this.ctx.createGain(); g.gain.value = 0.95;
-        src.connect(g); g.connect(this.master); src.start(this.t);
+        src.connect(g); g.connect(this._voiceOut); src.start(this.t);
         return;
       }
     }
@@ -327,7 +360,7 @@ export class AudioManager {
       if (!buf || this.music) return;
       const src = this.ctx.createBufferSource(); src.buffer = buf; src.loop = loop;
       const g = this.ctx.createGain(); g.gain.value = this.muted ? 0 : this._musicGain;
-      src.connect(g); g.connect(this.master); src.start(this.t);
+      src.connect(g); g.connect(this._musicOut); src.start(this.t);
       this.music = { src, g };
     };
     if (this._musicBuf && this._musicBuf.url === url) { start(this._musicBuf.buf); return; }
