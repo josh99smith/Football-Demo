@@ -1737,6 +1737,8 @@ const TUNE_DEFAULTS = {
   // World + audio
   fogColor: '#12203f', fogNear: 130, fogFar: 330,  // night haze
   masterVolume: 0.5,                               // master audio gain
+  musicVolume: 0.8, sfxVolume: 1, voiceVolume: 1,  // per-channel mix (music / SFX / commentary)
+  audioMuted: 0,                                   // 1 = mute everything
   // Debug visualization overlays (0/1)
   vizColliders: 0, vizVectors: 0, vizLabels: 0, vizLog: 0,
   // Difficulty fine-tune (multiply/offset on top of the rookie/pro/all-pro preset)
@@ -1979,7 +1981,81 @@ function applyLook() {
 function applyFog() {
   if (scene.fog) { scene.fog.color.set(TUNE.fogColor); scene.fog.near = TUNE.fogNear; scene.fog.far = TUNE.fogFar; }
 }
-function applyAudio() { try { if (audio && audio.master) audio.master.gain.value = TUNE.masterVolume; } catch (e) { /* audio not ready */ } }
+function applyAudio() {
+  try {
+    audio.applyVolumes({
+      master: TUNE.masterVolume, music: TUNE.musicVolume,
+      sfx: TUNE.sfxVolume, voice: TUNE.voiceVolume, muted: !!TUNE.audioMuted,
+    });
+  } catch (e) { /* audio not ready */ }
+  syncVolUI();
+}
+// Persist just the audio knobs into the shared tune store (coexists with the
+// debug panel's Save — only the volume keys are touched).
+function persistAudio() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const cur = JSON.parse(localStorage.getItem(TUNE_STORE_KEY) || '{}');
+    for (const k of ['masterVolume', 'musicVolume', 'sfxVolume', 'voiceVolume', 'audioMuted']) cur[k] = TUNE[k];
+    localStorage.setItem(TUNE_STORE_KEY, JSON.stringify(cur));
+  } catch (e) { /* ignore */ }
+}
+// Player-facing volume controls: master + music/SFX/commentary sliders and a mute
+// toggle, in a popover (the 🔊 HUD button) and mirrored on the start menu.
+const VOL_CHANNELS = [
+  { key: 'masterVolume', label: 'Master' }, { key: 'musicVolume', label: 'Music' },
+  { key: 'sfxVolume', label: 'Sound FX' }, { key: 'voiceVolume', label: 'Commentary' },
+];
+function syncVolUI() {
+  const muted = !!TUNE.audioMuted;
+  const vb = document.getElementById('vol-btn');
+  if (vb) { vb.classList.toggle('muted', muted); vb.textContent = muted ? '🔇' : '🔊'; }
+  document.querySelectorAll('.sm-vol').forEach((b) => { b.classList.toggle('muted', muted); b.textContent = muted ? '🔇' : '🔊'; });
+  const panel = document.getElementById('volpanel');
+  if (panel && !panel.classList.contains('hidden')) {
+    panel.querySelectorAll('input[type=range]').forEach((s) => {
+      const v = TUNE[s.dataset.key]; s.value = String(v);
+      const out = panel.querySelector(`.vp-val[data-key="${s.dataset.key}"]`); if (out) out.textContent = Math.round(v * 100) + '%';
+    });
+    const mb = panel.querySelector('.vp-mute'); if (mb) mb.classList.toggle('on', muted);
+  }
+}
+function buildVolPanel() {
+  const panel = document.getElementById('volpanel'); if (!panel || panel.dataset.built) return;
+  panel.dataset.built = '1';
+  const rows = VOL_CHANNELS.map(({ key, label }) =>
+    `<div class="vp-row"><label>${label}<span class="vp-val" data-key="${key}">${Math.round(TUNE[key] * 100)}%</span></label>
+     <input type="range" min="0" max="1" step="0.05" value="${TUNE[key]}" data-key="${key}" aria-label="${label} volume"></div>`).join('');
+  panel.innerHTML = `<div class="vp-head"><span>Audio</span><button class="vp-mute" type="button">Mute</button></div>${rows}`;
+  panel.addEventListener('input', (e) => {
+    const s = e.target; if (!s.dataset || !s.dataset.key) return;
+    audio.unlock(); // a slider drag is a gesture — make sure sound is live
+    TUNE[s.dataset.key] = +s.value;
+    applyAudio(); persistAudio();
+  });
+  panel.querySelector('.vp-mute').addEventListener('click', () => { audio.unlock(); toggleMute(); });
+}
+function toggleMute() { TUNE.audioMuted = TUNE.audioMuted ? 0 : 1; applyAudio(); persistAudio(); }
+function toggleVolPanel(force) {
+  buildVolPanel();
+  const panel = document.getElementById('volpanel'); if (!panel) return;
+  const show = force !== undefined ? force : panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !show);
+  if (show) { audio.unlock(); syncVolUI(); }
+}
+function setupVolumeUI() {
+  const vb = document.getElementById('vol-btn');
+  if (vb) vb.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleVolPanel(); });
+  // Tap-away / Escape closes the popover.
+  document.addEventListener('pointerdown', (e) => {
+    const panel = document.getElementById('volpanel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (panel.contains(e.target) || (vb && vb.contains(e.target))) return;
+    toggleVolPanel(false);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleVolPanel(false); });
+  syncVolUI();
+}
 function updateCelebFx(dt) {
   const t = performance.now() * 0.001;
   // spark physics (gravity + air drag + fade; glitter twinkles)
@@ -2921,7 +2997,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -7316,6 +7392,9 @@ const DBG_KNOBS = [
   { tab: 'World', key: 'fogNear', label: 'Fog near', min: 0, max: 300, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'fogFar', label: 'Fog far', min: 50, max: 600, step: 10, fmt: (v) => String(v | 0), onChange: () => applyFog() },
   { tab: 'World', key: 'masterVolume', label: 'Volume', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'musicVolume', label: 'Music vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'sfxVolume', label: 'SFX vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
+  { tab: 'World', key: 'voiceVolume', label: 'Voice vol', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2), onChange: () => applyAudio() },
   // --- Viz: AI / hitbox debug overlays ---
   { tab: 'Viz', key: 'vizColliders', label: 'Collider rings', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
   { tab: 'Viz', key: 'vizVectors', label: 'Velocity + assignments', min: 0, max: 1, step: 1, fmt: (v) => (v >= 0.5 ? 'on' : 'off') },
@@ -7820,6 +7899,7 @@ function buildStartMenu() {
           <div class="sm-difflabel">DIFFICULTY</div>
           <div class="sm-diffs">${diffBtns}</div>
         </div>
+        <button id="sm-vol" class="sm-vol" aria-label="Audio settings">🔊</button>
         <button id="sm-start" class="sm-start"><span>KICK&nbsp;OFF</span><span class="sm-arrow">▸</span></button>
       </div>
     </div>`;
@@ -7827,6 +7907,9 @@ function buildStartMenu() {
     game.diff = el.dataset.diff;
     startMenuEl.querySelectorAll('.sm-diff').forEach((b) => b.classList.toggle('on', b === el));
   }));
+  const smVol = document.getElementById('sm-vol');
+  if (smVol) smVol.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleVolPanel(); });
+  syncVolUI();
   const btn = document.getElementById('sm-start');
   if (btn) btn.addEventListener('click', startGame, { once: true });
 }
@@ -7879,6 +7962,7 @@ loadAssets().then(async () => {
   applyLighting(); applyLook(); applyFog(); applyAudio(); // honor saved Look/Lighting/World/Audio knobs
   prewarmCelebShaders(); // compile celebration shaders now (avoids the first-celebration FPS dip)
   loadingEl.classList.add('hidden');
+  setupVolumeUI();
   buildStartMenu();
   // Boot straight into the Contact Lab with ?lab; otherwise the matchup menu gates the kickoff.
   const wantLab = (typeof location !== 'undefined') && /\blab\b/.test(location.search + ' ' + location.hash);
