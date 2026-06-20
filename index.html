@@ -237,11 +237,19 @@
   <button id="coach-btn" class="coach-btn hidden" aria-label="Coach cam: show the play art">▦&nbsp;PLAY&nbsp;ART</button>
 
   <!-- Skip / simulate controls: jump to the next quarter, or fast-forward the
-       whole game to the final whistle (and the end-of-game celebration). -->
+       whole game to the final whistle. Relocated into the pause menu (Phase 2);
+       kept in the DOM so the existing handlers still drive these actions. -->
   <div id="simbar">
     <button id="sim-q" class="sim-btn" aria-label="Skip to next quarter">SKIP&nbsp;QTR&nbsp;⏭</button>
     <button id="sim-end" class="sim-btn" aria-label="Simulate to end of game">SIM&nbsp;GAME&nbsp;⏭⏭</button>
   </div>
+
+  <!-- Pause / menu hub (Phase 2): the single home for control — resume, game
+       utilities (skip/sim/fullscreen/restart/quit), and a how-to-play reference.
+       Opens on this button (top-right) or Esc / P; soft-pauses the sim. Menu
+       contents are built in main.js (buildPauseMenu) from the Phase-1 UI kit. -->
+  <button id="pause-btn" class="pause-btn hidden" aria-label="Pause / menu">❚❚</button>
+  <div id="pausemenu" class="ui-modal hidden" role="dialog" aria-modal="true" aria-label="Game menu"></div>
 
   <script type="module" src="src/main.js"></script>
 </body>

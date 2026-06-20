@@ -1806,6 +1806,7 @@ const game = {
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
+  paused: false, // soft-pause: the pause menu is open and the sim loop is frozen
   quarter: 1, gameClock: TUNE.quarterLen, snapClock: TUNE.playClock, gameOver: false,
   clockStopped: true, // running clock — only paused after a score/incomplete/turnover (until next snap)
   deadTimer: 0, tsFactor: 1,            // tsFactor = current slow-mo factor (1 = full speed)
@@ -3357,6 +3358,9 @@ function updateUserStatsHUD() {
 // Fullscreen toggle — on mobile this hides the browser address bar so the play
 // isn't cut off at the top. (No-op on iOS Safari, which lacks the API; use Add
 // to Home Screen there.)
+// Exposed so the pause menu's "Fullscreen" button can drive the same toggle
+// (the on-field #fs-btn is now hidden — relocated into the menu).
+let toggleFullscreen = null, fsAvailable = false;
 (function fullscreen() {
   const fsBtn = document.getElementById('fs-btn');
   const root = document.documentElement;
@@ -3365,6 +3369,7 @@ function updateUserStatsHUD() {
   // can't work — hide it and tell the player how to get there instead.
   const canFs = !!(root.requestFullscreen || root.webkitRequestFullscreen);
   if (!canFs) { fsBtn.style.display = 'none'; return; }
+  fsAvailable = true;
   const active = () => document.fullscreenElement || document.webkitFullscreenElement;
   const sync = () => fsBtn.classList.toggle('on', !!active());
   let lastTouch = 0;
@@ -3380,6 +3385,7 @@ function updateUserStatsHUD() {
   // reliably registers, and guard the synthetic click so it doesn't re-toggle.
   fsBtn.addEventListener('touchend', (e) => { lastTouch = Date.now(); toggle(e); }, { passive: false });
   fsBtn.addEventListener('click', (e) => { if (Date.now() - lastTouch < 700) return; toggle(e); });
+  toggleFullscreen = () => toggle({ preventDefault() {}, stopPropagation() {} });
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('webkitfullscreenchange', sync);
 })();
@@ -3420,6 +3426,107 @@ function uiTabs(tabs) {
   select(0);
   return { bar, panes, select };
 }
+
+// ===========================================================================
+// Pause menu (Phase 2): the single reachable hub for control. Soft-pauses the
+// sim (game.paused gates the loop in simStep) and presents Resume / Game
+// utilities / How-to-play in a tabbed modal built from the Phase-1 UI kit.
+// Reachable any time a game is in progress: the top-right button or Esc / P.
+// ===========================================================================
+const pauseBtn = document.getElementById('pause-btn');
+const pauseMenuEl = document.getElementById('pausemenu');
+
+// Controls reference shown in the How-to-play tab.
+const PAUSE_HOWTO_HTML = `
+  <dt>Move</dt><dd>Left joystick (touch) or WASD / arrow keys.</dd>
+  <dt>Turbo</dt><dd>The TURBO button or hold Shift — a burst of speed; the meter drains and recharges.</dd>
+  <dt>Action</dt><dd>The right ACTION button is contextual: SNAP the ball, THROW, JUKE, HURDLE, STIFF-ARM, DIVE, or TACKLE depending on the moment.</dd>
+  <dt>Switch (on defense)</dt><dd>Tap ACTION / SWITCH to take control of the defender nearest the ball.</dd>
+  <dt>Catch your pass</dt><dd>While your throw is in the air, pick a style — RAC (run after catch), POSSESSION (secure), or AGGRESSIVE (high-point). Desktop: Space / Q / E.</dd>
+  <dt>Pitch</dt><dd>Press F to lateral the ball to a trailing teammate.</dd>
+  <dt>Pause</dt><dd>This menu — Esc or P, or the ❚❚ button.</dd>
+`;
+
+function buildPauseMenu() {
+  if (!pauseMenuEl) return;
+  pauseMenuEl.innerHTML = '';
+  const panel = document.createElement('div'); panel.className = 'ui-panel';
+
+  const head = document.createElement('div'); head.className = 'ui-panel-head';
+  const title = document.createElement('div'); title.className = 'ui-panel-title'; title.textContent = 'PAUSED';
+  const close = document.createElement('button'); close.className = 'ui-panel-close'; close.setAttribute('aria-label', 'Resume'); close.textContent = '×';
+  close.addEventListener('click', () => closePause());
+  head.appendChild(title); head.appendChild(close);
+
+  const { bar, panes } = uiTabs([
+    { label: 'Resume', build: (p) => {
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        stack.appendChild(uiButton('▶&nbsp; RESUME', 'primary', () => closePause()));
+        const note = document.createElement('div'); note.className = 'pm-resume-note';
+        note.textContent = 'The game is frozen while this menu is open. Tap outside, press Esc, or hit Resume to get back to the action.';
+        stack.appendChild(note);
+        p.appendChild(stack);
+    } },
+    { label: 'Game', build: (p) => {
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        const row = document.createElement('div'); row.className = 'ui-btnrow';
+        row.appendChild(uiButton('SKIP QTR&nbsp;⏭', 'ghost', () => { closePause(); skipQuarter(); }));
+        row.appendChild(uiButton('SIM GAME&nbsp;⏭⏭', 'ghost', () => { closePause(); simToGameEnd(); }));
+        stack.appendChild(row);
+        if (fsAvailable) stack.appendChild(uiButton('TOGGLE FULLSCREEN&nbsp;⛶', 'ghost', () => { if (toggleFullscreen) toggleFullscreen(); }));
+        stack.appendChild(uiButton('RESTART GAME', 'ghost', () => { closePause(); resetGame(); }));
+        stack.appendChild(uiButton('QUIT TO MENU', 'danger', () => quitToMenu()));
+        p.appendChild(stack);
+    } },
+    { label: 'How to Play', build: (p) => {
+        const dl = document.createElement('dl'); dl.className = 'pm-how';
+        dl.innerHTML = PAUSE_HOWTO_HTML;
+        p.appendChild(dl);
+    } },
+  ]);
+
+  panel.appendChild(head); panel.appendChild(bar); panel.appendChild(panes);
+  pauseMenuEl.appendChild(panel);
+  // Tap the scrim (outside the panel) to resume.
+  pauseMenuEl.addEventListener('pointerdown', (e) => { if (e.target === pauseMenuEl) closePause(); });
+}
+
+// Pause is reachable whenever a game is actually in progress (not the start menu,
+// the pregame cinematic, or the Contact Lab).
+function pauseAllowed() { return gameStarted && !game.lab && !game.cinematic; }
+function openPause() {
+  if (!pauseMenuEl || game.paused || !pauseAllowed()) return;
+  game.paused = true;
+  document.body.classList.add('paused');
+  pauseMenuEl.classList.remove('hidden');
+}
+function closePause() {
+  if (!game.paused) return;
+  game.paused = false;
+  document.body.classList.remove('paused');
+  if (pauseMenuEl) pauseMenuEl.classList.add('hidden');
+}
+function togglePause() { if (game.paused) closePause(); else openPause(); }
+// Cleanest reliable return to the matchup screen: reload (the start menu gates the
+// kickoff again). The demo holds nothing in memory that needs preserving.
+function quitToMenu() {
+  closePause();
+  if (typeof location !== 'undefined' && location.reload) location.reload();
+}
+// Show the pause button only while a game is in progress.
+function syncPauseBtn() {
+  if (!pauseBtn) return;
+  const show = pauseAllowed();
+  pauseBtn.classList.toggle('hidden', !show);
+  if (!show && game.paused) closePause(); // never strand the menu open across a mode change
+}
+(function wirePause() {
+  buildPauseMenu();
+  if (!pauseBtn) return;
+  const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); togglePause(); };
+  pauseBtn.addEventListener('touchstart', go, { passive: false });
+  pauseBtn.addEventListener('mousedown', go);
+})();
 
 // PWA: register the service worker and show an "Install" prompt on launch (in a
 // browser tab). Uses the native beforeinstallprompt where available, with an
@@ -3562,6 +3669,11 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
+    // Pause menu: P toggles it, Esc closes it. While paused the sim is frozen, so
+    // swallow gameplay keys (so a press doesn't queue an action for the resume).
+    if (e.code === 'KeyP' && !dbgCam.on) { togglePause(); keys[e.code] = true; return; }
+    if (e.code === 'Escape' && game.paused) { closePause(); keys[e.code] = true; return; }
+    if (game.paused) { keys[e.code] = true; return; }
     if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
     if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
     if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
@@ -8446,6 +8558,7 @@ function animate() {
   updateFps(); // true frame rate (independent of the sim dt cap)
   updateDbg(); // balance telemetry overlay (toggle with I)
   updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
+  syncPauseBtn(); // show the pause/menu button only while a game is in progress
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Contact Lab: only the two posed players + an orbit camera; no sim, no gameplay.
   if (game.lab) {
@@ -8490,6 +8603,7 @@ function simStep(realDt) {
   const tsf = timeScale.update(realDt); game.tsFactor = tsf; // expose the slow-mo factor (used by replay playback)
   const dt = realDt * tsf;
   if (slowmoEl) slowmoEl.style.opacity = timeScale.grade.toFixed(3); // red-tint/vignette tracks the slow-mo depth
+  if (game.paused) return; // soft-pause: sim frozen; animate() still renders the held frame under the menu
   updateCut(realDt); // broadcast dip between plays (runs the reset at the dark peak)
   updatePlay(dt);
   updateFlyingHelmets(dt); // popped helmets tumble every frame (slows with bullet-time)
