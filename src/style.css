@@ -19,6 +19,10 @@
   --z-toast: 60;
   --z-debug: 70;
 
+  /* Team identity (overwritten per-match from TEAMS.*.color via relabelScoreboard) */
+  --home: #c81e2a;
+  --away: #2f6bd6;
+
   /* Surfaces & ink */
   --surface: rgba(12, 17, 24, 0.94);
   --surface-2: rgba(255, 255, 255, 0.07);
@@ -141,12 +145,14 @@ html, body {
   gap: 9px;
   padding: 6px 16px;
 }
-.tb-team.off { box-shadow: inset 4px 0 0 var(--off); }
-.tb-team.def { box-shadow: inset -4px 0 0 var(--def); flex-direction: row; }
-.tb-team .tb-tag { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.8; }
-.tb-team b { font-size: clamp(20px, 4.6vh, 26px); line-height: 1; font-variant-numeric: tabular-nums; }
-.tb-team.off b { color: var(--off); }
-.tb-team.def b { color: var(--def); }
+/* Team identity: the accent bar + tag carry the club color (home/away) instead
+   of the generic OFF/DEF palette; the score stays bright for readability. */
+.tb-team.off { box-shadow: inset 4px 0 0 var(--home); }
+.tb-team.def { box-shadow: inset -4px 0 0 var(--away); flex-direction: row; }
+.tb-team .tb-tag { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.95; }
+.tb-team.off .tb-tag { color: color-mix(in srgb, var(--home) 55%, #fff); }
+.tb-team.def .tb-tag { color: color-mix(in srgb, var(--away) 55%, #fff); }
+.tb-team b { font-size: clamp(20px, 4.6vh, 26px); line-height: 1; font-variant-numeric: tabular-nums; color: #fff; }
 .tb-mid {
   display: flex;
   flex-direction: column;
@@ -1510,3 +1516,35 @@ body.paused #replay-btn, body.paused #playselect, body.paused #pause-btn { point
 #pausemenu .pm-how dt { font-weight: 900; color: var(--accent); font-size: var(--fs-sm); letter-spacing: 0.03em; margin-top: var(--sp-3); }
 #pausemenu .pm-how dt:first-child { margin-top: 0; }
 #pausemenu .pm-how dd { color: var(--ink-dim); font-size: var(--fs-sm); line-height: 1.5; margin: 2px 0 0; }
+
+/* ===========================================================================
+   Progressive disclosure (Phase 3)
+   Each UI phase (published on <body data-ui> by applyUIState) shows only its
+   essentials. The scoreboard + the phase's active controls stay; everything not
+   relevant to the moment is hidden HERE, in one place, rather than via scattered
+   JS toggles. Rules are additive (they only hide) so they never fight the code
+   that decides what to show.
+   =========================================================================== */
+/* The user-stats badge (TKL/CAT/INT) belongs between plays — not mid-action and
+   not while you're reading the play-select deck. */
+body[data-ui="live"] #userstats,
+body[data-ui="choosing"] #userstats { display: none !important; }
+
+/* Ball in play: drop everything that isn't the scoreboard or a live control —
+   the post-play cards, the play-art toggle, and any lingering result readout. */
+body[data-ui="live"] #playercards,
+body[data-ui="live"] #playresult,
+body[data-ui="live"] .coach-btn { display: none !important; }
+
+/* Play-select screen (the worst clutter offender): keep it calm — just the
+   scoreboard and the deck. */
+body[data-ui="choosing"] #playercards,
+body[data-ui="choosing"] #playresult,
+body[data-ui="choosing"] .coach-btn { display: none !important; }
+
+/* Cinematic moments — a celebration, the end-game finale, or the broadcast cut
+   between plays — clear the gameplay controls so the camera work reads clean. */
+body.cine-moment #joystick,
+body.cine-moment .action-btn,
+body.cine-moment .mini-btn,
+body.cine-moment .catch-row { display: none !important; }

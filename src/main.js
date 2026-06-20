@@ -3928,6 +3928,37 @@ function updateButtons() {
   else if (s === STATE.BATTLE) { setAction('MASH!'); hide(turboBtn); }
   else { hide(actionBtn); hide(turboBtn); }
 }
+
+// ---- UI state machine (Phase 3): progressive disclosure -------------------
+// Map the game state to a coarse UI phase and publish it on <body data-ui>, so
+// HUD visibility is DECLARED IN ONE PLACE (the data-ui rules in style.css) rather
+// than scattered across .hidden toggles. Each phase reveals only its essentials:
+//   live      — scoreboard + the contextual ACTION/TURBO + joystick (nothing else)
+//   presnap   — scoreboard + SNAP/SWITCH + coach-cam toggle + the matchup cards
+//   choosing  — the play-select deck only; the field stays calm
+//   dead      — the post-play result readout + cards
+//   replay / cinematic / gameover / menu / lab — handled by their own chrome
+let _uiPhase = '';
+function uiPhaseFor() {
+  if (game.lab) return 'lab';
+  if (game.cinematic) return 'cinematic';
+  if (!gameStarted) return 'menu';
+  const s = game.state;
+  if (s === STATE.REPLAY) return 'replay';
+  if (game.gameOver) return 'gameover';
+  if (s === STATE.PRESNAP) return game.choosing ? 'choosing' : 'presnap';
+  if (s === STATE.DEAD || s === STATE.RESET) return 'dead';
+  return 'live'; // LIVE / AIR / RUN / RETURN / LOOSE / TACKLE / BATTLE — ball in play
+}
+function applyUIState() {
+  const p = uiPhaseFor();
+  if (p !== _uiPhase) { _uiPhase = p; document.body.dataset.ui = p; }
+  // Cinematic moments (a touchdown celebration, the end-game finale, or the
+  // broadcast cut between plays): clear the gameplay controls so the camera work
+  // reads clean. The FX layers already run; we just gate the HUD group.
+  const cineMoment = !!(game.celebrating || game.finale || (game.cut && game.cut.phase));
+  document.body.classList.toggle('cine-moment', cineMoment);
+}
 // Decide what the contextual ACTION does for the ball carrier right now, and the
 // label to show. Captures the exact defender in the path and gates on cooldown,
 // so HURDLE / STIFF ARM only light up when they're actually available.
@@ -4189,6 +4220,11 @@ function relabelScoreboard() {
   const tagOff = document.querySelector('.tb-team.off .tb-tag'), tagDef = document.querySelector('.tb-team.def .tb-tag');
   if (tagOff) tagOff.textContent = TEAMS.home.abbr;
   if (tagDef) tagDef.textContent = TEAMS.away.abbr;
+  // Publish the team colors at the root so the broadcast scoreboard carries team
+  // identity (home/away accent bars) instead of the generic OFF/DEF palette.
+  const root = document.documentElement.style;
+  root.setProperty('--home', TEAMS.home.color);
+  root.setProperty('--away', TEAMS.away.color);
 }
 // Tear down and respawn both teams (used when the opponent's roster changes).
 function rebuildTeams() {
@@ -8559,6 +8595,7 @@ function animate() {
   updateDbg(); // balance telemetry overlay (toggle with I)
   updateDebugPanel(); // live debug-knob panel (toggle with ` or the version badge)
   syncPauseBtn(); // show the pause/menu button only while a game is in progress
+  applyUIState(); // publish the UI phase for progressive-disclosure HUD rules
   const realDt = Math.min(clock.getDelta(), 0.05);
   // Contact Lab: only the two posed players + an orbit camera; no sim, no gameplay.
   if (game.lab) {
