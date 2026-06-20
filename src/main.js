@@ -1239,6 +1239,7 @@ try {
 // cheerleader model is exported meshopt-packed, so the decoder must be registered.
 try { loader.setMeshoptDecoder(MeshoptDecoder); } catch (e) { console.warn('Meshopt decoder unavailable', e); }
 const HEAD_SCALE = 1.6; // Blitz-style oversized heads (applied to both teams)
+const HEAD_POP_SCALE = 0.05; // bare-headed models: shrink the real head to a nub when it pops off (non-zero, so ragdoll drive() never divides by zero)
 const loadingEl = document.getElementById('loading');
 const loadingText = document.getElementById('loading-text');
 const loadGLB = (u) => new Promise((res, rej) => loader.load(u, res, undefined, rej));
@@ -1650,6 +1651,26 @@ function makeCharacter(team) {
     // Remember the rest attachment so a popped-off helmet can snap back next play.
     helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
     helmet.userData.flying = false;
+  } else if (!helmet && headBone && headEnd) {
+    // Bare-headed model (no helmet GLB): build a HEAD prop so the head can pop off
+    // just like a helmet. Invisible normally (the skinned head shows); on a pop it's
+    // shown + flown while the real head shrinks to a nub (see popHelmet/restoreHelmet).
+    model.updateWorldMatrix(true, true);
+    const hp = new THREE.Vector3(), ep = new THREE.Vector3(), hs = new THREE.Vector3(), hq = new THREE.Quaternion();
+    headBone.matrixWorld.decompose(hp, hq, hs);
+    headEnd.getWorldPosition(ep);
+    const headH = Math.max(0.05, hp.distanceTo(ep));
+    const headWorldScale = (hs.x + hs.y + hs.z) / 3 || 0.0124;
+    let skin = 0xb98a66; // skin tone; sample the body material if it isn't just white-on-texture
+    model.traverse((o) => { if (o.isSkinnedMesh && o.material && o.material.color) { const c = o.material.color; if (c.r + c.g + c.b < 2.85) { skin = c.getHex(); } } });
+    const headProp = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12), new THREE.MeshStandardMaterial({ color: skin, roughness: 0.85, metalness: 0.0 }));
+    headProp.scale.setScalar((headH * 1.25) / headWorldScale); headProp.scale.y *= 1.15; // ~head-sized in the bone's local space, slightly egg-shaped
+    headProp.position.copy(headBone.worldToLocal(hp.clone().lerp(ep, 0.5))); // head centre
+    headProp.castShadow = true; headProp.frustumCulled = false; headProp.visible = false;
+    headProp.userData.rest = { parent: headBone, pos: headProp.position.clone(), quat: headProp.quaternion.clone(), scale: headProp.scale.clone() };
+    headProp.userData.flying = false; headProp.userData.isHead = true;
+    headBone.add(headProp);
+    helmet = headProp; // routed through the same pop/restore/flying-helmet machinery
   }
 
   return {
@@ -4547,6 +4568,7 @@ function popHelmet(ch, hx, hz, power) {
   if (!h || !h.userData.rest || h.userData.flying) return;
   scene.attach(h); // detach from the head bone, keeping its current world transform
   h.userData.flying = true;
+  if (h.userData.isHead) { h.visible = true; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_POP_SCALE); } // the HEAD pops: show the prop, shrink the real (skinned) head to a nub
   const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
   flyingHelmets.push({
     h,
@@ -4598,6 +4620,7 @@ function restoreHelmet(ch) {
   const r = h.userData.rest;
   h.userData.flying = false;
   r.parent.add(h); h.position.copy(r.pos); h.quaternion.copy(r.quat); h.scale.copy(r.scale);
+  if (h.userData.isHead) { h.visible = false; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_SCALE); } // re-grow the real head, re-hide the prop
   const i = flyingHelmets.findIndex((f) => f.h === h); if (i >= 0) flyingHelmets.splice(i, 1);
 }
 
@@ -4617,20 +4640,24 @@ function buildHalf(ch, keepTop, bit) {
   ch.model.traverse((o) => { if (o.userData && Object.keys(o.userData).length) { stash.push([o, o.userData]); o.userData = {}; } });
   let piece;
   try { piece = cloneSkeleton(ch.model); } finally { for (const [o, ud] of stash) o.userData = ud; }
-  // Slice the body mesh at the waist: keep only the triangles on this half's side
-  // (skeleton + skin weights untouched, so a full ragdoll still drives it).
-  let sm = null; piece.traverse((o) => { if (o.isSkinnedMesh && !sm) sm = o; });
-  if (sm && sm.geometry.index) {
-    const geo = sm.geometry.clone(); sm.geometry = geo; // don't touch the shared original
-    geo.computeBoundingBox();
-    const bb = geo.boundingBox, waist = bb.min.y + (bb.max.y - bb.min.y) * 0.5;
-    const pos = geo.attributes.position, src = geo.index.array, keep = [];
-    for (let t = 0; t < src.length; t += 3) {
-      const a = src[t], b = src[t + 1], c = src[t + 2];
-      const my = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
-      if ((my >= waist) === keepTop) keep.push(a, b, c);
+  // Slice EVERY skinned mesh at the waist (alt models can have several: body, head,
+  // accessories), keeping only the triangles on this half's side. Skinned-mesh
+  // geometry shares the bind-pose space, so one waist Y (from the union bounds)
+  // applies to them all. Skeleton + skin weights untouched, so a full ragdoll drives it.
+  const smeshes = []; let minY = Infinity, maxY = -Infinity;
+  piece.traverse((o) => { if (o.isSkinnedMesh && o.geometry.index) { o.geometry.computeBoundingBox(); const bb = o.geometry.boundingBox; if (bb) { minY = Math.min(minY, bb.min.y); maxY = Math.max(maxY, bb.max.y); smeshes.push(o); } } });
+  if (smeshes.length && Number.isFinite(minY)) {
+    const waist = minY + (maxY - minY) * 0.5;
+    for (const o of smeshes) {
+      const geo = o.geometry.clone(); o.geometry = geo; // don't touch the shared original
+      const pos = geo.attributes.position, src = geo.index.array, keep = [];
+      for (let t = 0; t < src.length; t += 3) {
+        const a = src[t], b = src[t + 1], c = src[t + 2];
+        const my = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
+        if ((my >= waist) === keepTop) keep.push(a, b, c);
+      }
+      geo.setIndex(keep);
     }
-    geo.setIndex(keep);
   }
   // The helmet is a separate mesh on the head bone — keep it only on the top half.
   if (!keepTop) piece.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) o.visible = false; });
@@ -9013,6 +9040,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 
