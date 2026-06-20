@@ -1841,6 +1841,7 @@ const game = {
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
+  tackleStats: {}, // Phase 6: per-type tackle outcome tally (logTackle -> dbgBalanceReport)
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
@@ -2477,6 +2478,11 @@ function applyRatings(p) {
     r[RAT_KEYS[i]] = v / 99;     // normalized 0..1
     r[RAT_KEYS[i] + 'R'] = Math.round(v); // displayable 1..99
   }
+  // Phase 6: split the single tackle rating into football-specific tackle skills so
+  // defenders feel distinct (derived from the roster numbers; no new roster data).
+  r.hitPower = THREE.MathUtils.clamp(r.tackle * 0.65 + r.strength * 0.35, 0, 1); // big-hit power
+  r.wrapTackle = THREE.MathUtils.clamp(r.tackle * 0.8 + r.strength * 0.2, 0, 1);  // secure wrap-up
+  r.pursuit = THREE.MathUtils.clamp(r.speed * 0.7 + r.tackle * 0.3, 0, 1);        // closing / angles
   p.rt = r;
   p.baseSpeed = 6.6 + r.speed * 2.9;        // 6.6 .. 9.5 yd/s (toned-down global pace; rating spread kept)
   p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
@@ -2792,14 +2798,17 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // (>1 = more errant); userBreak = your break-tackle mult.
 const DIFF = {
   // cpuRead = how sharply the CPU reads matchups + calls the right look (0..1).
-  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25, cpuRead: 0.3 },
-  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00, cpuRead: 0.55 },
-  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82, cpuRead: 0.85 },
+  // Phase 6 tackle hooks: cpuWhiff scales how often a CPU tackler misses (arm/whiff
+  // odds); userHitDeg widens (rookie) or tightens (all-pro) the hit-stick square-up
+  // window so a big hit is easier to earn on lower difficulties.
+  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25, cpuRead: 0.3, cpuWhiff: 1.35, userHitDeg: 14 },
+  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00, cpuRead: 0.55, cpuWhiff: 1.0, userHitDeg: 0 },
+  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82, cpuRead: 0.85, cpuWhiff: 0.78, userHitDeg: -8 },
 };
 // Active difficulty with the debug multipliers/offsets folded in (TUNE.cpu*/userBreak*).
 const diff = () => {
   const d = DIFF[game.diff] || DIFF.pro;
-  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul, cpuRead: d.cpuRead != null ? d.cpuRead : 0.55 };
+  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul, cpuRead: d.cpuRead != null ? d.cpuRead : 0.55, cpuWhiff: d.cpuWhiff != null ? d.cpuWhiff : 1, userHitDeg: d.userHitDeg != null ? d.userHitDeg : 0 };
 };
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
@@ -4477,7 +4486,9 @@ function showBanner(text, color = '#ffd23a', opts = {}) {
 // Blitz hit-power rating (~55-99) from closing speed, the tackler's TKL rating,
 // the gang size and turbo — flashed under the badge on a notable hit.
 function hitPower(lead, closing, gangSize = 1, big = false) {
-  const tkl = lead && lead.rt ? lead.rt.tackle : 0.7;
+  // Phase 6: big-hit number keys off the derived hitPower skill (tackle+strength),
+  // so a powerful safety lays bigger wood than a cover corner of equal TACKLE.
+  const tkl = lead && lead.rt ? (lead.rt.hitPower != null ? lead.rt.hitPower : lead.rt.tackle) : 0.7;
   const fp = lead ? fatiguePow(lead) : 1; // a gassed tackler hits softer
   const p = 48 + closing * 2.8 + tkl * 18 * fp + (gangSize - 1) * 5 + (big ? 8 : 0) + (lead && lead.turbo ? 4 : 0);
   return THREE.MathUtils.clamp(Math.round(p), 55, 99);
@@ -4575,13 +4586,21 @@ function dbgBalanceReport() {
   const blk = (nm, sc, g) => !g ? `${nm} ${sc}` :
     `${nm}  ${sc} pts\n  pass ${g.cmp}/${g.att} (${pct(g.cmp, g.att)}%)  ${g.passYds}yd  ${avg(g.passYds, g.att)}/att  ${g.passTD}td\n  rush ${g.car}c  ${g.rushYds}yd  ${avg(g.rushYds, g.car)}/c  ${g.rushTD}td\n  def  ${g.tkl}tkl ${g.sack}sk ${g.intCaught}int`;
   const u = game.userStats;
-  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
+  // Phase 6: per-type tackle outcomes (whiff / arm / broken / fumble vs clean).
+  const ts = game.tackleStats || {}, tot = ts.total || 0;
+  const sum = (...ks) => ks.reduce((n, k) => n + (ts[k] || 0), 0);
+  const clean = sum('drag', 'instant', 'instant-big', 'instant-big-gang');
+  const tkLine = tot
+    ? `\nTKL ${tot}  clean ${pct(clean, tot)}% · arm ${pct(sum('arm', 'arm-offangle'), tot)}% · whiff ${pct(sum('whiff'), tot)}% · slip ${pct(sum('slipped'), tot)}% · broke ${pct(sum('broken'), tot)}% · fum ${pct(sum('fumble'), tot)}%`
+    : '\nTKL —';
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
+  game.tackleStats = {}; // Phase 6: fresh per-type tackle telemetry for the rematch
   game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
@@ -6801,6 +6820,10 @@ function updateBattle(dt) {
 // for the YAC log at endPlay.
 function logTackle(type, info) {
   game.lastTackle = type;
+  // Phase 6 balance telemetry: tally every tackle outcome by type so the Stats
+  // overlay can show whiff% / arm% / fumble% — tune to numbers, not guesses.
+  const ts = game.tackleStats || (game.tackleStats = {});
+  ts[type] = (ts[type] || 0) + 1; ts.total = (ts.total || 0) + 1;
   if (!TUNE.tackleLog) return;
   const s = (n) => (Number.isFinite(n) ? n.toFixed(1) : '?');
   dbgLogPush(`<b>TKL</b> ${type} · close ${s(info.closing)} · ang ${s(info.angle)}° · gang ${info.gang || 1}${info.variant ? ' · ' + info.variant : ''}${info.style ? ' · ' + info.style : ''}`);
@@ -6841,8 +6864,10 @@ function beginTackle(lead, force = false) {
   let hitStyle = null, hitBonus = 0;
   if (TUNE.hitStick && lead === game.controlled && lead.hitArm) { hitStyle = lead.hitArm; }
   lead.hitArm = null;
+  // Phase 6: the square-up window widens on ROOKIE, tightens on ALL-PRO (userHitDeg).
+  const hitWin = 58 + (lead === game.controlled ? diff().userHitDeg : 0);
   if (hitStyle === 'high') {
-    if (angle < 58) { big = true; force = true; hitBonus = TUNE.hitStickBonus; game.replay.bigHit = true; } // squared up: violent
+    if (angle < hitWin) { big = true; force = true; hitBonus = TUNE.hitStickBonus; game.replay.bigHit = true; } // squared up: violent
     else if (!force) { // off-angle big swing — Phase 4 arm tackle, or a whiff
       logTackle('arm-offangle', { closing, angle, style: 'high' });
       if (Math.random() < TUNE.armTackleChance) { beginDrag(carrier, pile, false, hitDir, closing); return; } // drag him down by an arm
@@ -6894,9 +6919,11 @@ function beginTackle(lead, force = false) {
   // tackle (drag him down, he keeps churning) or he slips through with a stagger.
   // Committed/big/gang hits and a man already squared up still land cleanly.
   if (!force && !big && !gang && angle > 48) {
-    const tkl = lead.rt ? lead.rt.tackle : 0.7;
+    const tkl = lead.rt ? (lead.rt.wrapTackle != null ? lead.rt.wrapTackle : lead.rt.tackle) : 0.7;
     const offAngle = THREE.MathUtils.clamp((angle - 48) / 80, 0, 1);
-    const missP = THREE.MathUtils.clamp((0.18 + offAngle * 0.5) * (1.25 - tkl), 0, 0.7) * TUNE.armTackleChance;
+    // Phase 6: a CPU defender whiffs more on ROOKIE, less on ALL-PRO (cpuWhiff).
+    const cpuWhiff = (!game.userOnOffense ? 1 : (lead !== game.controlled ? diff().cpuWhiff : 1));
+    const missP = THREE.MathUtils.clamp((0.18 + offAngle * 0.5) * (1.25 - tkl), 0, 0.7) * TUNE.armTackleChance * cpuWhiff;
     if (Math.random() < missP) {
       if (Math.random() < 0.55) { logTackle('arm', { closing, angle }); beginDrag(carrier, pile, false, hitDir, closing); return; } // dragged down by an arm
       knockdownDefender(lead); // whiffed off the bad angle — he slips it
@@ -7061,7 +7088,9 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
 // Takedown time: wrap-up power (count + TACKLING) vs the carrier's strength/speed.
 // More bodies and stronger tacklers bring him down faster.
 function dragTakedownTime(pile, carrier) {
-  let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? t.rt.tackle : 0.6);
+  // Phase 6: wrap-up speed keys off the derived wrapTackle skill (secure-tackle),
+  // so reliable wrap tacklers cinch him faster than equal-TACKLE big hitters.
+  let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? (t.rt.wrapTackle != null ? t.rt.wrapTackle : t.rt.tackle) : 0.6);
   const car = 0.6 + (carrier.rt ? carrier.rt.strength : 0.7) + Math.hypot(carrier.vel.x, carrier.vel.z) / 22;
   return THREE.MathUtils.clamp(1.05 - (pile.length - 1) * 0.2 - (wrap - car) * 0.22, 0.32, 1.15);
 }
@@ -7098,7 +7127,7 @@ function updateDrag(dt) {
   // big gang stuffs him and even drives him BACK; a lone wrap just stalls him.
   carrier.vel.x *= Math.pow(0.03, dt); carrier.vel.z *= Math.pow(0.03, dt);
   carrier.group.position.x += carrier.vel.x * dt; carrier.group.position.z += carrier.vel.z * dt;
-  let wrapPow = 0; for (const t of d.grabbers) wrapPow += 0.5 + (t.rt ? t.rt.tackle : 0.6);
+  let wrapPow = 0; for (const t of d.grabbers) wrapPow += 0.5 + (t.rt ? (t.rt.wrapTackle != null ? t.rt.wrapTackle : t.rt.tackle) : 0.6);
   const carPow = 0.9 + (carrier.rt ? carrier.rt.strength : 0.7);
   const drive = THREE.MathUtils.clamp((carPow - wrapPow) * 0.7, -2.4, 0.5); // + sneaks forward, - driven back
   cp.z += game.dir * drive * dt;
