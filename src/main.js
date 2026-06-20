@@ -1492,8 +1492,47 @@ async function ensurePlayerModel(idx) {
   e.loaded = true; return e;
 }
 
-function makeCharacter(team) {
-  // Offense = original character; defense = its own blue rigged character (or a
+// Bake a static HEAD mesh from a model's own head geometry — the triangles whose
+// verts are skin-weighted to the Head bone (or its children) — into head-bone-local
+// space, sharing the body material (so it keeps the real texture). Used as a pop-off
+// "helmet" for bare-headed models: the actual head detaches and tumbles. Returns a
+// Group of baked sub-meshes (one per source skinned mesh) at the head's location, or
+// null if no head geometry is found (caller falls back).
+const _bhV = new THREE.Vector3();
+function bakeHeadProp(model, headBone) {
+  const headBones = new Set(); headBone.traverse((o) => { if (o.isBone) headBones.add(o); }); // Head + head_end + any children
+  model.updateWorldMatrix(true, true);
+  const group = new THREE.Group();
+  model.traverse((sm) => {
+    if (!sm.isSkinnedMesh || !sm.geometry || !sm.geometry.attributes.position) return;
+    const geo = sm.geometry, pos = geo.attributes.position, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight, uv = geo.attributes.uv;
+    if (!si || !sw) return;
+    sm.skeleton.update();
+    const bones = sm.skeleton.bones;
+    const isHeadVert = (i) => { let bw = -1, bb = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; bb = si.getComponent(i, k); } } const b = bones[bb]; return !!(b && headBones.has(b)); };
+    const remap = new Map(), npos = [], nuv = [], nidx = [];
+    const add = (oi) => {
+      let ni = remap.get(oi); if (ni !== undefined) return ni;
+      _bhV.fromBufferAttribute(pos, oi); sm.applyBoneTransform(oi, _bhV); sm.localToWorld(_bhV); headBone.worldToLocal(_bhV);
+      ni = npos.length / 3; npos.push(_bhV.x, _bhV.y, _bhV.z); if (uv) nuv.push(uv.getX(oi), uv.getY(oi));
+      remap.set(oi, ni); return ni;
+    };
+    const tri = (a, b, c) => { if (isHeadVert(a) && isHeadVert(b) && isHeadVert(c)) nidx.push(add(a), add(b), add(c)); };
+    const idx = geo.index ? geo.index.array : null;
+    if (idx) { for (let t = 0; t < idx.length; t += 3) tri(idx[t], idx[t + 1], idx[t + 2]); }
+    else { for (let t = 0; t < pos.count; t += 3) tri(t, t + 1, t + 2); }
+    if (!nidx.length) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(npos, 3));
+    if (nuv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(nuv, 2));
+    g.setIndex(nidx); g.computeVertexNormals();
+    const mat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
+    const m = new THREE.Mesh(g, mat); m.castShadow = true; m.frustumCulled = false;
+    group.add(m);
+  });
+  return group.children.length ? group : null;
+}
+function makeCharacter(team) {  // Offense = original character; defense = its own blue rigged character (or a
   // blue-tinted fallback if that model didn't load). Each keeps its own skin.
   const isDef = team === 'def';
   // Defense uses its own BLUE-skinned model (character_def.glb — the same rig as
@@ -1652,25 +1691,16 @@ function makeCharacter(team) {
     helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
     helmet.userData.flying = false;
   } else if (!helmet && headBone && headEnd) {
-    // Bare-headed model (no helmet GLB): build a HEAD prop so the head can pop off
-    // just like a helmet. Invisible normally (the skinned head shows); on a pop it's
-    // shown + flown while the real head shrinks to a nub (see popHelmet/restoreHelmet).
-    model.updateWorldMatrix(true, true);
-    const hp = new THREE.Vector3(), ep = new THREE.Vector3(), hs = new THREE.Vector3(), hq = new THREE.Quaternion();
-    headBone.matrixWorld.decompose(hp, hq, hs);
-    headEnd.getWorldPosition(ep);
-    const headH = Math.max(0.05, hp.distanceTo(ep));
-    const headWorldScale = (hs.x + hs.y + hs.z) / 3 || 0.0124;
-    let skin = 0xb98a66; // skin tone; sample the body material if it isn't just white-on-texture
-    model.traverse((o) => { if (o.isSkinnedMesh && o.material && o.material.color) { const c = o.material.color; if (c.r + c.g + c.b < 2.85) { skin = c.getHex(); } } });
-    const headProp = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12), new THREE.MeshStandardMaterial({ color: skin, roughness: 0.85, metalness: 0.0 }));
-    headProp.scale.setScalar((headH * 1.25) / headWorldScale); headProp.scale.y *= 1.15; // ~head-sized in the bone's local space, slightly egg-shaped
-    headProp.position.copy(headBone.worldToLocal(hp.clone().lerp(ep, 0.5))); // head centre
-    headProp.castShadow = true; headProp.frustumCulled = false; headProp.visible = false;
-    headProp.userData.rest = { parent: headBone, pos: headProp.position.clone(), quat: headProp.quaternion.clone(), scale: headProp.scale.clone() };
-    headProp.userData.flying = false; headProp.userData.isHead = true;
-    headBone.add(headProp);
-    helmet = headProp; // routed through the same pop/restore/flying-helmet machinery
+    // Bare-headed model (no helmet GLB): bake a real HEAD prop from the model's own
+    // head geometry so the actual head pops off (not a stand-in). Invisible normally
+    // (the skinned head shows); on a pop it's shown + flown while the real head
+    // shrinks to a nub (see popHelmet/restoreHelmet).
+    helmet = bakeHeadProp(model, headBone);
+    if (helmet) {
+      headBone.add(helmet); helmet.visible = false;
+      helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
+      helmet.userData.flying = false; helmet.userData.isHead = true;
+    }
   }
 
   return {
@@ -9161,6 +9191,7 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
 
 
 

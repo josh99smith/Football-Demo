@@ -13,6 +13,24 @@ Grounded in the current systems in `src/main.js`.
 
 ---
 
+## 0. Execution directive (read first)
+
+**Run all phases in succession, one after another — do NOT stop to wait for the
+user between phases.** This plan is approved to execute end-to-end autonomously:
+
+- Start at Phase 0 and proceed through Phase 6 without pausing for sign-off.
+  Finishing a phase is the cue to immediately begin the next one.
+- After each phase: run the verification gate (`node --check src/main.js
+  src/ragdoll.js`, the headless init harness, and the playwright shooter per
+  `CLAUDE.md`), then **commit + push that phase** to the dev branch and continue.
+- Only stop early if a verification gate fails and cannot be fixed, or if a phase
+  is genuinely blocked (e.g. a missing asset) — in that case fix forward if you
+  can, otherwise report the blocker and move to the next independent phase.
+- Do not ask "should I start the next phase?" — the answer is always yes until
+  Phase 6 is complete.
+
+---
+
 ## 1. The system today, diagnosed
 
 | Piece | Where | State |
@@ -229,11 +247,14 @@ balance it from data. **Risk:** Low.
 Phase 1 makes the call swing the play *with a stated reason*, Phase 2 gives you a
 thinking opponent to out-call.
 
-**Recommended first slice (one shippable increment):**
+**Starting increment (then keep going — do not stop here):**
 **Phase 0-lite + Phase 1 matchup + result reasons + a non-random defensive CPU.**
 Add `beats/losesTo` metadata to the existing 6 plays and 4 coverages, apply a
 visible leverage swing at snap, post a one-line cause on the result, and make the
 CPU pick coverage by down & distance instead of pure random. That alone turns
 play-calling from cosmetic into decisive — with the current playbook, no new art —
-and proves the matchup model before expanding content. Validate with `node --check`,
-the headless init harness, and the playwright shooter per `CLAUDE.md`.
+and proves the matchup model. **Ship/commit it, then continue straight into the
+rest of Phase 0 and on through Phase 6 per the Execution directive above** — this
+is the first increment, not a stopping point. Validate each step with
+`node --check`, the headless init harness, and the playwright shooter per
+`CLAUDE.md`.
