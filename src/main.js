@@ -6888,6 +6888,23 @@ function beginTackle(lead, force = false) {
     return;
   }
 
+  // Phase 4: a BAD-ANGLE or LOW-RATED arrival can't square him up — it's only an arm
+  // tackle (drag him down, he keeps churning) or he slips through with a stagger.
+  // Committed/big/gang hits and a man already squared up still land cleanly.
+  if (!force && !big && !gang && angle > 48) {
+    const tkl = lead.rt ? lead.rt.tackle : 0.7;
+    const offAngle = THREE.MathUtils.clamp((angle - 48) / 80, 0, 1);
+    const missP = THREE.MathUtils.clamp((0.18 + offAngle * 0.5) * (1.25 - tkl), 0, 0.7) * TUNE.armTackleChance;
+    if (Math.random() < missP) {
+      if (Math.random() < 0.55) { logTackle('arm', { closing, angle }); beginDrag(carrier, pile, false, hitDir, closing); return; } // dragged down by an arm
+      knockdownDefender(lead); // whiffed off the bad angle — he slips it
+      if (carrier.actions.hitreact && carrier.oneShotT <= 0) playOneShot(carrier, 'hitreact', TUNE.staggerDur * 0.7, true);
+      carrier.vel.x *= 0.85; carrier.vel.z *= 0.85; shake.add(0.12);
+      showBanner('SLIPPED THE TACKLE!', '#bfffd0'); logTackle('slipped', { closing, angle });
+      return;
+    }
+  }
+
   // Committed to bringing him down: close the gap so the pile makes real CONTACT
   // instead of forming a yard short of the carrier. Snap each tackler onto him
   // along his own approach line (carrier is the anchor). Runs before every
