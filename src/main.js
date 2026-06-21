@@ -1558,6 +1558,7 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
   // the field and the next hit snapshots a broken pose).
   let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null, leftHandBone = null;
   let headBone = null, headEnd = null, spineBone = null;
+  const leg = { thighR: null, shinR: null, footR: null, thighL: null, shinL: null, footL: null }; // Phase 3 foot-lock IK chain
   const restPose = [];
   model.traverse((o) => {
     if (o.isBone) {
@@ -1570,6 +1571,8 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
       if (o.name === 'Head') headBone = o;
       if (o.name === 'head_end') headEnd = o;
       if (o.name === 'Spine01' || (!spineBone && o.name === 'Spine')) spineBone = o; // waist bend (battle/block)
+      if (o.name === 'RightUpLeg') leg.thighR = o; if (o.name === 'RightLeg') leg.shinR = o; if (o.name === 'RightFoot') leg.footR = o;
+      if (o.name === 'LeftUpLeg') leg.thighL = o; if (o.name === 'LeftLeg') leg.shinL = o; if (o.name === 'LeftFoot') leg.footL = o;
       restPose.push([o, o.position.clone(), o.quaternion.clone()]);
     }
   });
@@ -1684,6 +1687,7 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet, headFix, headSnap, bones: restPose.map((e) => e[0]), // bone list for replay capture
+    leg, footLockR: null, footLockL: null, // Phase 3 foot-lock IK: captured world plant per foot (null = swinging)
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1904,7 +1908,7 @@ const TUNE_DEFAULTS = {
   // Animation overhaul (docs/animation-system-overhaul-plan.md)
   animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
   animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
-  footLock: 1,           // Phase 3: plant the stance foot to kill skating/float (0 = off, quality scaled)
+  footLock: 0,           // Phase 3: plant the stance foot to kill skating (0 = off; opt-in — needs per-rig visual tuning)
   secondaryMotion: 1.0,  // Phase 3: × overshoot/settle on hard stops + direction changes (0 = off)
   ragdollBlend: 1,       // Phase 4: blend from the settled ragdoll pose into the get-up (0 = hard snap)
   animQuality: 1.0,      // Phase 6: master quality scale for IK/additive layers (0 = cheapest, off on low-end)
@@ -7645,6 +7649,18 @@ function applyLocoLife(ch, dt, spin) {
   const wantPitch = THREE.MathUtils.clamp((spd * 0.010 + (ch.turbo ? 0.05 : 0)) * TUNE.runLean, 0, 0.28); // subtle lean with speed (× knob)
   ch.lean = expEase(ch.lean, wantPitch, 6, dt);
   let pitch = ch.lean, roll = ch.bank;
+  // Phase 3 secondary motion: a damped spring on along-heading acceleration so the
+  // torso OVERSHOOTS on a hard stop (pitches forward) or a burst (rocks back) and
+  // then settles — momentum the canned clips don't carry. Bounded + knob-gated.
+  const sm = TUNE.secondaryMotion || 0;
+  if (sm > 0) {
+    const accel = (ch.speed - (ch._smPrev != null ? ch._smPrev : ch.speed)) / Math.max(dt, 1e-3);
+    ch._smPrev = ch.speed;
+    const tgt = THREE.MathUtils.clamp(-accel * 0.004, -0.16, 0.16) * sm; // braking -> forward pitch
+    ch._smVel = (ch._smVel || 0) + ((tgt - (ch._smPose || 0)) * 90 - (ch._smVel || 0) * 14) * dt; // k=90, c=14 (slightly underdamped)
+    ch._smPose = THREE.MathUtils.clamp((ch._smPose || 0) + ch._smVel * dt, -0.2, 0.2);
+    pitch += ch._smPose;
+  }
   if (ch.speed < 0.6) { // breathing + slow weight shift while standing
     const t = performance.now() * 0.001;
     pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012 * TUNE.animBreath;
@@ -7738,6 +7754,29 @@ function ik2(arm, fore, hand, target, w) {
     else bone.quaternion.copy(_ikBw);
     bone.updateMatrixWorld(true);                    // refresh the subtree for the next pass
   }
+}
+// Phase 3 foot-lock IK (opt-in via TUNE.footLock): plant the stance foot to the
+// turf so a blended gait doesn't skate. The lower foot is treated as planted; its
+// world XZ is captured on contact and the leg is 2-bone-IK'd back toward that
+// point as the hips travel, releasing when the foot lifts into swing. Scaled by
+// animQuality so it can be dropped on low-end devices. EXPERIMENTAL: uses the
+// aim-based ik2 approximation — weight/thresholds want per-rig visual tuning,
+// hence it ships OFF by default.
+const _flW = new THREE.Vector3(), _flTarget = new THREE.Vector3();
+function footLockLeg(ch, thigh, shin, foot, lockKey) {
+  if (!thigh || !shin || !foot) return;
+  foot.updateWorldMatrix(true, false);
+  _flW.setFromMatrixPosition(foot.matrixWorld);
+  if (_flW.y <= 0.18) { // planted
+    if (!ch[lockKey]) ch[lockKey] = { x: _flW.x, z: _flW.z }; // capture the plant
+    const w = THREE.MathUtils.clamp(TUNE.footLock * (TUNE.animQuality != null ? TUNE.animQuality : 1), 0, 1) * 0.6;
+    if (w > 0.01) { _flTarget.set(ch[lockKey].x, _flW.y, ch[lockKey].z); ik2(thigh, shin, foot, _flTarget, w); }
+  } else { ch[lockKey] = null; } // swinging — release
+}
+function applyFootLock(ch) {
+  if (!TUNE.footLock || !ch.leg) return;
+  footLockLeg(ch, ch.leg.thighR, ch.leg.shinR, ch.leg.footR, 'footLockR');
+  footLockLeg(ch, ch.leg.thighL, ch.leg.shinL, ch.leg.footL, 'footLockL');
 }
 function ikHandsToBall(ch, target, twoHand, w) {
   if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
@@ -8085,6 +8124,7 @@ function updateAnimation(ch, dt) {
   const spin = (!inBattle && !grabbing && ch.spinT > 0) ? (1 - ch.spinT / SPIN_DUR) * Math.PI * 2 : 0;
   applyLocoLife(ch, dt, spin);
   stepMixer(ch, dt);
+  if (TUNE.footLock && !inBattle && !grabbing && ch.spinT <= 0) applyFootLock(ch); // Phase 3 foot-lock (opt-in)
   // Procedural overlays blend in/out via per-character weights, so a pose fades
   // smoothly over the locomotion clip instead of snapping on/off in one frame.
   // Pick the single active overlay (priority order); its weight eases toward 1
