@@ -1724,14 +1724,88 @@ const BLEND = {
 // `x += (want-x)*min(1,dt*k)` approximations scattered through the pose code.
 const expEase = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
 
+// Phase 1 locomotion blend space: the forward gaits + the backpedal pair are no
+// longer discrete single-active clips with a flat 0.18 crossfade. They run as a
+// weighted blend (setBase below) keyed continuously on speed/direction, so the
+// body accelerates through the gait continuum with no cut. setClip stays the
+// single-active path for one-shots / dance / sulk / battle overrides; when one
+// fires it clears any leftover blend-space gait weight so the crossfade is clean.
+const BASE_ACTS = ['idle', 'walk', 'run', 'sprint', 'backL', 'backR', 'block'];
 function setClip(ch, name, blend) {
   if (ch.current === name) return;
   const next = ch.actions[name];
   if (!next) return;
+  if (ch._baseInit) for (const n of BASE_ACTS) { // drop residual blend-space weights (keep the dominant for the crossfade-from)
+    const a = ch.actions[n];
+    if (a && a !== next && a !== ch.active && a.getEffectiveWeight() > 0) a.setEffectiveWeight(0);
+  }
   next.reset(); next.enabled = true;
   next.setEffectiveTimeScale(1); next.setEffectiveWeight(1);
   next.crossFadeFrom(ch.active, blend != null ? blend : BLEND.gait, false); next.play();
   ch.active = next; ch.current = name;
+}
+// Start every base action once (idle already runs at weight 1) so setBase can just
+// ease weights forever without stop/restart phase pops.
+function initBase(ch) {
+  if (ch._baseInit) return;
+  for (const n of BASE_ACTS) { const a = ch.actions[n]; if (!a) continue; a.enabled = true; if (!a.isRunning()) { a.setEffectiveWeight(n === 'idle' ? a.getEffectiveWeight() : 0); a.play(); } }
+  ch._baseInit = true;
+}
+// Ease the base layer toward a target weight distribution (fps-independent), so
+// gait<->gait and gait<->backpedal blend continuously instead of popping. Tracks
+// the dominant action as ch.active/current for one-shot crossfades, and fades out
+// any just-finished one-shot still carrying weight under the resuming gait.
+function setBase(ch, target, dt, rate) {
+  initBase(ch);
+  let domN = null, domW = -1;
+  for (const n of BASE_ACTS) {
+    const a = ch.actions[n]; if (!a) continue;
+    const tgt = target[n] || 0;
+    let w = expEase(a.getEffectiveWeight(), tgt, rate, dt);
+    if (w < 0.001 && tgt === 0) w = 0;
+    a.setEffectiveWeight(w);
+    if (w > domW) { domW = w; domN = n; }
+  }
+  const prev = ch.active;
+  if (prev && !BASE_ACTS.includes(ch.current)) { let pw = expEase(prev.getEffectiveWeight(), 0, rate, dt); prev.setEffectiveWeight(pw < 0.001 ? 0 : pw); }
+  if (domN) { ch.active = ch.actions[domN]; ch.current = domN; }
+}
+// 1D speed blend over the forward gaits: returns weights for the two clips that
+// bracket the current speed (anchors are where each clip reads planted). Idle is
+// fully on at rest, sprint fully on at top speed; everything in between cross-fades.
+const GAIT_ANCHORS = [[0, 'idle'], [1.6, 'walk'], [7.5, 'run'], [11.5, 'sprint']];
+function gaitWeights(speed, out) {
+  out.idle = out.walk = out.run = out.sprint = 0;
+  const A = GAIT_ANCHORS, last = A.length - 1;
+  if (speed <= A[0][0]) { out.idle = 1; return out; }
+  if (speed >= A[last][0]) { out.sprint = 1; return out; }
+  for (let i = 0; i < last; i++) {
+    if (speed <= A[i + 1][0]) { const t = (speed - A[i][0]) / (A[i + 1][0] - A[i][0]); out[A[i][1]] = 1 - t; out[A[i + 1][1]] = t; return out; }
+  }
+  return out;
+}
+const _baseTarget = { idle: 0, walk: 0, run: 0, sprint: 0, backL: 0, backR: 0, block: 0 };
+// Drive the base layer for one non-battle character: pick the target distribution
+// (1D forward-gait blend, 2D backpedal blend, or a block hold) and foot-sync each
+// active blended clip to travel so planted feet don't skate.
+function updateLocoBlend(ch, want, dt) {
+  const t = _baseTarget; t.idle = t.walk = t.run = t.sprint = t.backL = t.backR = t.block = 0;
+  if (want === 'backL' || want === 'backR') {
+    const lat = ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading); // + right / - left
+    const r = THREE.MathUtils.clamp(lat / 4 * 0.5 + 0.5, 0, 1); // 2D backpedal: blend L<->R by lateral drift
+    t.backR = r; t.backL = 1 - r;
+  } else if (want === 'block') { t.block = 1; }
+  else { gaitWeights(ch.speed, t); }
+  // Velocity-aware blend rate: a big speed swing gets a slightly LONGER blend
+  // (lower rate); steady speed tracks tight. Keeps a sprint->stop from snapping.
+  const dv = Math.abs(ch.speed - (ch._lastSpeed != null ? ch._lastSpeed : ch.speed)); ch._lastSpeed = ch.speed;
+  const rate = THREE.MathUtils.clamp(15 - dv * 2.2, 7, 16);
+  setBase(ch, t, dt, rate);
+  for (const n of ['walk', 'run', 'sprint', 'backL', 'backR']) {
+    const a = ch.actions[n]; if (!a || a.getEffectiveWeight() <= 0.002) continue;
+    const ref = a.getClip().userData && a.getClip().userData.refSpeed;
+    if (ref > 0) a.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
+  }
 }
 
 // ===========================================================================
@@ -7979,14 +8053,13 @@ function updateAnimation(ch, dt) {
   // 1-on-1 hand-fight). The break-tackle DRIVE still uses the push clip (battle).
   if (ch.blocking) want = 'run';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
-  setClip(ch, want);
-  if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
-  // Foot-skating fix: drive the gait at the speed it was authored for, so a
-  // planted foot stays put while the body travels (instead of sliding). The
-  // run band churns a touch faster in the BATTLE so it reads as a struggle.
-  if (!inBattle && (want === 'walk' || want === 'run' || want === 'sprint' || want === 'backL' || want === 'backR')) {
-    const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
-    if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
+  // BATTLE keeps the single-active push/churn clip (its tuned drive); everything
+  // else flows through the Phase 1 blend space (continuous gaits + 2D backpedal).
+  if (inBattle) {
+    setClip(ch, want);
+    if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
+  } else {
+    updateLocoBlend(ch, want, dt);
   }
   // Base root orientation: heading + any active 360 spin, plus locomotion "life"
   // (bank into turns, lean with speed, idle breathing). Procedural leans below
