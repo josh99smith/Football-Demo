@@ -1705,12 +1705,32 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
   };
 }
 
-function setClip(ch, name) {
+// ---- Animation overhaul (docs/animation-system-overhaul-plan.md) ----------
+// Phase 0: a single data-driven blend table. Every transition duration lives
+// here instead of scattered magic numbers, so blends are intentional + tunable
+// (Phase 6 wires the live knobs to these). Times are seconds.
+const BLEND = {
+  gait: 0.18,         // base locomotion crossfade (setClip default)
+  gaitFast: 0.10,     // tiny speed delta -> snappier blend (Phase 1)
+  gaitSlow: 0.30,     // big speed/direction delta -> longer blend (Phase 1)
+  poseIn: 0.09,       // procedural overlay ease-IN  (was POSE_IN)
+  poseOut: 0.13,      // procedural overlay ease-OUT (was POSE_OUT)
+  oneShotOut: 0.16,   // pose-matched one-shot exit back into locomotion (Phase 2)
+  ragdollGetup: 0.24, // blend from the settled ragdoll pose into the get-up (Phase 4)
+};
+// Frame-rate-independent exponential smoothing: converges `cur` toward `target`
+// by a fraction that is identical at any dt (so a blend looks the same at 30 or
+// 144 fps and under bullet-time). `rate` larger = snappier. Replaces the
+// `x += (want-x)*min(1,dt*k)` approximations scattered through the pose code.
+const expEase = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
+
+function setClip(ch, name, blend) {
   if (ch.current === name) return;
   const next = ch.actions[name];
+  if (!next) return;
   next.reset(); next.enabled = true;
   next.setEffectiveTimeScale(1); next.setEffectiveWeight(1);
-  next.crossFadeFrom(ch.active, 0.18, false); next.play();
+  next.crossFadeFrom(ch.active, blend != null ? blend : BLEND.gait, false); next.play();
   ch.active = next; ch.current = name;
 }
 
@@ -1800,6 +1820,13 @@ const TUNE_DEFAULTS = {
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
   animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0,
+  // Animation overhaul (docs/animation-system-overhaul-plan.md)
+  animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
+  animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
+  footLock: 1,           // Phase 3: plant the stance foot to kill skating/float (0 = off, quality scaled)
+  secondaryMotion: 1.0,  // Phase 3: × overshoot/settle on hard stops + direction changes (0 = off)
+  ragdollBlend: 1,       // Phase 4: blend from the settled ragdoll pose into the get-up (0 = hard snap)
+  animQuality: 1.0,      // Phase 6: master quality scale for IK/additive layers (0 = cheapest, off on low-end)
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -4373,7 +4400,7 @@ function refreshRunAction(c) {
 const moveToward = (v, t, maxD) => (v < t ? Math.min(v + maxD, t) : Math.max(v - maxD, t));
 // Procedural-overlay weight ease (in faster than out); hoisted so updateAnimation
 // doesn't rebuild a closure per character per frame.
-const POSE_IN = 0.09, POSE_OUT = 0.13;
+const POSE_IN = BLEND.poseIn, POSE_OUT = BLEND.poseOut; // data-driven (Phase 0 blend table)
 const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
 function turnToward(a, b, maxD) {
   let d = b - a;
@@ -4601,6 +4628,7 @@ function resetGame() {
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
   game.tackleStats = {}; // Phase 6: fresh per-type tackle telemetry for the rematch
+  game.animSnaps = { count: 0, max: 0, worst: '' }; // anim overhaul: fresh snap tally
   game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
@@ -7532,9 +7560,9 @@ function applyLocoLife(ch, dt, spin) {
   const angVel = dt > 1e-4 ? dH / dt : 0;
   const spd = Math.min(ch.speed, 14);
   const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4) * TUNE.animBank; // carve into the turn
-  ch.bank += (wantBank - ch.bank) * Math.min(1, dt * 8);
+  ch.bank = expEase(ch.bank, wantBank, 8, dt); // fps-independent (Phase 0)
   const wantPitch = THREE.MathUtils.clamp((spd * 0.010 + (ch.turbo ? 0.05 : 0)) * TUNE.runLean, 0, 0.28); // subtle lean with speed (× knob)
-  ch.lean += (wantPitch - ch.lean) * Math.min(1, dt * 6);
+  ch.lean = expEase(ch.lean, wantPitch, 6, dt);
   let pitch = ch.lean, roll = ch.bank;
   if (ch.speed < 0.6) { // breathing + slow weight shift while standing
     const t = performance.now() * 0.001;
@@ -7563,7 +7591,7 @@ function applyHeadTrack(ch, targetPos, w, dt) {
   let rel = Math.atan2(dx, dz) - ch.heading;
   while (rel > Math.PI) rel -= Math.PI * 2; while (rel < -Math.PI) rel += Math.PI * 2;
   const want = THREE.MathUtils.clamp(rel, -1.1, 1.1) * w; // clamp to a believable neck range
-  ch.headYaw += (want - ch.headYaw) * Math.min(1, dt * 10);
+  ch.headYaw = expEase(ch.headYaw, want, 10, dt); // fps-independent (Phase 0)
   _tq.setFromAxisAngle(_YAX, ch.headYaw);
   ch.headBone.quaternion.multiply(_tq);
   ch.headBone.updateMatrixWorld(true);
@@ -7862,6 +7890,43 @@ function groundClamp(ch) {
   // wild bone can't float the player up "in a plane above the field".
   if (Number.isFinite(lo) && lo < TARGET) ch.group.position.y = Math.min(TARGET - lo, 0.8);
 }
+// ---- Animation snap detector (Phase 0): the measurement backbone for "no
+// visible snap, ever". When TUNE.animDebug is on, track the largest single-frame
+// bone-rotation delta per character; anything over animSnapThresh is a flagged
+// snap — a transition that POPPED instead of blending (a hard setClip, a
+// restoreRestPose teleport, a one-shot fall-through). Surfaced live in the debug
+// panel + tallied so regressions are caught. Runs for EVERY character each frame
+// (including ragdolling ones) so it also catches the physics<->anim seams.
+const _snapPrev = new WeakMap(); // bone -> last-frame local quaternion
+function animSnapTrack(ch, dt) {
+  if (!TUNE.animDebug || !ch.bones || dt <= 0) return;
+  let mx = 0, worst = null;
+  for (const b of ch.bones) {
+    let prev = _snapPrev.get(b);
+    if (!prev) { _snapPrev.set(b, b.quaternion.clone()); continue; }
+    const ang = prev.angleTo(b.quaternion);
+    if (ang > mx) { mx = ang; worst = b; }
+    prev.copy(b.quaternion);
+  }
+  ch.animSnap = mx;
+  if (mx > TUNE.animSnapThresh) {
+    const s = game.animSnaps || (game.animSnaps = { count: 0, max: 0, worst: '' });
+    s.count++;
+    if (mx > s.max) { s.max = mx; s.worst = (ch.role || '?') + '/' + (worst ? worst.name : '?'); }
+  }
+}
+// Live anim-controller readout for the debug panel: the controlled player's base
+// clip + active overlay + last-frame snap, plus the running snap tally. The
+// measurement half of "prioritize smoothness" — you can watch a transition and
+// see whether it blended or popped.
+function animReadout() {
+  if (!TUNE.animDebug) return '';
+  const c = game.controlled;
+  const ov = c ? ['battle', 'grab', 'catch', 'throw', 'arm', 'block', 'sulk'].filter((k) => (c[k + 'W'] || 0) > 0.02).map((k) => `${k}${(c[k + 'W']).toFixed(1)}`).join(',') : '';
+  const s = game.animSnaps || { count: 0, max: 0, worst: '' };
+  const me = c ? `\nANIM ${c.current}${ov ? ' +' + ov : ''}  snap ${(c.animSnap || 0).toFixed(2)}` : '';
+  return `${me}\nSNAPS ${s.count} max ${s.max.toFixed(2)} ${s.worst}`;
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   // End-of-game finale: winners loop a real dance, losers loop an anger/tantrum
@@ -7963,7 +8028,7 @@ function updateAnimation(ch, dt) {
   // threat of contact — only in open-field carrying (no battle/grab/stiff-arm/etc.
   // overlay, which pose the arms themselves).
   const protectTarget = (!active && ch === game.carrier) ? carrierThreat(ch) : 0;
-  ch.protectW += (protectTarget - ch.protectW) * Math.min(1, dt * 8);
+  ch.protectW = expEase(ch.protectW, protectTarget, 8, dt); // fps-independent (Phase 0)
   if (ch.protectW > 0.01) applyCarryProtect(ch, ch.protectW);
   // Head-on-a-swivel: a backpedaling player (a DB dropping into coverage, the QB
   // on his drop) tracks the ball in flight or the nearest receiver instead of
@@ -8337,6 +8402,7 @@ function updatePlay(dt) {
   }
   updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
+  if (TUNE.animDebug) for (const ch of game.all) animSnapTrack(ch, dt); // Phase 0 snap detector (after all bones are posed)
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
@@ -8833,6 +8899,12 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animProtect', label: 'Ball protect ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animDebug', label: 'Snap detector', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'animSnapThresh', label: 'Snap thresh (rad)', min: 0.2, max: 1.2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'footLock', label: 'Foot-lock IK', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'secondaryMotion', label: 'Overshoot/settle ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'ragdollBlend', label: 'Get-up blend', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'animQuality', label: 'Anim quality', min: 0, max: 1, step: 0.1, fmt: (v) => v.toFixed(1) },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
@@ -9178,7 +9250,7 @@ async function applyModelChoice() {
 function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
   const tele = dbgPanelEl.querySelector('.dbg-tele');
-  try { tele.textContent = balanceSummary().text + `\nstate:${game.state}`; } catch (e) { /* ignore */ }
+  try { tele.textContent = balanceSummary().text + `\nstate:${game.state}` + animReadout(); } catch (e) { /* ignore */ }
   const rep = dbgPanelEl.querySelector('#dbg-statrep'); // live balance report (Stats tab)
   if (rep && rep.offsetParent !== null) { try { rep.textContent = dbgBalanceReport(); } catch (e) { /* ignore */ } }
 }
