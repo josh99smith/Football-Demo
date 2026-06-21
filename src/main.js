@@ -5078,7 +5078,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.recoverBlend = null; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -6801,12 +6801,14 @@ function updateKnockdownRecovery(dt) {
     const p = d.ragdoll && d.ragdoll.active ? d.ragdoll.rootXZ() : null;
     if (d.ragdoll) d.ragdoll.dispose();
     d.ragdolling = false; d.downKnock = false;
+    if (d.actions.getup) captureGetupPose(d); // Phase 4: snapshot the fall pose before the snap-to-rest
     restoreRestPose(d); if (d.mixer) d.mixer.setTime(0);
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
     if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
     // Phase 2: a minor knockdown (settled quickly, not far from his feet) pops up
-    // fast; a big tumble takes the full get-up.
+    // fast; a big tumble takes the full get-up. Phase 4: the get-up rises from the
+    // fall pose (applyRecoverBlend) instead of teleporting to a clean rest pose.
     if (d.actions.getup) playOneShot(d, 'getup', d.downT < TUNE.knockdownRecover + 0.5 ? 0.85 : 1.5, true);
   }
 }
@@ -7535,6 +7537,30 @@ function restoreRestPose(ch) {
   if (!ch.restPose) return;
   for (const [bone, pos, quat] of ch.restPose) { bone.position.copy(pos); bone.quaternion.copy(quat); }
 }
+// ---- Phase 4: blend-from-ragdoll get-up (the headline seam fix) ----------------
+// Snapshot the settled ragdoll's bone orientations the instant before a recovery
+// snaps the skeleton to rest, so the get-up can rise FROM where the body fell
+// instead of teleporting to a clean rest pose. captureGetupPose stores the local
+// quaternions; applyRecoverBlend (called during the get-up one-shot) crossfades
+// from that physics pose into the clip over BLEND.ragdollGetup. Head is skipped so
+// the alt-model head-level fix isn't fought during the blend.
+function captureGetupPose(ch) {
+  if (!TUNE.ragdollBlend || !ch.bones) return;
+  const rb = ch.recoverBlend || (ch.recoverBlend = { t: 0, dur: BLEND.ragdollGetup, qs: [] });
+  rb.t = 0; rb.dur = BLEND.ragdollGetup;
+  for (let i = 0; i < ch.bones.length; i++) {
+    if (ch.bones[i] === ch.headBone) { rb.qs[i] = null; continue; }
+    rb.qs[i] = (rb.qs[i] || new THREE.Quaternion()).copy(ch.bones[i].quaternion);
+  }
+}
+function applyRecoverBlend(ch, dt) {
+  const rb = ch.recoverBlend; if (!rb) return;
+  rb.t += dt;
+  const k = THREE.MathUtils.clamp(rb.t / rb.dur, 0, 1); // 0 = settled physics pose, 1 = pure get-up clip
+  const bones = ch.bones, qs = rb.qs;
+  for (let i = 0; i < bones.length; i++) { if (qs[i]) bones[i].quaternion.slerp(qs[i], 1 - k); } // pull the clip pose back toward the fall pose, easing off
+  if (k >= 1) ch.recoverBlend = null;
+}
 function clearRagdolls() {
   for (const ch of game.all) {
     const wasRagdoll = ch.ragdolling || (ch.ragdoll && ch.ragdoll.active);
@@ -8074,6 +8100,7 @@ function updateAnimation(ch, dt) {
     if (ch.catchLeap && (ball.mode === 'flying' || ball.mode === 'secured') && ch === (ball.catcher || ball.targetRecv)) {
       applyCatchPose(ch, ball.mesh.position, dt, 0.85);
     }
+    if (ch.recoverBlend) applyRecoverBlend(ch, dt); // Phase 4: rise FROM the fall pose into the get-up
     groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
     return;          // motion; lift the root so no joint sinks through the turf
   }
