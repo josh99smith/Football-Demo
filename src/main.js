@@ -1739,6 +1739,7 @@ function setClip(ch, name, blend) {
     const a = ch.actions[n];
     if (a && a !== next && a !== ch.active && a.getEffectiveWeight() > 0) a.setEffectiveWeight(0);
   }
+  if (ch.fadeAct && ch.fadeAct !== next) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; } // a new override pre-empts a fading one-shot
   next.reset(); next.enabled = true;
   next.setEffectiveTimeScale(1); next.setEffectiveWeight(1);
   next.crossFadeFrom(ch.active, blend != null ? blend : BLEND.gait, false); next.play();
@@ -1766,8 +1767,14 @@ function setBase(ch, target, dt, rate) {
     a.setEffectiveWeight(w);
     if (w > domW) { domW = w; domN = n; }
   }
-  const prev = ch.active;
-  if (prev && !BASE_ACTS.includes(ch.current)) { let pw = expEase(prev.getEffectiveWeight(), 0, rate, dt); prev.setEffectiveWeight(pw < 0.001 ? 0 : pw); }
+  // Phase 2 pose-matched exit: a just-finished one-shot (juke/dive/celebrate) or a
+  // dance/sulk override holds its final pose and bleeds out under the resuming
+  // locomotion over BLEND.oneShotOut — instead of lingering or snapping back.
+  if (ch.fadeAct) {
+    const pw = expEase(ch.fadeAct.getEffectiveWeight(), 0, 3 / BLEND.oneShotOut, dt);
+    if (pw < 0.01) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; }
+    else ch.fadeAct.setEffectiveWeight(pw);
+  }
   if (domN) { ch.active = ch.actions[domN]; ch.current = domN; }
 }
 // 1D speed blend over the forward gaits: returns weights for the two clips that
@@ -8011,6 +8018,13 @@ function updateAnimation(ch, dt) {
   // The break-tackle (1-on-1) DEFENDER drives in with the push clip; the carrier
   // keeps the procedural brace/wrap. (Falls back to the run+battle pose if no pack.)
   const battleTackler = inBattle && ch === game.battle.tackler && !!ch.actions.block;
+  // Phase 2 interruptibility: a higher-priority event pre-empts a cosmetic one-shot
+  // (juke/spin/celebration) so it can't freeze mid-clip — it bleeds out via the
+  // pose-matched fast blend while the new state takes over. A committed CATCH leap
+  // is exempt (its overlay rides on top of the leap until the ball is in hand).
+  if (ch.oneShotT > 0 && !ch.catchLeap && (inBattle || (ch.grabbing && game.drag.active))) {
+    ch.fadeAct = ch.active; ch.oneShotT = 0;
+  }
   if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
@@ -8053,6 +8067,10 @@ function updateAnimation(ch, dt) {
   // 1-on-1 hand-fight). The break-tackle DRIVE still uses the push clip (battle).
   if (ch.blocking) want = 'run';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
+  // Phase 2: if we just handed back from a one-shot/dance/sulk override (ch.active
+  // is a non-base clip), tag it to bleed out under the resuming gait (pose-matched
+  // exit) instead of the gait snapping in over the held final pose.
+  if (!inBattle && ch.active && !BASE_ACTS.includes(ch.current) && ch.fadeAct !== ch.active) ch.fadeAct = ch.active;
   // BATTLE keeps the single-active push/churn clip (its tuned drive); everything
   // else flows through the Phase 1 blend space (continuous gaits + 2D backpedal).
   if (inBattle) {
