@@ -1912,6 +1912,8 @@ const TUNE_DEFAULTS = {
   secondaryMotion: 1.0,  // Phase 3: × overshoot/settle on hard stops + direction changes (0 = off)
   ragdollBlend: 1,       // Phase 4: blend from the settled ragdoll pose into the get-up (0 = hard snap)
   animQuality: 1.0,      // Phase 6: master quality scale for IK/additive layers (0 = cheapest, off on low-end)
+  // Phase 6: live blend-table durations (seconds) — mirror BLEND, synced via syncBlend()
+  blendGait: 0.18, blendPoseIn: 0.09, blendPoseOut: 0.13, blendOneShotOut: 0.16, blendGetup: 0.24,
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -1941,6 +1943,13 @@ try {
     for (const k in TUNE_DEFAULTS) if (saved[k] !== undefined && typeof saved[k] === typeof TUNE_DEFAULTS[k]) TUNE[k] = saved[k];
   }
 } catch (e) { /* ignore corrupt/unavailable storage */ }
+// Phase 6: push the live blend-time knobs into the BLEND table (boot + on knob
+// edit) so every transition duration is tunable from the Anim debug tab.
+function syncBlend() {
+  BLEND.gait = TUNE.blendGait; BLEND.poseIn = TUNE.blendPoseIn; BLEND.poseOut = TUNE.blendPoseOut;
+  BLEND.oneShotOut = TUNE.blendOneShotOut; BLEND.ragdollGetup = TUNE.blendGetup;
+}
+syncBlend();
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -4485,8 +4494,8 @@ function refreshRunAction(c) {
 const moveToward = (v, t, maxD) => (v < t ? Math.min(v + maxD, t) : Math.max(v - maxD, t));
 // Procedural-overlay weight ease (in faster than out); hoisted so updateAnimation
 // doesn't rebuild a closure per character per frame.
-const POSE_IN = BLEND.poseIn, POSE_OUT = BLEND.poseOut; // data-driven (Phase 0 blend table)
-const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
+const POSE_IN = BLEND.poseIn, POSE_OUT = BLEND.poseOut; // legacy aliases (overlay ease reads BLEND live below)
+const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? BLEND.poseIn : BLEND.poseOut));
 function turnToward(a, b, maxD) {
   let d = b - a;
   while (d > Math.PI) d -= Math.PI * 2;
@@ -4705,7 +4714,11 @@ function dbgBalanceReport() {
   const tkLine = tot
     ? `\nTKL ${tot}  clean ${pct(clean, tot)}% · arm ${pct(sum('arm', 'arm-offangle'), tot)}% · whiff ${pct(sum('whiff'), tot)}% · slip ${pct(sum('slipped'), tot)}% · broke ${pct(sum('broken'), tot)}% · fum ${pct(sum('fumble'), tot)}%`
     : '\nTKL —';
-  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
+  // Phase 6: animation snap telemetry (regression catch) — only meaningful when the
+  // detector is running (TUNE.animDebug); flags any transition that popped.
+  const an = game.animSnaps || { count: 0, max: 0, worst: '' };
+  const anLine = TUNE.animDebug ? `\nANIM snaps ${an.count} · max ${an.max.toFixed(2)}rad${an.worst ? ' @ ' + an.worst : ''}` : '';
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}${anLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
@@ -7678,7 +7691,7 @@ function applyLocoLife(ch, dt, spin) {
   // Phase 3 secondary motion: a damped spring on along-heading acceleration so the
   // torso OVERSHOOTS on a hard stop (pitches forward) or a burst (rocks back) and
   // then settles — momentum the canned clips don't carry. Bounded + knob-gated.
-  const sm = TUNE.secondaryMotion || 0;
+  const sm = (TUNE.secondaryMotion || 0) * (TUNE.animQuality != null ? TUNE.animQuality : 1); // Phase 6: quality-scaled
   if (sm > 0) {
     const accel = (ch.speed - (ch._smPrev != null ? ch._smPrev : ch.speed)) / Math.max(dt, 1e-3);
     ch._smPrev = ch.speed;
@@ -7808,7 +7821,7 @@ function applyFootLock(ch) {
 }
 function ikHandsToBall(ch, target, twoHand, w) {
   if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
-  w = Math.min(1, w * TUNE.catchIK);
+  w = Math.min(1, w * TUNE.catchIK * (TUNE.animQuality != null ? TUNE.animQuality : 1)); // Phase 6: quality-scaled
   ch.group.updateWorldMatrix(true, true);            // fresh world matrices for the posed arm chain
   const dx = target.x - ch.group.position.x, dz = target.z - ch.group.position.z;
   const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
@@ -7981,8 +7994,9 @@ function applyBattleArms(ch, isTackler, w = 1) {
       if (tb) {
         tb.updateWorldMatrix(true, false); _hips.setFromMatrixPosition(tb.matrixWorld);
         ch.group.updateWorldMatrix(true, true);
-        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * TUNE.contactIK);
-        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * TUNE.contactIK);
+        const cik = TUNE.contactIK * (TUNE.animQuality != null ? TUNE.animQuality : 1); // Phase 6: quality-scaled
+        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * cik);
+        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * cik);
       }
     }
   } else {
@@ -9065,6 +9079,12 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'secondaryMotion', label: 'Overshoot/settle ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'ragdollBlend', label: 'Get-up blend', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
   { tab: 'Anim', key: 'animQuality', label: 'Anim quality', min: 0, max: 1, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // Phase 6 blend-table tuning (live durations, seconds)
+  { tab: 'Anim', key: 'blendGait', label: 'Gait blend (s)', min: 0.04, max: 0.5, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendPoseIn', label: 'Overlay in (s)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendPoseOut', label: 'Overlay out (s)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendOneShotOut', label: 'One-shot exit (s)', min: 0.04, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendGetup', label: 'Get-up blend (s)', min: 0.05, max: 0.6, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
