@@ -1739,14 +1739,21 @@ function setClip(ch, name, blend) {
   if (ch.current === name) return;
   const next = ch.actions[name];
   if (!next) return;
-  if (ch._baseInit) for (const n of BASE_ACTS) { // drop residual blend-space weights (keep the dominant for the crossfade-from)
+  const bl = blend != null ? blend : BLEND.gait;
+  // Fade residual blend-space weight OUT over the same blend (not an instant zero):
+  // when entering a one-shot from a mid-gait blend (e.g. run .5 + sprint .5), zeroing
+  // the non-dominant gait would drop the total action weight well below 1, and THREE's
+  // PropertyMixer bleeds the skeleton toward its BIND pose (a T-pose) for the missing
+  // weight. Fading them keeps the sum ~1 across the crossfade. (ch.active is faded by
+  // crossFadeFrom below.)
+  if (ch._baseInit) for (const n of BASE_ACTS) {
     const a = ch.actions[n];
-    if (a && a !== next && a !== ch.active && a.getEffectiveWeight() > 0) a.setEffectiveWeight(0);
+    if (a && a !== next && a !== ch.active && a.getEffectiveWeight() > 0.001) a.fadeOut(bl);
   }
-  if (ch.fadeAct && ch.fadeAct !== next) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; } // a new override pre-empts a fading one-shot
+  if (ch.fadeAct && ch.fadeAct !== next) { ch.fadeAct.fadeOut(bl); ch.fadeAct = null; } // a new override pre-empts a fading one-shot
   next.reset(); next.enabled = true;
   next.setEffectiveTimeScale(1); next.setEffectiveWeight(1);
-  next.crossFadeFrom(ch.active, blend != null ? blend : BLEND.gait, false); next.play();
+  next.crossFadeFrom(ch.active, bl, false); next.play();
   ch.active = next; ch.current = name;
 }
 // Start every base action once (idle already runs at weight 1) so setBase can just
@@ -1762,22 +1769,40 @@ function initBase(ch) {
 // any just-finished one-shot still carrying weight under the resuming gait.
 function setBase(ch, target, dt, rate) {
   initBase(ch);
-  let domN = null, domW = -1;
+  let domN = null, domW = -1, sum = 0;
   for (const n of BASE_ACTS) {
     const a = ch.actions[n]; if (!a) continue;
     const tgt = target[n] || 0;
     let w = expEase(a.getEffectiveWeight(), tgt, rate, dt);
     if (w < 0.001 && tgt === 0) w = 0;
     a.setEffectiveWeight(w);
+    sum += w;
     if (w > domW) { domW = w; domN = n; }
   }
   // Phase 2 pose-matched exit: a just-finished one-shot (juke/dive/celebrate) or a
   // dance/sulk override holds its final pose and bleeds out under the resuming
-  // locomotion over BLEND.oneShotOut — instead of lingering or snapping back.
+  // locomotion — instead of lingering or snapping back. Drive its weight as the exact
+  // COMPLEMENT of the base sum (1 - sum) so the total action weight stays pinned at 1
+  // as the gait ramps in: no bind-pose/T-pose bleed, and the held pose fills exactly
+  // the gap the gait hasn't covered yet. Cleared once the base is essentially full in.
   if (ch.fadeAct) {
-    const pw = expEase(ch.fadeAct.getEffectiveWeight(), 0, 3 / BLEND.oneShotOut, dt);
-    if (pw < 0.01) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; }
+    const pw = Math.max(0, 1 - sum);
+    if (pw < 0.02) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; }
     else ch.fadeAct.setEffectiveWeight(pw);
+  } else {
+    // Safety net (T-pose guard): when no one-shot pose is filling the gap, the base
+    // layer MUST cover the body fully — any deficit makes THREE's mixer bleed the
+    // skeleton toward its bind pose (a T-pose). Gait<->gait blends conserve the sum
+    // by construction, but resuming locomotion after a clip-override (battle drive,
+    // a ragdoll get-up, an interrupted one-shot) can start from a deficit, so
+    // renormalize the eased weights to sum=1 (preserves the blend RATIOS / feel).
+    // A near-total deficit (degenerate) snaps straight to the target distribution.
+    if (sum > 0.05 && sum < 0.999) {
+      const k = 1 / sum;
+      for (const n of BASE_ACTS) { const a = ch.actions[n]; if (!a) continue; const w = a.getEffectiveWeight(); if (w > 0) a.setEffectiveWeight(w * k); }
+    } else if (sum <= 0.05) {
+      for (const n of BASE_ACTS) { const a = ch.actions[n]; if (a) a.setEffectiveWeight(target[n] || 0); }
+    }
   }
   if (domN) { ch.active = ch.actions[domN]; ch.current = domN; }
 }
@@ -2002,6 +2027,7 @@ const game = {
   throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
   throwArmed: false, // a throw only arms on a fresh press in LIVE (not the snap press)
 };
+if (typeof window !== 'undefined') window.game = game; // debug handle (inspect live state / anim weights from the console)
 // ---- User-action tracker: a running, persisted record of the HUMAN player's
 // plays — tackles he makes (his controlled defender brings the carrier down),
 // catches by his offense, and interceptions by his defense. Career totals,
