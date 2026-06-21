@@ -1772,6 +1772,15 @@ function setBase(ch, target, dt, rate) {
   let domN = null, domW = -1, sum = 0;
   for (const n of BASE_ACTS) {
     const a = ch.actions[n]; if (!a) continue;
+    // ROOT FIX: THREE disables an action (enabled=false) when a fadeOut/crossFadeFrom
+    // interpolant completes at 0 — which happens to the dominant gait every time a
+    // player enters a one-shot (juke/dive/tackle/get-up). Once disabled,
+    // setEffectiveWeight() forces its effective weight to 0 (`enabled ? w : 0`), so the
+    // gait is stranded at zero no matter what we ask for and the skeleton bleeds to its
+    // bind pose (a persistent T-pose / "sliding, not animated"). Re-enable and drop any
+    // spent fade so the blend-space weight below actually drives the bone again.
+    if (!a.enabled) a.enabled = true;
+    a.stopFading();
     const tgt = target[n] || 0;
     let w = expEase(a.getEffectiveWeight(), tgt, rate, dt);
     if (w < 0.001 && tgt === 0) w = 0;
@@ -1786,6 +1795,7 @@ function setBase(ch, target, dt, rate) {
   // as the gait ramps in: no bind-pose/T-pose bleed, and the held pose fills exactly
   // the gap the gait hasn't covered yet. Cleared once the base is essentially full in.
   if (ch.fadeAct) {
+    if (!ch.fadeAct.enabled) ch.fadeAct.enabled = true; // never let a disabled hold pose strand the gap
     const pw = Math.max(0, 1 - sum);
     if (pw < 0.02) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; }
     else ch.fadeAct.setEffectiveWeight(pw);
