@@ -4503,7 +4503,7 @@ function applyUIState() {
 // label to show. Captures the exact defender in the path and gates on cooldown,
 // so HURDLE / STIFF ARM only light up when they're actually available.
 function carrierContext(c) {
-  if (!c) return { label: 'JUKE', hot: false, run: () => {} };
+  if (!c) return { label: 'SPIN', hot: false, run: () => {} };
   const ahead = defenderAhead(c, 2.8, 0.48); // a man square in the path
   const fast = c.speed > 7.5;
   if (ahead && fast && c.jukeCd <= 0.6)
@@ -4515,7 +4515,7 @@ function carrierContext(c) {
   const nd = nearestDefenderTo(px(c));
   if (fast && c.tauntCd <= 0 && (!nd || distXZ(px(c), px(nd)) > 9))
     return { label: 'TAUNT', hot: false, run: doTaunt };
-  return { label: 'JUKE', hot: false, run: doJuke };
+  return { label: 'SPIN', hot: false, run: doSpin }; // default open-field move: a 360 spin (replaces the old juke)
 }
 // Refresh the action button to the carrier's current context (called per-frame
 // during your run so HURDLE / STIFF ARM light up the instant they're available).
@@ -8262,19 +8262,8 @@ function updateAnimation(ch, dt) {
   if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
 }
-// Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
-// contact during the juke window he whiffs right past (see beginTackle).
-function doJuke(ch) {
-  if (ch.jukeCd > 0) return;
-  ch.jukeCd = 0.9; ch.jukeTimer = 0.38;
-  const kb = kbVec();
-  const side = (input.x + kb.x) < 0 ? -1 : 1;
-  const rx = Math.cos(ch.heading), rz = -Math.sin(ch.heading); // right of heading
-  ch.vel.x += rx * side * 7; ch.vel.z += rz * side * 7;
-  shake.kick(rx * side, rz * side, 0.25);
-  playOneShot(ch, 'juke', 0.45); // dodge-roll animation
-  audio.juke();
-}
+// (The old Blitz JUKE — a lateral dodge-roll one-shot — has been replaced by the
+// SPIN move as the carrier's default open-field action; see doSpin / carrierContext.)
 // Blitz TAUNT: thrust the ball aloft and showboat mid-stride in the open field.
 // Risk/reward — a hit while the window is open strips the ball (see beginTackle);
 // survive it and you get a turbo pop (see the RUN timer block).
