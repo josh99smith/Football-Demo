@@ -7687,10 +7687,12 @@ function applyLocoLife(ch, dt, spin) {
     ch._smPose = THREE.MathUtils.clamp((ch._smPose || 0) + ch._smVel * dt, -0.2, 0.2);
     pitch += ch._smPose;
   }
-  if (ch.speed < 0.6) { // breathing + slow weight shift while standing
+  if (ch.speed < 0.6) { // idle micro-life: breathing + a slow weight-shift sway +
+    // an occasional drifting fidget so a standing player is never a frozen statue
+    // (Phase 5). All desynced per player by breathPh and scaled by the breath knob.
     const t = performance.now() * 0.001;
-    pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012 * TUNE.animBreath;
-    roll += Math.sin(t * 0.7 + ch.breathPh) * 0.02 * TUNE.animBreath;
+    pitch += (Math.sin(t * 1.6 + ch.breathPh) * 0.012 + Math.sin(t * 0.33 + ch.breathPh * 1.3) * 0.008) * TUNE.animBreath;
+    roll += (Math.sin(t * 0.7 + ch.breathPh) * 0.02 + Math.sin(t * 0.27 + ch.breathPh * 1.7) * 0.022) * TUNE.animBreath; // slow weight-shift
   }
   _qYaw.setFromAxisAngle(_UP, ch.heading + spin);
   _qPitch.setFromAxisAngle(_XAX, pitch);
