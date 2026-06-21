@@ -1492,45 +1492,27 @@ async function ensurePlayerModel(idx) {
   e.loaded = true; return e;
 }
 
-// Bake a static HEAD mesh from a model's own head geometry — the triangles whose
-// verts are skin-weighted to the Head bone (or its children) — into head-bone-local
-// space, sharing the body material (so it keeps the real texture). Used as a pop-off
-// "helmet" for bare-headed models: the actual head detaches and tumbles. Returns a
-// Group of baked sub-meshes (one per source skinned mesh) at the head's location, or
-// null if no head geometry is found (caller falls back).
-const _bhV = new THREE.Vector3();
-function bakeHeadProp(model, headBone) {
-  const headBones = new Set(); headBone.traverse((o) => { if (o.isBone) headBones.add(o); }); // Head + head_end + any children
-  model.updateWorldMatrix(true, true);
-  const group = new THREE.Group();
+// Find a model's HEAD triangles (verts skin-weighted to the Head bone or its
+// children) on its main skinned mesh, so the real head can be snapshotted off at pop
+// time (see popHead). Returns { mesh, tris (flat vertex-index triples), headIdx (set
+// of head bone indices) } or null. Cheap, run once per bare-headed player.
+function computeHeadTris(model, headBone) {
+  let res = null;
   model.traverse((sm) => {
-    if (!sm.isSkinnedMesh || !sm.geometry || !sm.geometry.attributes.position) return;
-    const geo = sm.geometry, pos = geo.attributes.position, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight, uv = geo.attributes.uv;
+    if (res || !sm.isSkinnedMesh || !sm.geometry || !sm.geometry.attributes.position || !sm.skeleton) return;
+    const geo = sm.geometry, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
     if (!si || !sw) return;
-    sm.skeleton.update();
-    const bones = sm.skeleton.bones;
-    const isHeadVert = (i) => { let bw = -1, bb = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; bb = si.getComponent(i, k); } } const b = bones[bb]; return !!(b && headBones.has(b)); };
-    const remap = new Map(), npos = [], nuv = [], nidx = [];
-    const add = (oi) => {
-      let ni = remap.get(oi); if (ni !== undefined) return ni;
-      _bhV.fromBufferAttribute(pos, oi); sm.applyBoneTransform(oi, _bhV); sm.localToWorld(_bhV); headBone.worldToLocal(_bhV);
-      ni = npos.length / 3; npos.push(_bhV.x, _bhV.y, _bhV.z); if (uv) nuv.push(uv.getX(oi), uv.getY(oi));
-      remap.set(oi, ni); return ni;
-    };
-    const tri = (a, b, c) => { if (isHeadVert(a) && isHeadVert(b) && isHeadVert(c)) nidx.push(add(a), add(b), add(c)); };
-    const idx = geo.index ? geo.index.array : null;
-    if (idx) { for (let t = 0; t < idx.length; t += 3) tri(idx[t], idx[t + 1], idx[t + 2]); }
-    else { for (let t = 0; t < pos.count; t += 3) tri(t, t + 1, t + 2); }
-    if (!nidx.length) return;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(npos, 3));
-    if (nuv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(nuv, 2));
-    g.setIndex(nidx); g.computeVertexNormals();
-    const mat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
-    const m = new THREE.Mesh(g, mat); m.castShadow = true; m.frustumCulled = false;
-    group.add(m);
+    const bones = sm.skeleton.bones, headIdx = new Set();
+    for (let i = 0; i < bones.length; i++) { let b = bones[i]; while (b) { if (b === headBone) { headIdx.add(i); break; } b = b.parent; } }
+    if (!headIdx.size) return;
+    const dom = (vi) => { let bw = -1, bb = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(vi, k); if (w > bw) { bw = w; bb = si.getComponent(vi, k); } } return bb; };
+    const isHead = (vi) => headIdx.has(dom(vi));
+    const tris = []; const idx = geo.index ? geo.index.array : null;
+    if (idx) { for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2]; if (isHead(a) && isHead(b) && isHead(c)) tris.push(a, b, c); } }
+    else { for (let t = 0; t < geo.attributes.position.count; t += 3) { if (isHead(t) && isHead(t + 1) && isHead(t + 2)) tris.push(t, t + 1, t + 2); } }
+    if (tris.length) res = { mesh: sm, tris, headIdx };
   });
-  return group.children.length ? group : null;
+  return res;
 }
 function makeCharacter(team) {  // Offense = original character; defense = its own blue rigged character (or a
   // blue-tinted fallback if that model didn't load). Each keeps its own skin.
@@ -1690,25 +1672,18 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
     // Remember the rest attachment so a popped-off helmet can snap back next play.
     helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
     helmet.userData.flying = false;
-  } else if (!helmet && headBone && headEnd) {
-    // Bare-headed model (no helmet GLB): bake a real HEAD prop from the model's own
-    // head geometry so the actual head pops off (not a stand-in). Invisible normally
-    // (the skinned head shows); on a pop it's shown + flown while the real head
-    // shrinks to a nub (see popHelmet/restoreHelmet).
-    helmet = bakeHeadProp(model, headBone);
-    if (helmet) {
-      headBone.add(helmet); helmet.visible = false;
-      helmet.userData.rest = { parent: headBone, pos: helmet.position.clone(), quat: helmet.quaternion.clone(), scale: helmet.scale.clone() };
-      helmet.userData.flying = false; helmet.userData.isHead = true;
-    }
   }
+  // Bare-headed model (no helmet GLB): record its head triangles so the player's REAL
+  // head can pop off. The flying head is snapshotted to world space at pop time
+  // (popHead) — no fragile bone-local baking.
+  const headSnap = (!helmet && headBone) ? computeHeadTris(model, headBone) : null;
 
   return {
     group, model, mixer, actions, handBone, restPose, current: 'idle', active: actions.idle, mScale, mGroundY,
     upperArm, foreArm, upperArmRest, foreArmRest, spineBone, spineRest, leftHandBone,
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
-    headBone, headEnd, helmet, headFix, bones: restPose.map((e) => e[0]), // bone list for replay capture
+    headBone, headEnd, helmet, headFix, headSnap, bones: restPose.map((e) => e[0]), // bone list for replay capture
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1793,6 +1768,14 @@ const TUNE_DEFAULTS = {
   tipChance: 0.5,        // fraction of contested breakups that tip into a live loose ball (vs a clean incompletion)
   catchHitRisk: 0.55,    // added fumble probability on the jarring hit right after an EXPOSED contested catch (× style)
   catchExposeTime: 0.7,  // s a receiver stays exposed to a jarring hit after a contested catch
+  // Tackling overhaul (see docs/tackling-overhaul-plan.md).
+  tackleLog: false,      // Phase 0: log each tackle (type/closing/angle/gang/variant) to the debug event log
+  ragdollBrace: 0.5,     // Phase 1: active-ragdoll bracing strength (0 = limp dummy; >0 arms come out / carrier curls to protect)
+  contactIK: 1.0,        // Phase 1: weight of the tackler hand IK onto the carrier (0 = fixed fan-slot offsets)
+  hitStick: true,        // Phase 3: enable the user hit-stick (wrap / high / low choice when you tackle)
+  hitStickWindow: 2.2,   // Phase 3: yd from the carrier where the hit-stick timing window opens
+  hitStickBonus: 0.22,   // Phase 3: well-timed high-hit fumble/power bonus; low-hit reliability
+  armTackleChance: 0.5,  // Phase 4: chance an off-angle/late arrival is only an arm tackle (drag-down vs slip-through)
   engageReach: 1.5,      // blocker↔rusher lock-up radius (yd)
   bodyFit: 1.0,          // × the collider radius auto-measured from the model (1 = exact model width)
   playerSize: 1.0,       // × visual player model scale
@@ -1834,6 +1817,7 @@ const TUNE_DEFAULTS = {
   // Play-calling matchup: how much a concept-vs-coverage edge swings coverage
   // separation (0 = calls are cosmetic; 1 = a beaten call gives a clear step).
   matchupLeverage: 1.0,
+  onFireLeverage: 0.6, // extra leverage while ON FIRE (Phase 5: a hot player is uncoverable)
 };
 const TUNE = { ...TUNE_DEFAULTS };
 // Apply persisted overrides (debug panel "Save") over the defaults at boot, so a
@@ -1857,6 +1841,7 @@ const game = {
   los: DRIVE_START, firstDown: 0, down: 1,
   scoreOff: 0, scoreDef: 0,
   tally: { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 }, // balance telemetry (see balanceSummary)
+  tackleStats: {}, // Phase 6: per-type tackle outcome tally (logTackle -> dbgBalanceReport)
   userStats: { tackles: 0, catches: 0, ints: 0 }, // the human player's plays (career; see USER_STATS_KEY)
   diff: 'pro', // difficulty (rookie/pro/allpro) — set on the start menu
   gauntlet: null, // {active, round, wins, champion} when running the gauntlet, else null (exhibition)
@@ -1881,6 +1866,7 @@ const game = {
   // Play-calling matchup (Phase 1): the concept-vs-coverage edge resolved at snap.
   // coverLev > 0 = offense beat the call (receivers get a step); < 0 = blanketed.
   matchup: null, coverLev: 0, coverClose: 1, cpuDefIdx: 0, cpuOffIdx: 0,
+  defLocked: false, // the CPU's coverage is decided at lineup (so you can read the shell + audible)
   tend: { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }, // recent play/coverage calls per actor (tendency memory)
   coachCam: false, // pre-snap "play art" overlay toggle (route ribbons on the field)
   lab: false,      // Contact Lab mode (standalone two-player contact-pose editor)
@@ -2414,6 +2400,39 @@ const PLAYS = [
       return [P(sx, 5)];                                          // WRs stalk-block
     },
   },
+  {
+    name: 'SMASH', sub: 'Corner + hitch hi-lo', type: 'pass', concept: 'Smash', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const toSide = Math.sign(sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 6, 1), P(sx - 12, 3)];          // RB checkdown
+      if (e === 1) return [P(sx, 6), P(sx, 5)];                   // slot hitch (sit underneath)
+      return [P(sx, 12), P(sx + toSide * 9, 22)];                 // outside corner (high)
+    },
+  },
+  {
+    name: 'VERTS', sub: 'Four verticals', type: 'pass', concept: 'Verticals', beats: ['man'], losesTo: ['zone'],
+    route(e, sx, los) {
+      const toMid = Math.sign(-sx) || 1, P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx - 5, 2), P(sx + toMid * 3, 10)];  // RB seam release
+      return [P(sx, 18), P(sx, 40)];                              // streak
+    },
+  },
+  {
+    name: 'DRAW', sub: 'HB delayed draw', run: true, type: 'run', concept: 'Draw', beats: ['zone'], losesTo: ['man'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 2, -1), P(0, 6), P(2, 24)];     // settle, then burst up the gut
+      return [P(sx, 3)];                                          // WRs stalk-block
+    },
+  },
+  {
+    name: 'COUNTER', sub: 'HB counter misdirect', run: true, type: 'run', concept: 'Counter', beats: ['spy'], losesTo: ['blitz'],
+    route(e, sx, los) {
+      const P = (x, dz) => new THREE.Vector3(clampX(x), 0, los + game.dir * dz);
+      if (e === 3) return [P(sx + 6, 1), P(12, 5), P(15, 23)];    // step one way, cut back the other and up
+      return [P(sx, 4)];                                          // WRs/OL down-block
+    },
+  },
 ];
 
 // Render a play's actual routes as a little SVG diagram for the call screen.
@@ -2459,6 +2478,11 @@ function applyRatings(p) {
     r[RAT_KEYS[i]] = v / 99;     // normalized 0..1
     r[RAT_KEYS[i] + 'R'] = Math.round(v); // displayable 1..99
   }
+  // Phase 6: split the single tackle rating into football-specific tackle skills so
+  // defenders feel distinct (derived from the roster numbers; no new roster data).
+  r.hitPower = THREE.MathUtils.clamp(r.tackle * 0.65 + r.strength * 0.35, 0, 1); // big-hit power
+  r.wrapTackle = THREE.MathUtils.clamp(r.tackle * 0.8 + r.strength * 0.2, 0, 1);  // secure wrap-up
+  r.pursuit = THREE.MathUtils.clamp(r.speed * 0.7 + r.tackle * 0.3, 0, 1);        // closing / angles
   p.rt = r;
   p.baseSpeed = 6.6 + r.speed * 2.9;        // 6.6 .. 9.5 yd/s (toned-down global pace; rating spread kept)
   p.strength = 0.62 + r.strength * 0.76;    // 0.62 .. 1.38 (break/tackle power)
@@ -2774,14 +2798,17 @@ function setPos(ch, x, z) { ch.group.position.set(x, 0, z); ch.vel.set(0, 0, 0);
 // (>1 = more errant); userBreak = your break-tackle mult.
 const DIFF = {
   // cpuRead = how sharply the CPU reads matchups + calls the right look (0..1).
-  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25, cpuRead: 0.3 },
-  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00, cpuRead: 0.55 },
-  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82, cpuRead: 0.85 },
+  // Phase 6 tackle hooks: cpuWhiff scales how often a CPU tackler misses (arm/whiff
+  // odds); userHitDeg widens (rookie) or tightens (all-pro) the hit-stick square-up
+  // window so a big hit is easier to earn on lower difficulties.
+  rookie: { label: 'ROOKIE', cpuSpd: 0.93, cpuCatch: -0.12, cpuAcc: 1.18, userBreak: 1.25, cpuRead: 0.3, cpuWhiff: 1.35, userHitDeg: 14 },
+  pro:    { label: 'PRO',    cpuSpd: 1.00, cpuCatch: 0.00,  cpuAcc: 1.00, userBreak: 1.00, cpuRead: 0.55, cpuWhiff: 1.0, userHitDeg: 0 },
+  allpro: { label: 'ALL-PRO', cpuSpd: 1.06, cpuCatch: 0.10, cpuAcc: 0.85, userBreak: 0.82, cpuRead: 0.85, cpuWhiff: 0.78, userHitDeg: -8 },
 };
 // Active difficulty with the debug multipliers/offsets folded in (TUNE.cpu*/userBreak*).
 const diff = () => {
   const d = DIFF[game.diff] || DIFF.pro;
-  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul, cpuRead: d.cpuRead != null ? d.cpuRead : 0.55 };
+  return { cpuSpd: d.cpuSpd * TUNE.cpuSpdMul, cpuCatch: d.cpuCatch + TUNE.cpuCatchAdd, cpuAcc: d.cpuAcc * TUNE.cpuAccMul, userBreak: d.userBreak * TUNE.userBreakMul, cpuRead: d.cpuRead != null ? d.cpuRead : 0.55, cpuWhiff: d.cpuWhiff != null ? d.cpuWhiff : 1, userHitDeg: d.userHitDeg != null ? d.userHitDeg : 0 };
 };
 // Fatigue: players tire as they exert, bleeding top speed (and break power) over
 // a play so you can't sprint the whole field at full tilt. 1 = fresh, FAT_MIN = gassed.
@@ -2885,7 +2912,11 @@ function updateDefense() {
     if (carrierIsRunning && carrier) {
       const ip = interceptPoint(d, carrier);
       steer = seek(dp, ip.x, ip.z);
-      d.turbo = dist2(dp, px(carrier)) > 3 * 3; // turbo to run the ball carrier down
+      // Run-call matchup: a run that beats the front (good blocking matchup) lets
+      // the back hit the lane before the front rallies; a bad matchup gets swarmed.
+      const runClose = (game.matchup && game.matchup.off && game.matchup.off.type === 'run') ? (game.coverClose || 1) : 1;
+      const tt = 3 / Math.max(0.5, runClose);
+      d.turbo = dist2(dp, px(carrier)) > tt * tt; // turbo to run the ball carrier down
       d.pursuit = true;
       // A blocker in his lane screens this pursuer (slows him — opens a lane).
       // Lenient on a run: a blocker near and ahead of him counts as a block.
@@ -3247,7 +3278,7 @@ function blockerScreens(dp, blk, target, rad = 2.0, dotMin = 0.25) {
 // ===========================================================================
 // Input
 // ===========================================================================
-const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null };
+const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, battleMash: 0, spinEdge: false, diveEdge: false, pitchEdge: false, catchEdge: null, hitEdge: null };
 
 // Floating joystick: it spawns under your thumb wherever you first touch the LEFT
 // half of the screen (so you never have to find a fixed pad), and tracks from
@@ -3256,7 +3287,7 @@ const input = { x: 0, y: 0, action: false, turbo: false, actionEdge: false, batt
   const base = document.getElementById('joystick');
   const knob = document.getElementById('joystick-knob');
   const maxR = 50; let id = null, cx = 0, cy = 0;
-  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
+  const EXCLUDE = '#action-btn,#turbo-btn,#simbar,#fs-btn,#vol-btn,#volpanel,#playselect,#startmenu,#pausemenu,#settingsmenu,#pause-btn,#coach-btn,#audible-btn,#install,.rp-continue,#build-badge,#debugpanel,#dbg-fab';
   const onLeft = (x, target) => !dbgCam.on && !replayManual() && !game.lab && x < window.innerWidth * 0.5 && !(target && target.closest && target.closest(EXCLUDE));
   const track = (clientX, clientY) => {
     let dx = clientX - cx, dy = clientY - cy; const d = Math.hypot(dx, dy);
@@ -3365,6 +3396,14 @@ if (coachBtn) coachBtn.addEventListener('click', (e) => {
   coachBtn.classList.toggle('on', game.coachCam);
   updateCoachArt();
 });
+// Audible (Phase 4): re-open the call screen pre-snap to change the play after
+// reading the shell. The locked coverage is kept, so you're adjusting to it.
+const audibleBtn = document.getElementById('audible-btn');
+if (audibleBtn) {
+  const go = (e) => { e.preventDefault(); e.stopPropagation(); audio.unlock(); if (game.state === STATE.PRESNAP && !game.choosing && game.userOnOffense) { audio.juke(); openPlaySelect(); } };
+  audibleBtn.addEventListener('touchstart', go, { passive: false });
+  audibleBtn.addEventListener('mousedown', go);
+}
 // User-action tracker HUD (your tackles / catches / interceptions).
 const userStatsEl = document.getElementById('userstats');
 const usEls = { tackles: document.getElementById('us-tkl'), catches: document.getElementById('us-cat'), ints: document.getElementById('us-int') };
@@ -3411,6 +3450,17 @@ function updateUserStatsHUD() {
   cpress(document.getElementById('catch-rac'), 'rac');
   cpress(document.getElementById('catch-poss'), 'poss');
   cpress(document.getElementById('catch-agg'), 'agg');
+  // Hit-stick buttons (shown while closing on the carrier on defense): edge press -> input.hitEdge.
+  const hpress = (el, style) => {
+    if (!el) return;
+    const go = (e) => { e.preventDefault(); audio.unlock(); el.classList.add('active'); input.hitEdge = style; };
+    const up = (e) => { if (e) e.preventDefault(); el.classList.remove('active'); };
+    el.addEventListener('touchstart', go, { passive: false }); el.addEventListener('touchend', up, { passive: false }); el.addEventListener('touchcancel', up);
+    el.addEventListener('mousedown', go); window.addEventListener('mouseup', up);
+  };
+  hpress(document.getElementById('hit-high'), 'high');
+  hpress(document.getElementById('hit-wrap'), 'wrap');
+  hpress(document.getElementById('hit-low'), 'low');
   // Skip / sim controls (tap fires on press; trigger once).
   const tap = (el, fn) => {
     if (!el) return;
@@ -3900,9 +3950,26 @@ function openPlaySelect() {
   const sel = off ? game.playIndex : game.defCall;
   game.psPage = Math.floor((sel || 0) / PS_PAGE);
   renderPSCats();
+  renderScout();
   renderPSPage();
   if (playSelectEl) playSelectEl.classList.remove('hidden');
   updateButtons();
+}
+// Scouting (Phase 6): surface the OPPONENT's recent tendency on your call screen
+// so you can pick a beater — the mirror of the CPU adapting to you.
+const psScoutEl = (typeof document !== 'undefined') ? document.getElementById('ps-scout') : null;
+function renderScout() {
+  if (!psScoutEl) return;
+  // Offense: scout the CPU's coverage habits; Defense: scout the CPU's concepts.
+  const hist = game.userOnOffense ? game.tend.cpuDef : game.tend.cpuOff;
+  const book = game.userOnOffense ? DEF_PLAYS : PLAYS;
+  if (!hist || hist.length < 2) { psScoutEl.classList.add('hidden'); return; }
+  const fav = modeOf(hist, 2);
+  const recent = hist.slice(-3).map((i) => (book[i] || {}).name || '?').reverse().join(' · ');
+  const tip = fav != null ? `likes <b>${(book[fav] || {}).name}</b>` : `recent <b>${recent}</b>`;
+  const who = game.userOnOffense ? 'DEF' : 'OFF';
+  psScoutEl.innerHTML = `<span class="ps-scout-k">SCOUT</span> ${who} ${tip}`;
+  psScoutEl.classList.remove('hidden');
 }
 function psFlip(dir) {
   const pages = psPageCount();
@@ -3913,8 +3980,13 @@ function psFlip(dir) {
 function choosePlay(i) {
   const len = game.userOnOffense ? PLAYS.length : DEF_PLAYS.length;
   if (i < 0 || i >= len) return;
-  if (game.userOnOffense) { game.playIndex = i; setStatus(`${PLAYS[i].name} — tap SNAP`); }
-  else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
+  if (game.userOnOffense) {
+    game.playIndex = i;
+    // Lock the defense's coverage on the FIRST call this down, so the shell read
+    // + an audible adjust to the SAME look (re-picks keep it).
+    if (!game.defLocked) { game.cpuDefIdx = cpuDefCall(); game.defLocked = true; }
+    setStatus(`${PLAYS[i].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE`);
+  } else { game.defCall = i; setStatus(`${DEF_PLAYS[i].name} — tap to set`); }
   audio.catch();
   game.choosing = false;
   if (playSelectEl) playSelectEl.classList.add('hidden');
@@ -3943,8 +4015,8 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Escape' && game.paused) { closePause(); keys[e.code] = true; return; }
     if (game.paused) { keys[e.code] = true; return; }
     if (e.code === 'Space') { input.actionEdge = true; input.catchEdge = 'rac'; } // Space = catch in stride during a user pass
-    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; }   // spin / stiff-arm · POSSESSION catch
-    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; }    // stiff arm · AGGRESSIVE catch
+    if (e.code === 'KeyQ') { input.spinEdge = true; input.catchEdge = 'poss'; input.hitEdge = 'high'; }   // spin / POSSESSION catch / HIGH hit-stick (on D)
+    if (e.code === 'KeyE') { input.diveEdge = true; input.catchEdge = 'agg'; input.hitEdge = 'low'; }     // stiff arm / AGGRESSIVE catch / LOW hit-stick (on D)
     if (e.code === 'KeyF') input.pitchEdge = true;  // lateral pitch
     if (e.code === 'BracketRight') skipQuarter();   // ] = skip to next quarter
     if (e.code === 'Backslash') simToGameEnd();      // \ = sim to end of game
@@ -4009,6 +4081,7 @@ function yardResult(gained) {
 function matchupReason(result, gained) {
   const m = game.matchup; if (!m || !m.off) return '';
   const off = m.off.name, cov = (DEF_PLAYS[m.defIdx] || {}).name || 'coverage', p = game.play || {};
+  if (m.onFire && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 6))) return 'ON FIRE — uncoverable!';
   if (p.sack) return m.cov === 'blitz' ? 'Blitz got home!' : 'Coverage sack!';
   if (result === 'intercept') return m.lev < 0 ? `${cov} jumped it!` : 'Picked off!';
   if (m.lev > 0 && (result === 'TD' || ((result === 'tackle' || result === 'oob') && gained >= 4))) return `${off} beat ${cov}!`;
@@ -4205,11 +4278,26 @@ function showCatchRow(hot, armedStyle) {
   for (const k in catchBtns) { const b = catchBtns[k]; if (!b) continue; b.classList.toggle('hot', hot); b.classList.toggle('armed', armedStyle === k); }
 }
 function hideCatchRow() { if (catchRowEl) catchRowEl.classList.add('hidden'); }
+// Hit-stick chooser (Phase 3): shown while you control a defender closing on the
+// CPU ball-carrier; lights HOT inside tackle range (the "now" to press).
+const hitRowEl = document.getElementById('hit-row');
+const hitBtns = { high: document.getElementById('hit-high'), wrap: document.getElementById('hit-wrap'), low: document.getElementById('hit-low') };
+function showHitRow(hot) { if (!hitRowEl) return; hitRowEl.classList.remove('hidden'); for (const k in hitBtns) { const b = hitBtns[k]; if (b) b.classList.toggle('hot', hot); } }
+function hideHitRow() { if (hitRowEl) hitRowEl.classList.add('hidden'); }
+function updateHitStick() {
+  if (!TUNE.hitStick || game.userOnOffense || !game.controlled || !game.carrier || game.controlled === game.carrier ||
+      (game.state !== STATE.RUN && game.state !== STATE.RETURN)) { hideHitRow(); return; }
+  const d = distXZ(px(game.controlled), px(game.carrier));
+  if (d > TUNE.hitStickWindow) { hideHitRow(); return; }
+  showHitRow(d <= TUNE.tackleReach + 0.5); // hot = in range to land it
+}
 function updateButtons() {
   const s = game.state, onO = game.userOnOffense;
   actionBtn.classList.remove('hot');
   // PLAY ART (coach cam): callable pre-snap on either side of the ball.
   if (coachBtn) coachBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver));
+  // AUDIBLE: re-open the call screen pre-snap on offense (read the shell, adjust).
+  if (audibleBtn) audibleBtn.classList.toggle('hidden', !(s === STATE.PRESNAP && !game.choosing && !game.gameOver && game.userOnOffense));
   if (s === STATE.PRESNAP && game.choosing) { hide(actionBtn); hide(turboBtn); }
   else if (s === STATE.PRESNAP) {
     const goLabel = (game.gauntlet && game.gauntlet.active) ? (game.gauntlet.champion ? 'AGAIN' : (game.scoreOff >= game.scoreDef ? 'NEXT' : 'RETRY')) : 'REMATCH';
@@ -4398,7 +4486,9 @@ function showBanner(text, color = '#ffd23a', opts = {}) {
 // Blitz hit-power rating (~55-99) from closing speed, the tackler's TKL rating,
 // the gang size and turbo — flashed under the badge on a notable hit.
 function hitPower(lead, closing, gangSize = 1, big = false) {
-  const tkl = lead && lead.rt ? lead.rt.tackle : 0.7;
+  // Phase 6: big-hit number keys off the derived hitPower skill (tackle+strength),
+  // so a powerful safety lays bigger wood than a cover corner of equal TACKLE.
+  const tkl = lead && lead.rt ? (lead.rt.hitPower != null ? lead.rt.hitPower : lead.rt.tackle) : 0.7;
   const fp = lead ? fatiguePow(lead) : 1; // a gassed tackler hits softer
   const p = 48 + closing * 2.8 + tkl * 18 * fp + (gangSize - 1) * 5 + (big ? 8 : 0) + (lead && lead.turbo ? 4 : 0);
   return THREE.MathUtils.clamp(Math.round(p), 55, 99);
@@ -4496,13 +4586,22 @@ function dbgBalanceReport() {
   const blk = (nm, sc, g) => !g ? `${nm} ${sc}` :
     `${nm}  ${sc} pts\n  pass ${g.cmp}/${g.att} (${pct(g.cmp, g.att)}%)  ${g.passYds}yd  ${avg(g.passYds, g.att)}/att  ${g.passTD}td\n  rush ${g.car}c  ${g.rushYds}yd  ${avg(g.rushYds, g.car)}/c  ${g.rushTD}td\n  def  ${g.tkl}tkl ${g.sack}sk ${g.intCaught}int`;
   const u = game.userStats;
-  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
+  // Phase 6: per-type tackle outcomes (whiff / arm / broken / fumble vs clean).
+  const ts = game.tackleStats || {}, tot = ts.total || 0;
+  const sum = (...ks) => ks.reduce((n, k) => n + (ts[k] || 0), 0);
+  const clean = sum('drag', 'instant', 'instant-big', 'instant-big-gang');
+  const tkLine = tot
+    ? `\nTKL ${tot}  clean ${pct(clean, tot)}% · arm ${pct(sum('arm', 'arm-offangle'), tot)}% · whiff ${pct(sum('whiff'), tot)}% · slip ${pct(sum('slipped'), tot)}% · broke ${pct(sum('broken'), tot)}% · fum ${pct(sum('fumble'), tot)}%`
+    : '\nTKL —';
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
   game.cut.phase = null; if (cutEl) cutEl.style.opacity = '0'; // clear any mid-cut
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
+  game.tackleStats = {}; // Phase 6: fresh per-type tackle telemetry for the rematch
+  game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
   game.userOnOffense = true; game.dir = 1;
@@ -4629,10 +4728,12 @@ const _hAxis = new THREE.Vector3(), _hQ = new THREE.Quaternion(), _bloodPos = ne
 function popHelmet(ch, hx, hz, power) {
   if (!TUNE.gore) return; // gore disabled (debug)
   const h = ch.helmet;
-  if (!h || !h.userData.rest || h.userData.flying) return;
+  if (!h || !h.userData.rest || h.userData.flying) {
+    if (!h && ch.headSnap && !ch._flyHead) popHead(ch, hx, hz, power); // bare-headed model: pop the REAL head instead
+    return;
+  }
   scene.attach(h); // detach from the head bone, keeping its current world transform
   h.userData.flying = true;
-  if (h.userData.isHead) { h.visible = true; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_POP_SCALE); } // the HEAD pops: show the prop, shrink the real (skinned) head to a nub
   const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
   flyingHelmets.push({
     h,
@@ -4679,13 +4780,54 @@ function updateFlyingHelmets(dt) {
   }
 }
 function restoreHelmet(ch) {
+  if (ch._flyHead) { // bare-headed model: drop the flown-off head + re-grow the real one
+    const fh = ch._flyHead; ch._flyHead = null;
+    const i = flyingHelmets.findIndex((f) => f.h === fh); if (i >= 0) flyingHelmets.splice(i, 1);
+    if (fh.parent) fh.parent.remove(fh); if (fh.geometry) fh.geometry.dispose();
+    if (ch.headBone) ch.headBone.scale.setScalar(HEAD_SCALE);
+  }
   const h = ch.helmet;
   if (!h || !h.userData.flying) return;
   const r = h.userData.rest;
   h.userData.flying = false;
   r.parent.add(h); h.position.copy(r.pos); h.quaternion.copy(r.quat); h.scale.copy(r.scale);
-  if (h.userData.isHead) { h.visible = false; if (ch.headBone) ch.headBone.scale.setScalar(HEAD_SCALE); } // re-grow the real head, re-hide the prop
   const i = flyingHelmets.findIndex((f) => f.h === h); if (i >= 0) flyingHelmets.splice(i, 1);
+}
+// Snapshot a bare-headed player's REAL head (its head triangles, in current world
+// pose) into a static mesh that detaches and tumbles like a popped helmet, while the
+// player's skinned head shrinks to a nub. Reuses the flying-helmet tumble + blood.
+const _phV = new THREE.Vector3();
+function popHead(ch, hx, hz, power) {
+  const hs = ch.headSnap, sm = hs.mesh; if (!sm || !sm.skeleton) return;
+  sm.updateWorldMatrix(true, false); sm.skeleton.update();
+  const pos = sm.geometry.attributes.position, uv = sm.geometry.attributes.uv;
+  const remap = new Map(), npos = [], nuv = [], nidx = [];
+  const add = (oi) => {
+    let ni = remap.get(oi); if (ni !== undefined) return ni;
+    _phV.fromBufferAttribute(pos, oi); sm.applyBoneTransform(oi, _phV); sm.localToWorld(_phV); // current skinned world position
+    ni = npos.length / 3; npos.push(_phV.x, _phV.y, _phV.z); if (uv) nuv.push(uv.getX(oi), uv.getY(oi));
+    remap.set(oi, ni); return ni;
+  };
+  const tr = hs.tris; for (let t = 0; t < tr.length; t += 3) nidx.push(add(tr[t]), add(tr[t + 1]), add(tr[t + 2]));
+  if (!nidx.length) return;
+  // Centre the geometry on its centroid so it tumbles about itself (mesh.position = centroid).
+  let cx = 0, cy = 0, cz = 0; const n = npos.length / 3;
+  for (let i = 0; i < npos.length; i += 3) { cx += npos[i]; cy += npos[i + 1]; cz += npos[i + 2]; }
+  cx /= n; cy /= n; cz /= n;
+  for (let i = 0; i < npos.length; i += 3) { npos[i] -= cx; npos[i + 1] -= cy; npos[i + 2] -= cz; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(npos, 3));
+  if (nuv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(nuv, 2));
+  g.setIndex(nidx); g.computeVertexNormals();
+  const mat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
+  const head = new THREE.Mesh(g, mat); head.position.set(cx, cy, cz); head.castShadow = true; head.frustumCulled = false;
+  scene.add(head); ch._flyHead = head;
+  if (ch.headBone) ch.headBone.scale.setScalar(HEAD_POP_SCALE); // decapitate: shrink the skinned head to a nub
+  const l = Math.hypot(hx, hz) || 1, spd = 3 + (power || 70) / 22;
+  flyingHelmets.push({ h: head, vx: (hx / l) * spd + ch.vel.x * 0.3 + (Math.random() - 0.5) * 1.6, vy: 5.5 + Math.random() * 2.6, vz: (hz / l) * spd + ch.vel.z * 0.3 + (Math.random() - 0.5) * 1.6, ax: Math.random() - 0.5, ay: Math.random() - 0.5, az: Math.random() - 0.5, spin: 11 + Math.random() * 9, rest: false });
+  _bloodPos.set(ch.group.position.x, 1.6, ch.group.position.z); if (ch.headBone) ch.headBone.getWorldPosition(_bloodPos);
+  bloodSpray(_bloodPos.x, _bloodPos.y - 0.15, _bloodPos.z); audio.fence(0.3);
+  if (game.state !== STATE.REPLAY) { const ev = game.replay.evPool.pop() || {}; ev.type = 'helmet'; ev.fi = game.replay.frames.length; ev.pIdx = game.all.indexOf(ch); ev.hx = hx; ev.hz = hz; ev.power = power || 70; ev.fired = false; game.replay.events.push(ev); }
 }
 
 // --- TORN IN HALF: a rare, brutal big-hit gore hook. The body splits at the
@@ -4867,6 +5009,7 @@ function enterReset(teleport) {
     return;
   }
   game.state = STATE.RESET; game.resetTimer = teleport ? 0.1 : 4.0;
+  game.defLocked = false; // fresh coverage read each down
   openPlaySelect(); // call a play EVERY down — offense playbook, or a defensive call
   updateButtons();
 }
@@ -4913,7 +5056,9 @@ function finalizeReset() {
     game.controlled = game.qb; selRing.visible = true; ctrlRing.visible = false;
   } else { game.controlled = nearestToBallDefender(); selRing.visible = false; ctrlRing.visible = true; game.autoSnapT = 1.2 + Math.random() * 0.7; }
   updateButtons();
-  setStatus(game.userOnOffense ? `${PLAYS[game.playIndex].name} — tap SNAP` : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
+  setStatus(game.userOnOffense
+    ? (game.defLocked ? `${PLAYS[game.playIndex].name} — D shows ${preSnapShell(game.cpuDefIdx)} · SNAP or AUDIBLE` : `${PLAYS[game.playIndex].name} — tap SNAP`)
+    : `${DEF_PLAYS[game.defCall].name} D — move/switch, CPU snaps`);
 }
 
 // --- Instant replay -------------------------------------------------------
@@ -5032,7 +5177,9 @@ const REPLAY_ANGLES = [
   { name: 'REVERSE',   az: -Math.PI * 0.42, dist: 13, height: 3.4, fov: 40, orbit: -0.0016 },
   { name: 'END ZONE',  az: 0,               dist: 16, height: 4.2, fov: 38, orbit: 0.0009 },
   { name: 'LOW ANGLE', az: Math.PI * 0.7,   dist: 9,  height: 1.7, fov: 50, orbit: 0.0018 },
+  { name: 'HIT CAM',   az: Math.PI * 0.6,   dist: 6.5, height: 1.3, fov: 56, orbit: 0.0026 }, // Phase 5: low + tight, auto-chosen for big hits
 ];
+const HITCAM_IDX = 5;
 const REPLAY_SEG = 3.2; // seconds on one camera angle before a broadcast cut to the next
 const rpFadeEl = document.getElementById('rp-fade');
 const rpAngleEl = document.getElementById('rp-angle');
@@ -5051,7 +5198,7 @@ function startReplay(highlight = false) {
   r.rate = highlight ? 0.45 : 0.85; // slow-mo on the highlight pass
   r.i = highlight ? Math.max(0, Math.floor(last * 0.55)) : 0; // start near the hit
   r.hold = 0; r.fade = 0; r.loops = 0; r.seg = 0; r.phase = 'play'; r.snap = true;
-  r.angleIdx = highlight ? 4 /* LOW ANGLE */ : Math.floor(Math.random() * REPLAY_ANGLES.length);
+  r.angleIdx = highlight ? (r.bigHit ? HITCAM_IDX : 4 /* LOW ANGLE */) : Math.floor(Math.random() * REPLAY_ANGLES.length); // Phase 5: big hits open on the HIT CAM
   // The per-frame reticle/name-tag update is skipped during REPLAY, so hide all
   // the on-field chrome now or it strands at the play's end spot through the replay.
   hideFieldChrome();
@@ -5181,31 +5328,66 @@ function matchupLeverage(offPlay, defIdx) {
   if (offPlay.losesTo && offPlay.losesTo.includes(cov)) return -1;
   return 0;
 }
+// Pre-snap read (Phase 4): the defensive SHELL the offense can see at the line
+// (a partial tell — PRESS could be man or blitz — so reads aren't certainties).
+function preSnapShell(idx) {
+  const sh = (DEF_PLAYS[idx] || {}).shell;
+  return sh === 'two' ? 'TWO-HIGH' : sh === 'single' ? 'SINGLE-HIGH' : 'PRESS';
+}
 // Lock in the matchup for this snap: who called what, the leverage, and the
 // derived coverage cushion/closing factors the defense AI reads.
 function setMatchup(offPlay, defIdx) {
   const lev = matchupLeverage(offPlay, defIdx);
-  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev };
-  game.coverLev = lev * TUNE.matchupLeverage;
-  game.coverClose = 1 - game.coverLev * 0.28; // <1 = beaten DBs close slower (separation)
+  let cl = lev * TUNE.matchupLeverage;
+  // ON FIRE special (Phase 5): a hot player is uncoverable — every concept gets
+  // extra separation, so even a neutral/bad matchup still pops open while you burn.
+  const onFire = game.onFire && game.userOnOffense;
+  if (onFire) cl += TUNE.onFireLeverage;
+  game.matchup = { off: offPlay, defIdx, cov: COVER_ID[defIdx], lev, onFire };
+  game.coverLev = cl;
+  game.coverClose = 1 - cl * 0.28; // <1 = beaten DBs close slower (separation)
 }
 // Situational CPU coverage call (replaces pure-random): keyed on down & distance,
 // with a difficulty-scaled read and a dash of unpredictability.
-function cpuDefCall() {
-  const togo = toGoYds(), down = game.down, r = Math.random();
-  const sharp = diff().cpuRead != null ? diff().cpuRead : 0.5; // 0..1 how well it reads (set per difficulty)
-  // Occasionally just mix it up so it's never fully predictable.
-  if (r < 0.16 * (1 - sharp * 0.6)) return (Math.random() * 4) | 0;
-  if (togo <= 3) return r < 0.5 ? 2 : (r < 0.78 ? 0 : 3);          // short: blitz / man / spy
-  if (down >= 3 && togo >= 8) return r < 0.62 ? 1 : 0;             // 3rd-and-long: zone shell
-  if (togo >= 8) return r < 0.42 ? 1 : (r < 0.82 ? 0 : 2);         // medium: zone-lean mix
-  return r < 0.4 ? 0 : (r < 0.7 ? 1 : (r < 0.9 ? 2 : 3));          // default mix
+// Weighted random index over a weight array (negatives clamped to 0).
+function weightedPick(w) {
+  let s = 0; for (const x of w) s += Math.max(0, x);
+  if (s <= 0) return (Math.random() * w.length) | 0;
+  let r = Math.random() * s;
+  for (let i = 0; i < w.length; i++) { r -= Math.max(0, w[i]); if (r <= 0) return i; }
+  return w.length - 1;
 }
-// CPU offensive concept pick. (Phase 1: non-repeating random; Phase 2 upgrades
-// this to a situational, tendency-aware caller.)
+// CPU coverage call (Phase 2): situational by down & distance, plus tendency —
+// leans to a coverage the user's favorite concept loses to (difficulty-scaled).
+function cpuDefCall() {
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1]; // MAN, ZONE, BLITZ, SPY
+  if (togo <= 3) { w[2] += 1.8; w[0] += 1.2; w[3] += 0.8; }                 // short: pressure / man / spy
+  else if (down >= 3 && togo >= 8) { w[1] += 2.0; w[0] += 0.6; }            // 3rd-and-long: zone shell
+  else if (togo >= 8) { w[1] += 1.2; w[0] += 1.0; w[2] += 0.5; }            // medium: zone-lean mix
+  else { w[0] += 0.8; w[1] += 0.8; w[2] += 0.5; w[3] += 0.4; }              // default mix
+  const favOff = modeOf(game.tend.userOff);                                 // exploit the user's favorite concept
+  if (favOff != null && PLAYS[favOff] && PLAYS[favOff].losesTo)
+    for (let d = 0; d < 4; d++) if (PLAYS[favOff].losesTo.includes(COVER_ID[d])) w[d] += 1.8 * read;
+  for (let i = 0; i < 4; i++) w[i] += Math.random() * 0.6 * (1 - read);     // softer reads = noisier
+  return weightedPick(w);
+}
+// CPU offensive concept pick (Phase 2): situational by down & distance, field
+// position, score & clock — and tendency-aware (leans on a concept that beats the
+// user's favorite coverage, scaled by the difficulty's read).
 function cpuOffCall() {
-  let idx; do { idx = (Math.random() * PLAYS.length) | 0; } while (idx === game.cpuLastPlay && PLAYS.length > 1);
-  return idx;
+  const togo = toGoYds(), down = game.down, read = diff().cpuRead;
+  const w = [1, 1, 1, 1, 1, 1]; // BOMBS, SLANTS, MESH, FLOOD, DIVE, SWEEP
+  if (togo <= 3) { w[4] += 2.4; w[5] += 1.6; w[1] += 1.0; }                          // short: run + quick game
+  else if (togo >= 9 || (down >= 3 && togo >= 7)) { w[0] += 2.2; w[3] += 1.3; w[2] += 0.6; } // long: shots + flood
+  else { w[1] += 0.8; w[2] += 0.9; w[3] += 0.6; w[4] += 0.4; }                       // medium: balanced
+  const toGoal = game.dir * (GOAL_Z - game.los);
+  if (toGoal > 0 && toGoal <= 20) { w[2] += 1.2; w[3] += 1.0; w[0] -= 0.8; }         // red zone: rubs/fades over deep shots
+  if (game.quarter >= 4 && (game.scoreDef - game.scoreOff) > 0) { w[0] += 1.6; w[3] += 0.8; } // CPU (away) behind late: take shots
+  const favCov = modeOf(game.tend.userDef);                                          // exploit the user's favorite coverage
+  if (favCov != null) for (let i = 0; i < PLAYS.length; i++) if (PLAYS[i].beats && PLAYS[i].beats.includes(COVER_ID[favCov])) w[i] += 1.7 * read;
+  if (game.cpuLastPlay >= 0) w[game.cpuLastPlay] *= 0.45;                            // discourage an immediate repeat
+  return weightedPick(w);
 }
 // Tendency memory: remember each actor's recent calls so the CPU can adapt and
 // the scouting HUD (Phase 6) can surface them.
@@ -5267,7 +5449,7 @@ function snap() {
     applyDefCall(defIdx);
     if (!game.controlled || !game.defense.includes(game.controlled)) game.controlled = nearestToBallDefender();
     ctrlRing.visible = true; selRing.visible = false;
-  } else { defIdx = cpuDefCall(); applyDefCall(defIdx); }
+  } else { defIdx = game.defLocked ? game.cpuDefIdx : cpuDefCall(); applyDefCall(defIdx); }
   game.cpuDefIdx = defIdx;
   // Resolve the concept-vs-coverage matchup for this snap (drives the leverage
   // the coverage AI reads + the post-play "why").
@@ -5451,9 +5633,14 @@ function cpuQB(dt) {
 }
 // A CPU ball carrier (after a CPU catch/scramble) seeks the end zone while you
 // chase with a defender; your teammates pursue and tackle on contact.
-function updateCpuRun(dt, turboOn, actionEdge) {
+function updateCpuRun(dt, turboOn, actionEdge, hitEdge) {
   const c = game.carrier;
   if (!c) { endPlay('incomplete', game.los); return; }
+  // Hit-stick: a style press (high/low + buttons) tackles AND sets the style; a plain
+  // ACTION tap is a safe wrap. The armed style feeds beginTackle (see hitArm there).
+  const tackleEdge = actionEdge || !!hitEdge;
+  if ((actionEdge || hitEdge) && game.controlled) game.controlled.hitArm = hitEdge || 'wrap';
+  actionEdge = tackleEdge;
   // Re-acquire control if our man got knocked down (or was never set).
   if (!game.controlled || game.controlled.ragdolling) switchDefender();
   const o = game.controlled;
@@ -6469,7 +6656,7 @@ function spawnRagdoll(ch, carryVel, hitDir, hitSpeed, bit, variant) {
   if (!physics) return false;
   if (!ch.ragdoll) { ch.ragdoll = new TackleRagdoll(physics); ch.ragdoll.bind(ch.model); }
   ch.group.updateWorldMatrix(true, true); // snapshot the CURRENT animated pose
-  ch.ragdoll.spawn(carryVel, hitDir, hitSpeed, bit, variant);
+  ch.ragdoll.spawn(carryVel, hitDir, hitSpeed, bit, variant, TUNE.ragdollBrace || 0); // Phase 1: arms brace the fall
   ch.ragdolling = ch.ragdoll.active;
   return ch.ragdolling;
 }
@@ -6505,7 +6692,9 @@ function updateKnockdownRecovery(dt) {
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
     if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
-    if (d.actions.getup) playOneShot(d, 'getup', 1.5, true); // play the full get-up clip (fit to 1.5s), held during it, then pursue
+    // Phase 2: a minor knockdown (settled quickly, not far from his feet) pops up
+    // fast; a big tumble takes the full get-up.
+    if (d.actions.getup) playOneShot(d, 'getup', d.downT < TUNE.knockdownRecover + 0.5 ? 0.85 : 1.5, true);
   }
 }
 
@@ -6626,6 +6815,28 @@ function updateBattle(dt) {
   if (b.val <= 0 || b.timer <= 0) { endBattle(false); return; }
 }
 
+// Phase 0 telemetry: record how each tackle resolved (type/closing/angle/gang/variant)
+// so the later phases are measurable + tunable. game.lastTackle holds the most recent
+// for the YAC log at endPlay.
+function logTackle(type, info) {
+  game.lastTackle = type;
+  // Phase 6 balance telemetry: tally every tackle outcome by type so the Stats
+  // overlay can show whiff% / arm% / fumble% — tune to numbers, not guesses.
+  const ts = game.tackleStats || (game.tackleStats = {});
+  ts[type] = (ts[type] || 0) + 1; ts.total = (ts.total || 0) + 1;
+  if (!TUNE.tackleLog) return;
+  const s = (n) => (Number.isFinite(n) ? n.toFixed(1) : '?');
+  dbgLogPush(`<b>TKL</b> ${type} · close ${s(info.closing)} · ang ${s(info.angle)}° · gang ${info.gang || 1}${info.variant ? ' · ' + info.variant : ''}${info.style ? ' · ' + info.style : ''}`);
+}
+// Pursuit angle (deg) between the tackler's approach velocity and the line to the
+// carrier: 0 = square-on, 90 = pure side angle. Drives arm-tackle odds + telemetry.
+function pursuitAngle(lead, carrier) {
+  const dx = carrier.group.position.x - lead.group.position.x, dz = carrier.group.position.z - lead.group.position.z;
+  const dl = Math.hypot(dx, dz) || 1, vl = Math.hypot(lead.vel.x, lead.vel.z);
+  if (vl < 0.5) return 0; // standing still -> treat as square
+  const dot = (lead.vel.x * dx + lead.vel.z * dz) / (vl * dl);
+  return Math.acos(THREE.MathUtils.clamp(dot, -1, 1)) * 180 / Math.PI;
+}
 function beginTackle(lead, force = false) {
   const carrier = game.carrier;
   const cp = carrier.group.position;
@@ -6644,8 +6855,26 @@ function beginTackle(lead, force = false) {
   const hl = Math.hypot(hitX, hitZ) || 1;
   const hitDir = new THREE.Vector3(hitX / hl, 0, hitZ / hl);
   const closing = Math.hypot(lead.vel.x - carrier.vel.x, lead.vel.z - carrier.vel.z);
+  const angle = pursuitAngle(lead, carrier);
   let big = lead.turbo || closing > 8; // Blitz: most square hits are violent (Phase 3 may force it on an exposed catch)
   const gang = gangSize >= 3;
+  // Phase 3 hit-stick: the user's chosen style (set in updateCpuRun). A square angle
+  // earns the big hit; off-angle high hits become arm tackles/whiffs; low = a clean
+  // cut-down; wrap = safe. Sets big/force + a fumble bonus instead of pure RNG.
+  let hitStyle = null, hitBonus = 0;
+  if (TUNE.hitStick && lead === game.controlled && lead.hitArm) { hitStyle = lead.hitArm; }
+  lead.hitArm = null;
+  // Phase 6: the square-up window widens on ROOKIE, tightens on ALL-PRO (userHitDeg).
+  const hitWin = 58 + (lead === game.controlled ? diff().userHitDeg : 0);
+  if (hitStyle === 'high') {
+    if (angle < hitWin) { big = true; force = true; hitBonus = TUNE.hitStickBonus; game.replay.bigHit = true; } // squared up: violent
+    else if (!force) { // off-angle big swing — Phase 4 arm tackle, or a whiff
+      logTackle('arm-offangle', { closing, angle, style: 'high' });
+      if (Math.random() < TUNE.armTackleChance) { beginDrag(carrier, pile, false, hitDir, closing); return; } // drag him down by an arm
+      knockdownDefender(lead); shake.add(0.15); setStatus('WHIFF!'); return; // blew past him
+    }
+  } else if (hitStyle === 'low') { big = false; force = true; } // reliable cut-down, no escape, no spectacle
+  // 'wrap' (or no style): the normal safe path below.
   if (gang && Math.random() < 0.35) game.replay.bigHit = true; // occasional gang-tackle highlight
 
   // A committed tackle (a lost battle) skips every escape — straight down.
@@ -6655,6 +6884,7 @@ function beginTackle(lead, force = false) {
     knockdownDefender(lead);
     shake.add(0.15);
     setStatus('WHIFF!');
+    logTackle('whiff', { closing, angle, gang: gangSize });
     return;
   }
 
@@ -6667,6 +6897,7 @@ function beginTackle(lead, force = false) {
   const helpers = game.defense.reduce((n, d) =>
     n + (d !== lead && !d.ragdolling && distXZ(px(d), cp) <= BATTLE_SOLO_R ? 1 : 0), 0);
   if (!force && game.userOnOffense && helpers === 0 && game.battle.cd <= 0 && Math.random() < TUNE.battleChance) {
+    logTackle('battle', { closing, angle, gang: gangSize });
     startBattle(lead, big);
     return;
   }
@@ -6680,7 +6911,27 @@ function beginTackle(lead, force = false) {
     shake.add(0.2);
     shake.kick(carrier.vel.x, carrier.vel.z, 0.4);
     showBanner('BROKE IT!', '#bfffd0');
+    logTackle('broken', { closing, angle, gang: gangSize });
     return;
+  }
+
+  // Phase 4: a BAD-ANGLE or LOW-RATED arrival can't square him up — it's only an arm
+  // tackle (drag him down, he keeps churning) or he slips through with a stagger.
+  // Committed/big/gang hits and a man already squared up still land cleanly.
+  if (!force && !big && !gang && angle > 48) {
+    const tkl = lead.rt ? (lead.rt.wrapTackle != null ? lead.rt.wrapTackle : lead.rt.tackle) : 0.7;
+    const offAngle = THREE.MathUtils.clamp((angle - 48) / 80, 0, 1);
+    // Phase 6: a CPU defender whiffs more on ROOKIE, less on ALL-PRO (cpuWhiff).
+    const cpuWhiff = (!game.userOnOffense ? 1 : (lead !== game.controlled ? diff().cpuWhiff : 1));
+    const missP = THREE.MathUtils.clamp((0.18 + offAngle * 0.5) * (1.25 - tkl), 0, 0.7) * TUNE.armTackleChance * cpuWhiff;
+    if (Math.random() < missP) {
+      if (Math.random() < 0.55) { logTackle('arm', { closing, angle }); beginDrag(carrier, pile, false, hitDir, closing); return; } // dragged down by an arm
+      knockdownDefender(lead); // whiffed off the bad angle — he slips it
+      if (carrier.actions.hitreact && carrier.oneShotT <= 0) playOneShot(carrier, 'hitreact', TUNE.staggerDur * 0.7, true);
+      carrier.vel.x *= 0.85; carrier.vel.z *= 0.85; shake.add(0.12);
+      showBanner('SLIPPED THE TACKLE!', '#bfffd0'); logTackle('slipped', { closing, angle });
+      return;
+    }
   }
 
   // Committed to bringing him down: close the gap so the pile makes real CONTACT
@@ -6702,13 +6953,14 @@ function beginTackle(lead, force = false) {
   // free for a live scramble (see startFumble) instead of the play ending.
   // A receiver hit RIGHT after a contested catch (Phase 3) is jarring + exposed: the
   // ball pops loose far more often, scaled by the catch style he chose.
-  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0)) * TUNE.fumbleChance;
+  let fProb = ((big ? 0.12 : 0.035) + (gang ? 0.05 : 0) + hitBonus) * TUNE.fumbleChance; // hitBonus = earned hit-stick high hit
   if (carrier.catchExposed > 0) { fProb += TUNE.catchHitRisk * (carrier.catchExposeRisk || 0.5); big = true; carrier.catchExposed = 0; }
   if (carrier.tauntT > 0 || Math.random() < fProb) {
     const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
     const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
     spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
     lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'tackle', 0.45);
+    logTackle('fumble', { closing, angle, gang: gangSize, variant });
     startFumble(carrier, hitX, hitZ);
     return;
   }
@@ -6724,6 +6976,7 @@ function beginTackle(lead, force = false) {
   // a WRAP & DRAG-DOWN: the tacklers latch on and bring him down over a beat,
   // longer for a lone man and quicker as the gang piles on.
   if (!(force || (big && Math.random() < 0.6))) {
+    logTackle('drag', { closing, angle, gang: gangSize });
     beginDrag(carrier, pile, big, hitDir, closing);
     return;
   }
@@ -6742,6 +6995,7 @@ function beginTackle(lead, force = false) {
   // recoil the other way (varied so a pile isn't a mirror image).
   const variant = pickVariant(big, gangSize, closing, hitX, hitZ);
   const hitSpeed = THREE.MathUtils.clamp(2 + closing * 0.45, 2.5, 8);
+  logTackle(big && gang ? 'instant-big-gang' : big ? 'instant-big' : 'instant', { closing, angle, gang: gangSize, variant });
   spawnRagdoll(carrier, new THREE.Vector3(carrier.vel.x, 0, carrier.vel.z), hitDir, hitSpeed, 0x0002, variant);
   const back = hitDir.clone().negate();
   // Lead tackler makes the hit with a head-down lunge (no roll) instead of
@@ -6774,13 +7028,19 @@ function beginTackle(lead, force = false) {
     const power = hitPower(lead, closing, gangSize, big);
     // The most violent square hits (turbo + huge closing) read as a DIRTY HIT.
     const dirty = big && lead.turbo && closing > 10.5;
+    const earned = hitStyle === 'high'; // a player-earned hit-stick big hit gets extra punch
     if (dirty) { timeScale.bulletTime(0.05, 0.95, 1.45); hitZoom(2.2, 1.7); shake.add(0.85); impactFlash(true); }      // deepest slow-mo, tightest punch-in
     else if (gang) { timeScale.bulletTime(0.07, 0.85, 1.25); hitZoom(2.0, 1.45); shake.add(0.72); impactFlash(true); }
-    else { timeScale.bulletTime(0.09, 0.75, 1.15); hitZoom(1.7, 1.35); shake.add(0.5); impactFlash(false); }
+    else { timeScale.bulletTime(earned ? 0.07 : 0.09, earned ? 0.85 : 0.75, 1.15); hitZoom(earned ? 1.95 : 1.7, earned ? 1.5 : 1.35); shake.add(earned ? 0.62 : 0.5); impactFlash(earned); }
+    if (earned) shake.kick(hitX, hitZ, 1.15); // Phase 5: directional camera shove on a clean hit-stick
     audio.bigHit();
+    // Phase 5 contact FX: a burst of sweat/mist on a big collision over the dust.
+    burst(cp.x, 1.35, cp.z, 0xffffff, dirty || gang ? 16 : 12, 4.5);
     // Gore: most often the helmet pops off; rarely the whole body is RIPPED IN
-    // HALF at the waist (head stays with the top). The two are mutually exclusive.
-    const tear = (big || gang) && Math.random() < 0.4;
+    // HALF at the waist (head stays with the top). Frequency scales with the EARNED
+    // power (a harder hit tears more often) × the gore knob.
+    const tearP = THREE.MathUtils.clamp(0.18 + (power - 70) / 110, 0.12, 0.6) * (TUNE.gore ? 1 : 0);
+    const tear = (big || gang) && Math.random() < tearP;
     if (tear) tearInHalf(carrier, hitX, hitZ, power);
     else if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
@@ -6828,7 +7088,9 @@ function beginDrag(carrier, pile, big, hitDir, closing) {
 // Takedown time: wrap-up power (count + TACKLING) vs the carrier's strength/speed.
 // More bodies and stronger tacklers bring him down faster.
 function dragTakedownTime(pile, carrier) {
-  let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? t.rt.tackle : 0.6);
+  // Phase 6: wrap-up speed keys off the derived wrapTackle skill (secure-tackle),
+  // so reliable wrap tacklers cinch him faster than equal-TACKLE big hitters.
+  let wrap = 0; for (const t of pile) wrap += 0.5 + (t.rt ? (t.rt.wrapTackle != null ? t.rt.wrapTackle : t.rt.tackle) : 0.6);
   const car = 0.6 + (carrier.rt ? carrier.rt.strength : 0.7) + Math.hypot(carrier.vel.x, carrier.vel.z) / 22;
   return THREE.MathUtils.clamp(1.05 - (pile.length - 1) * 0.2 - (wrap - car) * 0.22, 0.32, 1.15);
 }
@@ -6865,7 +7127,7 @@ function updateDrag(dt) {
   // big gang stuffs him and even drives him BACK; a lone wrap just stalls him.
   carrier.vel.x *= Math.pow(0.03, dt); carrier.vel.z *= Math.pow(0.03, dt);
   carrier.group.position.x += carrier.vel.x * dt; carrier.group.position.z += carrier.vel.z * dt;
-  let wrapPow = 0; for (const t of d.grabbers) wrapPow += 0.5 + (t.rt ? t.rt.tackle : 0.6);
+  let wrapPow = 0; for (const t of d.grabbers) wrapPow += 0.5 + (t.rt ? (t.rt.wrapTackle != null ? t.rt.wrapTackle : t.rt.tackle) : 0.6);
   const carPow = 0.9 + (carrier.rt ? carrier.rt.strength : 0.7);
   const drive = THREE.MathUtils.clamp((carPow - wrapPow) * 0.7, -2.4, 0.5); // + sneaks forward, - driven back
   cp.z += game.dir * drive * dt;
@@ -7536,6 +7798,17 @@ function applyBattleArms(ch, isTackler, w = 1) {
       _tq.setFromAxisAngle(_YAX, 0.5 * w); ch.headBone.quaternion.multiply(_tq);      // turned to the side
       ch.headBone.updateMatrixWorld(true);
     }
+    // Phase 1 contact IK: drive the wrap hands ONTO the carrier's torso so they grip
+    // the body instead of clamping a fixed offset in the air.
+    if (TUNE.contactIK && game.drag.active && game.carrier && ch !== game.carrier && ch.handBone) {
+      const tb = game.carrier.spineBone || game.carrier.headBone;
+      if (tb) {
+        tb.updateWorldMatrix(true, false); _hips.setFromMatrixPosition(tb.matrixWorld);
+        ch.group.updateWorldMatrix(true, true);
+        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * TUNE.contactIK);
+        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * TUNE.contactIK);
+      }
+    }
   } else {
     // Carrier lowers his shoulder and braces THROUGH the hit: bends into it at the
     // waist, free arm punches into the tackler, off arm cradles the ball low and
@@ -7881,6 +8154,7 @@ const turboFillEl = document.getElementById('turbo-fill');
 function updatePlay(dt) {
   const actionEdge = input.actionEdge; input.actionEdge = false;
   const catchEdge = input.catchEdge; input.catchEdge = null; // user-catch style press (rac/poss/agg)
+  const hitEdge = input.hitEdge; input.hitEdge = null; // hit-stick style press (high/wrap/low)
   const spinEdge = input.spinEdge; input.spinEdge = false;
   const diveEdge = input.diveEdge; input.diveEdge = false;
   const pitchEdge = input.pitchEdge; input.pitchEdge = false;
@@ -7969,7 +8243,7 @@ function updatePlay(dt) {
     for (const ch of game.all) if (ch !== game.controlled && !ch.ragdolling) applySteer(ch, dt);
     if (game.state === STATE.LIVE) checkSack(); // a rusher at the QB = sack
   } else if (game.state === STATE.RUN && !game.userOnOffense) {
-    updateCpuRun(dt, turboOn, actionEdge); // CPU carrier; you tackle on defense
+    updateCpuRun(dt, turboOn, actionEdge, hitEdge); // CPU carrier; you tackle on defense (hit-stick style)
   } else if (game.state === STATE.RUN) {
     // The single ACTION button picks the right move for the moment (HURDLE /
     // STIFF ARM / JUKE — see carrierContext). Desktop Q/E/F stay as explicit
@@ -8061,6 +8335,7 @@ function updatePlay(dt) {
     resolveBodies();
     for (const ch of game.all) if (!ch.ragdolling) clampToField(ch);
   }
+  updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
@@ -8478,6 +8753,21 @@ const DBG_KNOBS = [
   { tab: 'Gameplay', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'breakTackleEase', label: 'Break-tackle ease ×', min: 0.3, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { tab: 'Gameplay', key: 'battleChance', label: 'Battle trigger odds', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  // ---- Tackle tab: the tackling-overhaul knobs in one place ----
+  { tab: 'Tackle', key: 'tackleLog', label: 'Tackle log', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Tackle', key: 'ragdollBrace', label: 'Ragdoll brace', min: 0, max: 1.5, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'contactIK', label: 'Tackler hand IK', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'hitStick', label: 'Hit-stick', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Tackle', key: 'hitStickWindow', label: 'Hit-stick window (yd)', min: 1, max: 4, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'hitStickBonus', label: 'Hit-stick bonus', min: 0, max: 0.6, step: 0.02, fmt: (v) => '+' + v.toFixed(2) },
+  { tab: 'Tackle', key: 'armTackleChance', label: 'Arm-tackle chance', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { tab: 'Tackle', key: 'tackleReach', label: 'Tackle reach (yd)', min: 0.6, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'swarmRadius', label: 'Gang radius (yd)', min: 1.5, max: 7, step: 0.5, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'fumbleChance', label: 'Fumble odds ×', min: 0, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { tab: 'Tackle', key: 'battleChance', label: 'Battle odds', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { tab: 'Tackle', key: 'staggerDur', label: 'Break stagger (s)', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Tackle', key: 'knockdownRecover', label: 'Knockdown recover (s)', min: 0, max: 6, step: 0.2, fmt: (v) => (v ? v.toFixed(1) : 'off') },
+  { tab: 'Tackle', key: 'gapGrab', label: 'Wrap radius (yd)', min: 0.12, max: 1.5, step: 0.02, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'celebChance', label: 'TD celebration odds', min: 0, max: 1, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Gameplay', key: 'quarterLen', label: 'Quarter length (s)', min: 30, max: 180, step: 5, fmt: (v) => String(v | 0) },
   { tab: 'Gameplay', key: 'turboMult', label: 'Turbo power ×', min: 1, max: 1.8, step: 0.02, fmt: (v) => v.toFixed(2) },
@@ -9167,6 +9457,8 @@ loadAssets().then(async () => {
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
+
+
 
 
 

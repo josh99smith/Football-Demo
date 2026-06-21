@@ -392,6 +392,9 @@ html, body {
 .catch-btn.hot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 14px rgba(255, 210, 60, 0.55); }
 .catch-btn.armed { background: var(--accent); color: #1b2a1f; border-color: #fff; }
 .catch-btn.active { transform: scale(0.94); }
+/* Hit-stick row: red, to read as the defensive choice (vs the gold catch row). */
+.hit-btn.hot { border-color: #ff5a3a; color: #ff7a5a; box-shadow: 0 0 14px rgba(255, 90, 58, 0.6); }
+#hit-high { border-color: rgba(255, 90, 58, 0.5); }
 
 .mini-btn {
   position: fixed;
@@ -745,6 +748,8 @@ body.replay-mode #fps { display: none !important; }
 .coach-btn.on { background: rgba(255, 213, 74, 0.9); color: #1b2a1f; border-color: rgba(255, 213, 74, 0.9); }
 .coach-btn.hidden { display: none; }
 body.replay-mode .coach-btn { visibility: hidden; }
+/* Audible sits just below the PLAY ART button (pre-snap, offense). */
+.audible-btn { top: max(194px, calc(env(safe-area-inset-top) + 190px)); }
 
 /* ---------- Skip / Sim controls ---------- */
 #simbar {
@@ -977,7 +982,9 @@ body.replay-mode .replay-btn { display: none !important; }
 .ps-deck {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
+  width: min(540px, 94vw); /* cap the whole row so the arrows stay on-screen */
   animation: psPop 0.28s ease both;
 }
 .ps-arrow {
@@ -1003,7 +1010,8 @@ body.replay-mode .replay-btn { display: none !important; }
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  width: min(420px, 78vw);
+  flex: 1 1 0; /* fill the space between the two fixed arrows */
+  min-width: 0; /* …and actually shrink (default min-width:auto shoved the arrows off-screen) */
 }
 .ps-card {
   position: relative;
@@ -1059,6 +1067,16 @@ body.replay-mode .replay-btn { display: none !important; }
 }
 .ps-cat.on { color: #06120b; background: var(--ps-accent); border-color: var(--ps-accent); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); }
 .ps-cat:active { transform: scale(0.94); }
+
+/* Scouting hint (Phase 6): the opponent's recent tendency on the call screen. */
+.ps-scout {
+  font-size: clamp(10px, 2.5vw, 12.5px); font-weight: 700; letter-spacing: 0.4px;
+  color: #dbe7f5; background: rgba(8, 16, 12, 0.55); border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px; padding: 5px 13px; animation: psPop 0.26s ease both;
+}
+.ps-scout.hidden { display: none; }
+.ps-scout .ps-scout-k { font-weight: 900; letter-spacing: 1.4px; color: var(--accent); margin-right: 6px; }
+.ps-scout b { color: #fff; font-weight: 900; font-style: italic; }
 
 /* "LAST" tag: the play you ran on the previous snap (when it's not your current pick). */
 .ps-card.last::after {
