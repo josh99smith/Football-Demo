@@ -7818,10 +7818,13 @@ const POSE_KEYS = {
   sulk: { // loser slump (static base; a slow sway is layered on at runtime)
     upperArm: [[0, 0.2]], foreArm: [[0, 0.5]], leftArm: [[0, 0.2]], leftForeArm: [[0, 0.5]],
   },
-  idle: { // standing-stance nudge, layered ADDITIVELY over the idle clip (small values
-    // = a slight relaxed elbow bend on top of the clip's arms-down pose). Values are
-    // deltas, NOT absolute angles — keep them small. Edit in the Studio Keys tab.
+  idle: { // standing-stance overlay, layered ADDITIVELY over the idle clip. Arm/spine/
+    // head values are small local-X deltas (NOT absolute angles). hipDrop lowers the
+    // hips (yards) and the legs 2-bone-IK keep the feet planted → a real bent-knee
+    // crouch. All default 0 except a slight elbow relax, so the shipped idle is
+    // unchanged until you author a stance in the Studio (Keys tab + crouch slider).
     upperArm: [[0, 0]], foreArm: [[0, -0.1]], leftArm: [[0, 0]], leftForeArm: [[0, -0.1]],
+    spine: [[0, 0]], head: [[0, 0]], hipDrop: [[0, 0]],
   },
 };
 const POSE_DEFAULTS = JSON.parse(JSON.stringify(POSE_KEYS));
@@ -8134,11 +8137,11 @@ function applySulkPose(ch, w = 1) {
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
   blendLean(ch, lean, 0, w);
 }
-// Relaxed standing-stance overlay, layered ADDITIVELY over the idle clip (which
-// already poses the arms down + breathes via applyLocoLife). Each channel is a small
-// nudge ON TOP of the clip — NOT a blendBone toward rest, which would snap the arms to
-// the model's T-pose bind rest. Authored in the Studio's Keys tab; t cycles on a slow
-// per-player breath phase (desynced by breathPh) so added shoulder keys can pulse.
+// Standing-stance overlay, layered ADDITIVELY over the idle clip (which already poses
+// the arms down + breathes via applyLocoLife). Arms/spine/head are small local-X nudges
+// ON TOP of the clip — NOT a blendBone toward rest, which would snap them to the model's
+// T-pose bind rest. The legs/hips (the crouch) are handled by applyIdleCrouch via IK.
+// Authored in the Studio Keys tab; t cycles on a slow per-player breath phase.
 function applyIdlePose(ch, w = 1) {
   w *= TUNE.animIdle;
   if (!ch.upperArm) return;
@@ -8147,6 +8150,24 @@ function applyIdlePose(ch, w = 1) {
   addBoneX(ch.foreArm, pk('idle', 'foreArm', t) * w);
   addBoneX(ch.leftArm, pk('idle', 'leftArm', t) * w);
   addBoneX(ch.leftForeArm, pk('idle', 'leftForeArm', t) * w);
+  if (ch.spineBone) addBoneX(ch.spineBone, pk('idle', 'spine', t) * w);  // torso hinge forward
+  if (ch.headBone) addBoneX(ch.headBone, pk('idle', 'head', t) * w);     // keep the head up
+}
+// Bent-knee crouch for the idle stance: drop the hips by `hipDrop` yards and 2-bone-IK
+// each leg so the feet stay planted where they were — so the knees bend the RIGHT way
+// by construction (no rig-axis guessing). Gated on hipDrop > 0, so it's a no-op (and
+// zero cost) unless a stance is authored. Shared by the game + the Studio preview.
+const _idleFootR = new THREE.Vector3(), _idleFootL = new THREE.Vector3();
+function applyIdleCrouch(ch, w = 1) {
+  const depth = pk('idle', 'hipDrop', 0) * w * TUNE.animIdle;
+  if (depth <= 0.001 || !ch.leg || !ch.leg.footR || !ch.leg.footL) return;
+  ch.group.updateMatrixWorld(true);
+  _idleFootR.setFromMatrixPosition(ch.leg.footR.matrixWorld); // capture planted feet
+  _idleFootL.setFromMatrixPosition(ch.leg.footL.matrixWorld);
+  ch.group.position.y -= depth;                                // sink the hips
+  ch.group.updateMatrixWorld(true);
+  ik2(ch.leg.thighR, ch.leg.shinR, ch.leg.footR, _idleFootR, 1); // bend knees to re-plant
+  ik2(ch.leg.thighL, ch.leg.shinL, ch.leg.footL, _idleFootL, 1);
 }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
@@ -8341,6 +8362,8 @@ function updateAnimation(ch, dt) {
   const clipBlocking = battleTackler; // only the break-tackle push clip steps the feet -> clamp to the turf
   if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
+  // Idle crouch: sink the hips + IK the feet (after the root height is settled above).
+  if (ch.idleW > 0.001) applyIdleCrouch(ch, ch.idleW);
 }
 // (The old Blitz JUKE — a lateral dodge-roll one-shot — has been replaced by the
 // SPIN move as the carrier's default open-field action; see doSpin / carrierContext.)
@@ -9476,7 +9499,7 @@ const STUDIO_PROCS = [
   { id: 'sulkpose', label: 'Sulk pose', pose: 'sulk', base: 'idle',
     drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applySulkPose(ch, w); } },
   { id: 'idlepose', label: 'Idle stance', pose: 'idle', base: 'idle',
-    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyIdlePose(ch, w); } },
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyIdlePose(ch, w); applyIdleCrouch(ch, w); } },
   { id: 'loco', label: 'Loco life (run)', base: 'run',
     drive(ch, t, w, dt) { setClip(ch, 'run'); applyLocoLife(ch, dt, 0); stepMixer(ch, dt); } },
   { id: 'headtrack', label: 'Head track', base: 'idle',
@@ -9504,7 +9527,7 @@ const STUDIO_HELP = {
 };
 // Phase 6 anatomical guardrails: per-channel soft clamps so edits can't author an
 // impossible joint (mirrors the ragdoll's cone/twist limit philosophy).
-const CHAN_LIMIT = { lean: 0.8, twist: 0.8, head: 1.1, _default: 3.0 };
+const CHAN_LIMIT = { lean: 0.8, twist: 0.8, head: 1.1, spine: 0.9, hipDrop: 0.7, _default: 3.0 };
 const chanClamp = (chan, v) => { const L = CHAN_LIMIT[chan] || CHAN_LIMIT._default; return THREE.MathUtils.clamp(v, -L, L); };
 // Undo/redo over the whole pose set (snapshot-based).
 function studioPush() { try { STUDIO.undo.push(JSON.stringify(POSE_KEYS)); if (STUDIO.undo.length > 40) STUDIO.undo.shift(); STUDIO.redo.length = 0; } catch (e) {} }
@@ -9615,7 +9638,19 @@ function studioBody() {
     const chchips = chans.map((c) => `<button class="std-chip sm${c === STUDIO.kfChannel ? ' on' : ''}" data-chan="${c}">${c}</button>`).join('');
     const k = tbl[STUDIO.kfChannel];
     const sel = (STUDIO.kfSel && k.indexOf(STUDIO.kfSel) >= 0) ? STUDIO.kfSel : null;
-    return `<div class="std-chans">${chchips}</div>
+    // Friendly "quick stance" sliders for the idle pose (the headline crouch controls),
+    // above the raw channel/curve editor. Each writes the channel's value live.
+    let quick = '';
+    if (h.pose === 'idle') {
+      const iv = (c) => (tbl[c] && tbl[c][0]) ? tbl[c][0][1] : 0;
+      quick = `<div class="std-help-txt" style="margin-bottom:5px">Quick idle stance — drag to pose, then <b>Save</b>:</div>`
+        + `<label class="lab-row" title="lower the hips & bend the knees (feet stay planted by IK)"><span>crouch</span><input type="range" data-idle="hipDrop" min="0" max="0.6" step="0.01" value="${iv('hipDrop')}"><b id="iv-hipDrop">${iv('hipDrop').toFixed(2)}</b></label>`
+        + `<label class="lab-row" title="hinge the torso forward (flip sign if it leans back)"><span>torso lean</span><input type="range" data-idle="spine" min="-0.8" max="0.8" step="0.02" value="${iv('spine')}"><b id="iv-spine">${iv('spine').toFixed(2)}</b></label>`
+        + `<label class="lab-row" title="bend both elbows"><span>elbow bend</span><input type="range" data-idle2="foreArm,leftForeArm" min="-1.5" max="1.5" step="0.02" value="${iv('foreArm')}"><b id="iv-foreArm">${iv('foreArm').toFixed(2)}</b></label>`
+        + `<label class="lab-row" title="swing both arms forward"><span>arms fwd</span><input type="range" data-idle2="upperArm,leftArm" min="-1.5" max="1.5" step="0.02" value="${iv('upperArm')}"><b id="iv-upperArm">${iv('upperArm').toFixed(2)}</b></label>`
+        + `<div class="lab-hint" style="margin:2px 0 8px">…or fine-tune any raw channel below</div>`;
+    }
+    return quick + `<div class="std-chans">${chchips}</div>
       <canvas id="std-curve" width="320" height="168"></canvas>
       <div class="std-kf">
         <label>t<input id="kf-t" type="number" step="0.01" min="0" max="1" value="${sel ? sel[0].toFixed(3) : ''}"></label>
@@ -9997,7 +10032,20 @@ function buildStudioPanel() {
   const copyBtn = $('#lab-copy');
   copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200); };
   $('#lab-reset').onclick = () => { studioResetCurrent(); buildStudioPanel(); };
-  if (STUDIO.tab === 'Keys') studioWireCurve();
+  if (STUDIO.tab === 'Keys') {
+    studioWireCurve();
+    // Quick idle-stance sliders (write channel values live; data-idle2 drives a pair).
+    labPanelEl.querySelectorAll('[data-idle]').forEach((inp) => inp.oninput = () => {
+      const c = inp.dataset.idle, v = parseFloat(inp.value);
+      if (!POSE_KEYS.idle[c]) POSE_KEYS.idle[c] = [[0, 0]]; POSE_KEYS.idle[c][0][1] = v;
+      const o = labPanelEl.querySelector('#iv-' + c); if (o) o.textContent = v.toFixed(2);
+    });
+    labPanelEl.querySelectorAll('[data-idle2]').forEach((inp) => inp.oninput = () => {
+      const cs = inp.dataset.idle2.split(','), v = parseFloat(inp.value);
+      for (const c of cs) { if (!POSE_KEYS.idle[c]) POSE_KEYS.idle[c] = [[0, 0]]; POSE_KEYS.idle[c][0][1] = v; }
+      const o = labPanelEl.querySelector('#iv-' + cs[0]); if (o) o.textContent = v.toFixed(2);
+    });
+  }
   if (STUDIO.tab === 'Bones') {
     labPanelEl.querySelectorAll('[data-bone]').forEach((b) => b.onclick = () => studioSelectBone(b.dataset.bone));
     labPanelEl.querySelectorAll('[data-ax]').forEach((inp) => inp.oninput = () => {
