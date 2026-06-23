@@ -1558,6 +1558,7 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
   // the field and the next hit snapshots a broken pose).
   let handBone = null, upperArm = null, foreArm = null, leftArm = null, leftForeArm = null, leftHandBone = null;
   let headBone = null, headEnd = null, spineBone = null;
+  const leg = { thighR: null, shinR: null, footR: null, thighL: null, shinL: null, footL: null }; // Phase 3 foot-lock IK chain
   const restPose = [];
   model.traverse((o) => {
     if (o.isBone) {
@@ -1570,6 +1571,8 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
       if (o.name === 'Head') headBone = o;
       if (o.name === 'head_end') headEnd = o;
       if (o.name === 'Spine01' || (!spineBone && o.name === 'Spine')) spineBone = o; // waist bend (battle/block)
+      if (o.name === 'RightUpLeg') leg.thighR = o; if (o.name === 'RightLeg') leg.shinR = o; if (o.name === 'RightFoot') leg.footR = o;
+      if (o.name === 'LeftUpLeg') leg.thighL = o; if (o.name === 'LeftLeg') leg.shinL = o; if (o.name === 'LeftFoot') leg.footL = o;
       restPose.push([o, o.position.clone(), o.quaternion.clone()]);
     }
   });
@@ -1684,6 +1687,7 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
     leftArm, leftForeArm, leftArmRest, leftForeArmRest, throwAnimT: 0, throwLaunch: 0.3,
     armPose: null, armPoseT: 0, armPoseDur: 0, armPoseTarget: null,
     headBone, headEnd, helmet, headFix, headSnap, bones: restPose.map((e) => e[0]), // bone list for replay capture
+    leg, footLockR: null, footLockL: null, // Phase 3 foot-lock IK: captured world plant per foot (null = swinging)
     team, role: 'WR', job: 'idle', heading: 0,
     vel: new THREE.Vector3(), speed: 0, baseSpeed: 8.4, turbo: false,
     home: new THREE.Vector3(), desired: { x: 0, z: 0 },
@@ -1705,13 +1709,149 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
   };
 }
 
-function setClip(ch, name) {
+// ---- Animation overhaul (docs/animation-system-overhaul-plan.md) ----------
+// Phase 0: a single data-driven blend table. Every transition duration lives
+// here instead of scattered magic numbers, so blends are intentional + tunable
+// (Phase 6 wires the live knobs to these). Times are seconds.
+const BLEND = {
+  gait: 0.18,         // base locomotion crossfade (setClip default)
+  gaitFast: 0.10,     // tiny speed delta -> snappier blend (Phase 1)
+  gaitSlow: 0.30,     // big speed/direction delta -> longer blend (Phase 1)
+  poseIn: 0.09,       // procedural overlay ease-IN  (was POSE_IN)
+  poseOut: 0.13,      // procedural overlay ease-OUT (was POSE_OUT)
+  oneShotOut: 0.16,   // pose-matched one-shot exit back into locomotion (Phase 2)
+  ragdollGetup: 0.24, // blend from the settled ragdoll pose into the get-up (Phase 4)
+};
+// Frame-rate-independent exponential smoothing: converges `cur` toward `target`
+// by a fraction that is identical at any dt (so a blend looks the same at 30 or
+// 144 fps and under bullet-time). `rate` larger = snappier. Replaces the
+// `x += (want-x)*min(1,dt*k)` approximations scattered through the pose code.
+const expEase = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
+
+// Phase 1 locomotion blend space: the forward gaits + the backpedal pair are no
+// longer discrete single-active clips with a flat 0.18 crossfade. They run as a
+// weighted blend (setBase below) keyed continuously on speed/direction, so the
+// body accelerates through the gait continuum with no cut. setClip stays the
+// single-active path for one-shots / dance / sulk / battle overrides; when one
+// fires it clears any leftover blend-space gait weight so the crossfade is clean.
+const BASE_ACTS = ['idle', 'walk', 'run', 'sprint', 'backL', 'backR', 'block'];
+function setClip(ch, name, blend) {
   if (ch.current === name) return;
   const next = ch.actions[name];
+  if (!next) return;
+  const bl = blend != null ? blend : BLEND.gait;
+  // Fade residual blend-space weight OUT over the same blend (not an instant zero):
+  // when entering a one-shot from a mid-gait blend (e.g. run .5 + sprint .5), zeroing
+  // the non-dominant gait would drop the total action weight well below 1, and THREE's
+  // PropertyMixer bleeds the skeleton toward its BIND pose (a T-pose) for the missing
+  // weight. Fading them keeps the sum ~1 across the crossfade. (ch.active is faded by
+  // crossFadeFrom below.)
+  if (ch._baseInit) for (const n of BASE_ACTS) {
+    const a = ch.actions[n];
+    if (a && a !== next && a !== ch.active && a.getEffectiveWeight() > 0.001) a.fadeOut(bl);
+  }
+  if (ch.fadeAct && ch.fadeAct !== next) { ch.fadeAct.fadeOut(bl); ch.fadeAct = null; } // a new override pre-empts a fading one-shot
   next.reset(); next.enabled = true;
   next.setEffectiveTimeScale(1); next.setEffectiveWeight(1);
-  next.crossFadeFrom(ch.active, 0.18, false); next.play();
+  next.crossFadeFrom(ch.active, bl, false); next.play();
   ch.active = next; ch.current = name;
+}
+// Start every base action once (idle already runs at weight 1) so setBase can just
+// ease weights forever without stop/restart phase pops.
+function initBase(ch) {
+  if (ch._baseInit) return;
+  for (const n of BASE_ACTS) { const a = ch.actions[n]; if (!a) continue; a.enabled = true; if (!a.isRunning()) { a.setEffectiveWeight(n === 'idle' ? a.getEffectiveWeight() : 0); a.play(); } }
+  ch._baseInit = true;
+}
+// Ease the base layer toward a target weight distribution (fps-independent), so
+// gait<->gait and gait<->backpedal blend continuously instead of popping. Tracks
+// the dominant action as ch.active/current for one-shot crossfades, and fades out
+// any just-finished one-shot still carrying weight under the resuming gait.
+function setBase(ch, target, dt, rate) {
+  initBase(ch);
+  let domN = null, domW = -1, sum = 0;
+  for (const n of BASE_ACTS) {
+    const a = ch.actions[n]; if (!a) continue;
+    // ROOT FIX: THREE disables an action (enabled=false) when a fadeOut/crossFadeFrom
+    // interpolant completes at 0 — which happens to the dominant gait every time a
+    // player enters a one-shot (juke/dive/tackle/get-up). Once disabled,
+    // setEffectiveWeight() forces its effective weight to 0 (`enabled ? w : 0`), so the
+    // gait is stranded at zero no matter what we ask for and the skeleton bleeds to its
+    // bind pose (a persistent T-pose / "sliding, not animated"). Re-enable and drop any
+    // spent fade so the blend-space weight below actually drives the bone again.
+    if (!a.enabled) a.enabled = true;
+    a.stopFading();
+    const tgt = target[n] || 0;
+    let w = expEase(a.getEffectiveWeight(), tgt, rate, dt);
+    if (w < 0.001 && tgt === 0) w = 0;
+    a.setEffectiveWeight(w);
+    sum += w;
+    if (w > domW) { domW = w; domN = n; }
+  }
+  // Phase 2 pose-matched exit: a just-finished one-shot (juke/dive/celebrate) or a
+  // dance/sulk override holds its final pose and bleeds out under the resuming
+  // locomotion — instead of lingering or snapping back. Drive its weight as the exact
+  // COMPLEMENT of the base sum (1 - sum) so the total action weight stays pinned at 1
+  // as the gait ramps in: no bind-pose/T-pose bleed, and the held pose fills exactly
+  // the gap the gait hasn't covered yet. Cleared once the base is essentially full in.
+  if (ch.fadeAct) {
+    if (!ch.fadeAct.enabled) ch.fadeAct.enabled = true; // never let a disabled hold pose strand the gap
+    const pw = Math.max(0, 1 - sum);
+    if (pw < 0.02) { ch.fadeAct.setEffectiveWeight(0); ch.fadeAct = null; }
+    else ch.fadeAct.setEffectiveWeight(pw);
+  } else {
+    // Safety net (T-pose guard): when no one-shot pose is filling the gap, the base
+    // layer MUST cover the body fully — any deficit makes THREE's mixer bleed the
+    // skeleton toward its bind pose (a T-pose). Gait<->gait blends conserve the sum
+    // by construction, but resuming locomotion after a clip-override (battle drive,
+    // a ragdoll get-up, an interrupted one-shot) can start from a deficit, so
+    // renormalize the eased weights to sum=1 (preserves the blend RATIOS / feel).
+    // A near-total deficit (degenerate) snaps straight to the target distribution.
+    if (sum > 0.05 && sum < 0.999) {
+      const k = 1 / sum;
+      for (const n of BASE_ACTS) { const a = ch.actions[n]; if (!a) continue; const w = a.getEffectiveWeight(); if (w > 0) a.setEffectiveWeight(w * k); }
+    } else if (sum <= 0.05) {
+      for (const n of BASE_ACTS) { const a = ch.actions[n]; if (a) a.setEffectiveWeight(target[n] || 0); }
+    }
+  }
+  if (domN) { ch.active = ch.actions[domN]; ch.current = domN; }
+}
+// 1D speed blend over the forward gaits: returns weights for the two clips that
+// bracket the current speed (anchors are where each clip reads planted). Idle is
+// fully on at rest, sprint fully on at top speed; everything in between cross-fades.
+const GAIT_ANCHORS = [[0, 'idle'], [1.6, 'walk'], [7.5, 'run'], [11.5, 'sprint']];
+function gaitWeights(speed, out) {
+  out.idle = out.walk = out.run = out.sprint = 0;
+  const A = GAIT_ANCHORS, last = A.length - 1;
+  if (speed <= A[0][0]) { out.idle = 1; return out; }
+  if (speed >= A[last][0]) { out.sprint = 1; return out; }
+  for (let i = 0; i < last; i++) {
+    if (speed <= A[i + 1][0]) { const t = (speed - A[i][0]) / (A[i + 1][0] - A[i][0]); out[A[i][1]] = 1 - t; out[A[i + 1][1]] = t; return out; }
+  }
+  return out;
+}
+const _baseTarget = { idle: 0, walk: 0, run: 0, sprint: 0, backL: 0, backR: 0, block: 0 };
+// Drive the base layer for one non-battle character: pick the target distribution
+// (1D forward-gait blend, 2D backpedal blend, or a block hold) and foot-sync each
+// active blended clip to travel so planted feet don't skate.
+function updateLocoBlend(ch, want, dt) {
+  const t = _baseTarget; t.idle = t.walk = t.run = t.sprint = t.backL = t.backR = t.block = 0;
+  if (want === 'backL' || want === 'backR') {
+    const lat = ch.vel.x * Math.cos(ch.heading) - ch.vel.z * Math.sin(ch.heading); // + right / - left
+    const r = THREE.MathUtils.clamp(lat / 4 * 0.5 + 0.5, 0, 1); // 2D backpedal: blend L<->R by lateral drift
+    t.backR = r; t.backL = 1 - r;
+  } else if (want === 'block') { t.block = 1; }
+  else { gaitWeights(ch.speed, t); }
+  // Velocity-aware blend rate: a big speed swing gets a slightly LONGER blend
+  // (lower rate); steady speed tracks tight. Keeps a sprint->stop from snapping.
+  const dv = Math.abs(ch.speed - (ch._lastSpeed != null ? ch._lastSpeed : ch.speed)); ch._lastSpeed = ch.speed;
+  const rate = THREE.MathUtils.clamp(15 - dv * 2.2, 7, 16);
+  setBase(ch, t, dt, rate);
+  for (const n of ['walk', 'run', 'sprint', 'backL', 'backR']) {
+    const a = ch.actions[n]; if (!a || a.getEffectiveWeight() <= 0.002) continue;
+    const ref = a.getClip().userData && a.getClip().userData.refSpeed;
+    if (ref > 0) a.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
+  }
 }
 
 // ===========================================================================
@@ -1800,6 +1940,15 @@ const TUNE_DEFAULTS = {
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
   animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0,
+  // Animation overhaul (docs/animation-system-overhaul-plan.md)
+  animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
+  animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
+  footLock: 0,           // Phase 3: plant the stance foot to kill skating (0 = off; opt-in — needs per-rig visual tuning)
+  secondaryMotion: 1.0,  // Phase 3: × overshoot/settle on hard stops + direction changes (0 = off)
+  ragdollBlend: 1,       // Phase 4: blend from the settled ragdoll pose into the get-up (0 = hard snap)
+  animQuality: 1.0,      // Phase 6: master quality scale for IK/additive layers (0 = cheapest, off on low-end)
+  // Phase 6: live blend-table durations (seconds) — mirror BLEND, synced via syncBlend()
+  blendGait: 0.18, blendPoseIn: 0.09, blendPoseOut: 0.13, blendOneShotOut: 0.16, blendGetup: 0.24,
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -1829,6 +1978,13 @@ try {
     for (const k in TUNE_DEFAULTS) if (saved[k] !== undefined && typeof saved[k] === typeof TUNE_DEFAULTS[k]) TUNE[k] = saved[k];
   }
 } catch (e) { /* ignore corrupt/unavailable storage */ }
+// Phase 6: push the live blend-time knobs into the BLEND table (boot + on knob
+// edit) so every transition duration is tunable from the Anim debug tab.
+function syncBlend() {
+  BLEND.gait = TUNE.blendGait; BLEND.poseIn = TUNE.blendPoseIn; BLEND.poseOut = TUNE.blendPoseOut;
+  BLEND.oneShotOut = TUNE.blendOneShotOut; BLEND.ragdollGetup = TUNE.blendGetup;
+}
+syncBlend();
 // NFL Blitz rules: 30 yards for a first down, drives start on your own 20,
 // four downs (no punts/FGs), short running quarters and a delay-of-game clock.
 const DRIVE_START = -30, FIRST_DOWN_YDS = 30;
@@ -1881,6 +2037,7 @@ const game = {
   throwCharge: 0, // hold the THROW button to charge tap=lob -> hold=bullet
   throwArmed: false, // a throw only arms on a fresh press in LIVE (not the snap press)
 };
+if (typeof window !== 'undefined') window.game = game; // debug handle (inspect live state / anim weights from the console)
 // ---- User-action tracker: a running, persisted record of the HUMAN player's
 // plays — tackles he makes (his controlled defender brings the carrier down),
 // catches by his offense, and interceptions by his defense. Career totals,
@@ -4346,7 +4503,7 @@ function applyUIState() {
 // label to show. Captures the exact defender in the path and gates on cooldown,
 // so HURDLE / STIFF ARM only light up when they're actually available.
 function carrierContext(c) {
-  if (!c) return { label: 'JUKE', hot: false, run: () => {} };
+  if (!c) return { label: 'SPIN', hot: false, run: () => {} };
   const ahead = defenderAhead(c, 2.8, 0.48); // a man square in the path
   const fast = c.speed > 7.5;
   if (ahead && fast && c.jukeCd <= 0.6)
@@ -4358,7 +4515,7 @@ function carrierContext(c) {
   const nd = nearestDefenderTo(px(c));
   if (fast && c.tauntCd <= 0 && (!nd || distXZ(px(c), px(nd)) > 9))
     return { label: 'TAUNT', hot: false, run: doTaunt };
-  return { label: 'JUKE', hot: false, run: doJuke };
+  return { label: 'SPIN', hot: false, run: doSpin }; // default open-field move: a 360 spin (replaces the old juke)
 }
 // Refresh the action button to the carrier's current context (called per-frame
 // during your run so HURDLE / STIFF ARM light up the instant they're available).
@@ -4373,8 +4530,8 @@ function refreshRunAction(c) {
 const moveToward = (v, t, maxD) => (v < t ? Math.min(v + maxD, t) : Math.max(v - maxD, t));
 // Procedural-overlay weight ease (in faster than out); hoisted so updateAnimation
 // doesn't rebuild a closure per character per frame.
-const POSE_IN = 0.09, POSE_OUT = 0.13;
-const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? POSE_IN : POSE_OUT));
+const POSE_IN = BLEND.poseIn, POSE_OUT = BLEND.poseOut; // legacy aliases (overlay ease reads BLEND live below)
+const easeWeight = (cur, on, dt) => moveToward(cur, on ? 1 : 0, dt / (on ? BLEND.poseIn : BLEND.poseOut));
 function turnToward(a, b, maxD) {
   let d = b - a;
   while (d > Math.PI) d -= Math.PI * 2;
@@ -4593,7 +4750,11 @@ function dbgBalanceReport() {
   const tkLine = tot
     ? `\nTKL ${tot}  clean ${pct(clean, tot)}% · arm ${pct(sum('arm', 'arm-offangle'), tot)}% · whiff ${pct(sum('whiff'), tot)}% · slip ${pct(sum('slipped'), tot)}% · broke ${pct(sum('broken'), tot)}% · fum ${pct(sum('fumble'), tot)}%`
     : '\nTKL —';
-  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
+  // Phase 6: animation snap telemetry (regression catch) — only meaningful when the
+  // detector is running (TUNE.animDebug); flags any transition that popped.
+  const an = game.animSnaps || { count: 0, max: 0, worst: '' };
+  const anLine = TUNE.animDebug ? `\nANIM snaps ${an.count} · max ${an.max.toFixed(2)}rad${an.worst ? ' @ ' + an.worst : ''}` : '';
+  return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}${anLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
   endFinale(); // stop the dance party + clear loser/dancer pose flags
@@ -4601,6 +4762,7 @@ function resetGame() {
   game.scoreOff = 0; game.scoreDef = 0;
   game.tally = { plays: 0, sacks: 0, fumbles: 0, picks: 0, bigPlays: 0 };
   game.tackleStats = {}; // Phase 6: fresh per-type tackle telemetry for the rematch
+  game.animSnaps = { count: 0, max: 0, worst: '' }; // anim overhaul: fresh snap tally
   game.tend = { userOff: [], userDef: [], cpuOff: [], cpuDef: [] }; // fresh tendency scouting
   for (const ch of game.all) ch.stats = blankStats(); // fresh box score for the rematch
   game.quarter = 1; game.gameClock = TUNE.quarterLen; game.gameOver = false; game.clockStopped = true;
@@ -4965,7 +5127,7 @@ function preparePlay(teleport) {
   battleEl.classList.add('hidden'); game.battle.tackler = null; game.battle.playCount = 0;
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
-    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
+    ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.recoverBlend = null; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -6688,12 +6850,14 @@ function updateKnockdownRecovery(dt) {
     const p = d.ragdoll && d.ragdoll.active ? d.ragdoll.rootXZ() : null;
     if (d.ragdoll) d.ragdoll.dispose();
     d.ragdolling = false; d.downKnock = false;
+    if (d.actions.getup) captureGetupPose(d); // Phase 4: snapshot the fall pose before the snap-to-rest
     restoreRestPose(d); if (d.mixer) d.mixer.setTime(0);
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
     if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
     // Phase 2: a minor knockdown (settled quickly, not far from his feet) pops up
-    // fast; a big tumble takes the full get-up.
+    // fast; a big tumble takes the full get-up. Phase 4: the get-up rises from the
+    // fall pose (applyRecoverBlend) instead of teleporting to a clean rest pose.
     if (d.actions.getup) playOneShot(d, 'getup', d.downT < TUNE.knockdownRecover + 0.5 ? 0.85 : 1.5, true);
   }
 }
@@ -7422,6 +7586,30 @@ function restoreRestPose(ch) {
   if (!ch.restPose) return;
   for (const [bone, pos, quat] of ch.restPose) { bone.position.copy(pos); bone.quaternion.copy(quat); }
 }
+// ---- Phase 4: blend-from-ragdoll get-up (the headline seam fix) ----------------
+// Snapshot the settled ragdoll's bone orientations the instant before a recovery
+// snaps the skeleton to rest, so the get-up can rise FROM where the body fell
+// instead of teleporting to a clean rest pose. captureGetupPose stores the local
+// quaternions; applyRecoverBlend (called during the get-up one-shot) crossfades
+// from that physics pose into the clip over BLEND.ragdollGetup. Head is skipped so
+// the alt-model head-level fix isn't fought during the blend.
+function captureGetupPose(ch) {
+  if (!TUNE.ragdollBlend || !ch.bones) return;
+  const rb = ch.recoverBlend || (ch.recoverBlend = { t: 0, dur: BLEND.ragdollGetup, qs: [] });
+  rb.t = 0; rb.dur = BLEND.ragdollGetup;
+  for (let i = 0; i < ch.bones.length; i++) {
+    if (ch.bones[i] === ch.headBone) { rb.qs[i] = null; continue; }
+    rb.qs[i] = (rb.qs[i] || new THREE.Quaternion()).copy(ch.bones[i].quaternion);
+  }
+}
+function applyRecoverBlend(ch, dt) {
+  const rb = ch.recoverBlend; if (!rb) return;
+  rb.t += dt;
+  const k = THREE.MathUtils.clamp(rb.t / rb.dur, 0, 1); // 0 = settled physics pose, 1 = pure get-up clip
+  const bones = ch.bones, qs = rb.qs;
+  for (let i = 0; i < bones.length; i++) { if (qs[i]) bones[i].quaternion.slerp(qs[i], 1 - k); } // pull the clip pose back toward the fall pose, easing off
+  if (k >= 1) ch.recoverBlend = null;
+}
 function clearRagdolls() {
   for (const ch of game.all) {
     const wasRagdoll = ch.ragdolling || (ch.ragdoll && ch.ragdoll.active);
@@ -7532,14 +7720,28 @@ function applyLocoLife(ch, dt, spin) {
   const angVel = dt > 1e-4 ? dH / dt : 0;
   const spd = Math.min(ch.speed, 14);
   const wantBank = THREE.MathUtils.clamp(-angVel * 0.05 * (spd / 14), -0.4, 0.4) * TUNE.animBank; // carve into the turn
-  ch.bank += (wantBank - ch.bank) * Math.min(1, dt * 8);
+  ch.bank = expEase(ch.bank, wantBank, 8, dt); // fps-independent (Phase 0)
   const wantPitch = THREE.MathUtils.clamp((spd * 0.010 + (ch.turbo ? 0.05 : 0)) * TUNE.runLean, 0, 0.28); // subtle lean with speed (× knob)
-  ch.lean += (wantPitch - ch.lean) * Math.min(1, dt * 6);
+  ch.lean = expEase(ch.lean, wantPitch, 6, dt);
   let pitch = ch.lean, roll = ch.bank;
-  if (ch.speed < 0.6) { // breathing + slow weight shift while standing
+  // Phase 3 secondary motion: a damped spring on along-heading acceleration so the
+  // torso OVERSHOOTS on a hard stop (pitches forward) or a burst (rocks back) and
+  // then settles — momentum the canned clips don't carry. Bounded + knob-gated.
+  const sm = (TUNE.secondaryMotion || 0) * (TUNE.animQuality != null ? TUNE.animQuality : 1); // Phase 6: quality-scaled
+  if (sm > 0) {
+    const accel = (ch.speed - (ch._smPrev != null ? ch._smPrev : ch.speed)) / Math.max(dt, 1e-3);
+    ch._smPrev = ch.speed;
+    const tgt = THREE.MathUtils.clamp(-accel * 0.004, -0.16, 0.16) * sm; // braking -> forward pitch
+    ch._smVel = (ch._smVel || 0) + ((tgt - (ch._smPose || 0)) * 90 - (ch._smVel || 0) * 14) * dt; // k=90, c=14 (slightly underdamped)
+    ch._smPose = THREE.MathUtils.clamp((ch._smPose || 0) + ch._smVel * dt, -0.2, 0.2);
+    pitch += ch._smPose;
+  }
+  if (ch.speed < 0.6) { // idle micro-life: breathing + a slow weight-shift sway +
+    // an occasional drifting fidget so a standing player is never a frozen statue
+    // (Phase 5). All desynced per player by breathPh and scaled by the breath knob.
     const t = performance.now() * 0.001;
-    pitch += Math.sin(t * 1.6 + ch.breathPh) * 0.012 * TUNE.animBreath;
-    roll += Math.sin(t * 0.7 + ch.breathPh) * 0.02 * TUNE.animBreath;
+    pitch += (Math.sin(t * 1.6 + ch.breathPh) * 0.012 + Math.sin(t * 0.33 + ch.breathPh * 1.3) * 0.008) * TUNE.animBreath;
+    roll += (Math.sin(t * 0.7 + ch.breathPh) * 0.02 + Math.sin(t * 0.27 + ch.breathPh * 1.7) * 0.022) * TUNE.animBreath; // slow weight-shift
   }
   _qYaw.setFromAxisAngle(_UP, ch.heading + spin);
   _qPitch.setFromAxisAngle(_XAX, pitch);
@@ -7563,7 +7765,7 @@ function applyHeadTrack(ch, targetPos, w, dt) {
   let rel = Math.atan2(dx, dz) - ch.heading;
   while (rel > Math.PI) rel -= Math.PI * 2; while (rel < -Math.PI) rel += Math.PI * 2;
   const want = THREE.MathUtils.clamp(rel, -1.1, 1.1) * w; // clamp to a believable neck range
-  ch.headYaw += (want - ch.headYaw) * Math.min(1, dt * 10);
+  ch.headYaw = expEase(ch.headYaw, want, 10, dt); // fps-independent (Phase 0)
   _tq.setFromAxisAngle(_YAX, ch.headYaw);
   ch.headBone.quaternion.multiply(_tq);
   ch.headBone.updateMatrixWorld(true);
@@ -7630,9 +7832,32 @@ function ik2(arm, fore, hand, target, w) {
     bone.updateMatrixWorld(true);                    // refresh the subtree for the next pass
   }
 }
+// Phase 3 foot-lock IK (opt-in via TUNE.footLock): plant the stance foot to the
+// turf so a blended gait doesn't skate. The lower foot is treated as planted; its
+// world XZ is captured on contact and the leg is 2-bone-IK'd back toward that
+// point as the hips travel, releasing when the foot lifts into swing. Scaled by
+// animQuality so it can be dropped on low-end devices. EXPERIMENTAL: uses the
+// aim-based ik2 approximation — weight/thresholds want per-rig visual tuning,
+// hence it ships OFF by default.
+const _flW = new THREE.Vector3(), _flTarget = new THREE.Vector3();
+function footLockLeg(ch, thigh, shin, foot, lockKey) {
+  if (!thigh || !shin || !foot) return;
+  foot.updateWorldMatrix(true, false);
+  _flW.setFromMatrixPosition(foot.matrixWorld);
+  if (_flW.y <= 0.18) { // planted
+    if (!ch[lockKey]) ch[lockKey] = { x: _flW.x, z: _flW.z }; // capture the plant
+    const w = THREE.MathUtils.clamp(TUNE.footLock * (TUNE.animQuality != null ? TUNE.animQuality : 1), 0, 1) * 0.6;
+    if (w > 0.01) { _flTarget.set(ch[lockKey].x, _flW.y, ch[lockKey].z); ik2(thigh, shin, foot, _flTarget, w); }
+  } else { ch[lockKey] = null; } // swinging — release
+}
+function applyFootLock(ch) {
+  if (!TUNE.footLock || !ch.leg) return;
+  footLockLeg(ch, ch.leg.thighR, ch.leg.shinR, ch.leg.footR, 'footLockR');
+  footLockLeg(ch, ch.leg.thighL, ch.leg.shinL, ch.leg.footL, 'footLockL');
+}
 function ikHandsToBall(ch, target, twoHand, w) {
   if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
-  w = Math.min(1, w * TUNE.catchIK);
+  w = Math.min(1, w * TUNE.catchIK * (TUNE.animQuality != null ? TUNE.animQuality : 1)); // Phase 6: quality-scaled
   ch.group.updateWorldMatrix(true, true);            // fresh world matrices for the posed arm chain
   const dx = target.x - ch.group.position.x, dz = target.z - ch.group.position.z;
   const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
@@ -7805,8 +8030,9 @@ function applyBattleArms(ch, isTackler, w = 1) {
       if (tb) {
         tb.updateWorldMatrix(true, false); _hips.setFromMatrixPosition(tb.matrixWorld);
         ch.group.updateWorldMatrix(true, true);
-        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * TUNE.contactIK);
-        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * TUNE.contactIK);
+        const cik = TUNE.contactIK * (TUNE.animQuality != null ? TUNE.animQuality : 1); // Phase 6: quality-scaled
+        ik2(ch.upperArm, ch.foreArm, ch.handBone, _hips, w * cik);
+        if (ch.leftHandBone) ik2(ch.leftArm, ch.leftForeArm, ch.leftHandBone, _hips, w * cik);
       }
     }
   } else {
@@ -7862,6 +8088,43 @@ function groundClamp(ch) {
   // wild bone can't float the player up "in a plane above the field".
   if (Number.isFinite(lo) && lo < TARGET) ch.group.position.y = Math.min(TARGET - lo, 0.8);
 }
+// ---- Animation snap detector (Phase 0): the measurement backbone for "no
+// visible snap, ever". When TUNE.animDebug is on, track the largest single-frame
+// bone-rotation delta per character; anything over animSnapThresh is a flagged
+// snap — a transition that POPPED instead of blending (a hard setClip, a
+// restoreRestPose teleport, a one-shot fall-through). Surfaced live in the debug
+// panel + tallied so regressions are caught. Runs for EVERY character each frame
+// (including ragdolling ones) so it also catches the physics<->anim seams.
+const _snapPrev = new WeakMap(); // bone -> last-frame local quaternion
+function animSnapTrack(ch, dt) {
+  if (!TUNE.animDebug || !ch.bones || dt <= 0) return;
+  let mx = 0, worst = null;
+  for (const b of ch.bones) {
+    let prev = _snapPrev.get(b);
+    if (!prev) { _snapPrev.set(b, b.quaternion.clone()); continue; }
+    const ang = prev.angleTo(b.quaternion);
+    if (ang > mx) { mx = ang; worst = b; }
+    prev.copy(b.quaternion);
+  }
+  ch.animSnap = mx;
+  if (mx > TUNE.animSnapThresh) {
+    const s = game.animSnaps || (game.animSnaps = { count: 0, max: 0, worst: '' });
+    s.count++;
+    if (mx > s.max) { s.max = mx; s.worst = (ch.role || '?') + '/' + (worst ? worst.name : '?'); }
+  }
+}
+// Live anim-controller readout for the debug panel: the controlled player's base
+// clip + active overlay + last-frame snap, plus the running snap tally. The
+// measurement half of "prioritize smoothness" — you can watch a transition and
+// see whether it blended or popped.
+function animReadout() {
+  if (!TUNE.animDebug) return '';
+  const c = game.controlled;
+  const ov = c ? ['battle', 'grab', 'catch', 'throw', 'arm', 'block', 'sulk'].filter((k) => (c[k + 'W'] || 0) > 0.02).map((k) => `${k}${(c[k + 'W']).toFixed(1)}`).join(',') : '';
+  const s = game.animSnaps || { count: 0, max: 0, worst: '' };
+  const me = c ? `\nANIM ${c.current}${ov ? ' +' + ov : ''}  snap ${(c.animSnap || 0).toFixed(2)}` : '';
+  return `${me}\nSNAPS ${s.count} max ${s.max.toFixed(2)} ${s.worst}`;
+}
 function updateAnimation(ch, dt) {
   if (ch.ragdolling) return; // bones are physics-driven — the mixer must not fight them
   // End-of-game finale: winners loop a real dance, losers loop an anger/tantrum
@@ -7872,6 +8135,13 @@ function updateAnimation(ch, dt) {
   // The break-tackle (1-on-1) DEFENDER drives in with the push clip; the carrier
   // keeps the procedural brace/wrap. (Falls back to the run+battle pose if no pack.)
   const battleTackler = inBattle && ch === game.battle.tackler && !!ch.actions.block;
+  // Phase 2 interruptibility: a higher-priority event pre-empts a cosmetic one-shot
+  // (juke/spin/celebration) so it can't freeze mid-clip — it bleeds out via the
+  // pose-matched fast blend while the new state takes over. A committed CATCH leap
+  // is exempt (its overlay rides on top of the leap until the ball is in hand).
+  if (ch.oneShotT > 0 && !ch.catchLeap && (inBattle || (ch.grabbing && game.drag.active))) {
+    ch.fadeAct = ch.active; ch.oneShotT = 0;
+  }
   if (ch.oneShotT > 0 && !inBattle) {     // hold a one-shot (juke / vault / dive / celebration)
     ch.oneShotT -= dt;
     ch.group.rotation.y = ch.heading;
@@ -7882,6 +8152,7 @@ function updateAnimation(ch, dt) {
     if (ch.catchLeap && (ball.mode === 'flying' || ball.mode === 'secured') && ch === (ball.catcher || ball.targetRecv)) {
       applyCatchPose(ch, ball.mesh.position, dt, 0.85);
     }
+    if (ch.recoverBlend) applyRecoverBlend(ch, dt); // Phase 4: rise FROM the fall pose into the get-up
     groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
     return;          // motion; lift the root so no joint sinks through the turf
   }
@@ -7914,14 +8185,17 @@ function updateAnimation(ch, dt) {
   // 1-on-1 hand-fight). The break-tackle DRIVE still uses the push clip (battle).
   if (ch.blocking) want = 'run';
   const grabbing = ch.grabbing && game.drag.active && !ch.ragdolling; // latched onto the runner
-  setClip(ch, want);
-  if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
-  // Foot-skating fix: drive the gait at the speed it was authored for, so a
-  // planted foot stays put while the body travels (instead of sliding). The
-  // run band churns a touch faster in the BATTLE so it reads as a struggle.
-  if (!inBattle && (want === 'walk' || want === 'run' || want === 'sprint' || want === 'backL' || want === 'backR')) {
-    const ref = ch.active.getClip().userData && ch.active.getClip().userData.refSpeed;
-    if (ref > 0) ch.active.setEffectiveTimeScale(THREE.MathUtils.clamp(ch.speed / ref, 0.55, 2.6));
+  // Phase 2: if we just handed back from a one-shot/dance/sulk override (ch.active
+  // is a non-base clip), tag it to bleed out under the resuming gait (pose-matched
+  // exit) instead of the gait snapping in over the held final pose.
+  if (!inBattle && ch.active && !BASE_ACTS.includes(ch.current) && ch.fadeAct !== ch.active) ch.fadeAct = ch.active;
+  // BATTLE keeps the single-active push/churn clip (its tuned drive); everything
+  // else flows through the Phase 1 blend space (continuous gaits + 2D backpedal).
+  if (inBattle) {
+    setClip(ch, want);
+    if (want === 'block') ch.active.setEffectiveTimeScale((ch.blockTS || 1) * TUNE.blockTempo); // per-player block tempo (× debug knob)
+  } else {
+    updateLocoBlend(ch, want, dt);
   }
   // Base root orientation: heading + any active 360 spin, plus locomotion "life"
   // (bank into turns, lean with speed, idle breathing). Procedural leans below
@@ -7929,6 +8203,7 @@ function updateAnimation(ch, dt) {
   const spin = (!inBattle && !grabbing && ch.spinT > 0) ? (1 - ch.spinT / SPIN_DUR) * Math.PI * 2 : 0;
   applyLocoLife(ch, dt, spin);
   stepMixer(ch, dt);
+  if (TUNE.footLock && !inBattle && !grabbing && ch.spinT <= 0) applyFootLock(ch); // Phase 3 foot-lock (opt-in)
   // Procedural overlays blend in/out via per-character weights, so a pose fades
   // smoothly over the locomotion clip instead of snapping on/off in one frame.
   // Pick the single active overlay (priority order); its weight eases toward 1
@@ -7963,7 +8238,7 @@ function updateAnimation(ch, dt) {
   // threat of contact — only in open-field carrying (no battle/grab/stiff-arm/etc.
   // overlay, which pose the arms themselves).
   const protectTarget = (!active && ch === game.carrier) ? carrierThreat(ch) : 0;
-  ch.protectW += (protectTarget - ch.protectW) * Math.min(1, dt * 8);
+  ch.protectW = expEase(ch.protectW, protectTarget, 8, dt); // fps-independent (Phase 0)
   if (ch.protectW > 0.01) applyCarryProtect(ch, ch.protectW);
   // Head-on-a-swivel: a backpedaling player (a DB dropping into coverage, the QB
   // on his drop) tracks the ball in flight or the nearest receiver instead of
@@ -7987,19 +8262,8 @@ function updateAnimation(ch, dt) {
   if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
 }
-// Blitz JUKE: a hard lateral burst toward the stick side; if a tackler makes
-// contact during the juke window he whiffs right past (see beginTackle).
-function doJuke(ch) {
-  if (ch.jukeCd > 0) return;
-  ch.jukeCd = 0.9; ch.jukeTimer = 0.38;
-  const kb = kbVec();
-  const side = (input.x + kb.x) < 0 ? -1 : 1;
-  const rx = Math.cos(ch.heading), rz = -Math.sin(ch.heading); // right of heading
-  ch.vel.x += rx * side * 7; ch.vel.z += rz * side * 7;
-  shake.kick(rx * side, rz * side, 0.25);
-  playOneShot(ch, 'juke', 0.45); // dodge-roll animation
-  audio.juke();
-}
+// (The old Blitz JUKE — a lateral dodge-roll one-shot — has been replaced by the
+// SPIN move as the carrier's default open-field action; see doSpin / carrierContext.)
 // Blitz TAUNT: thrust the ball aloft and showboat mid-stride in the open field.
 // Risk/reward — a hit while the window is open strips the ball (see beginTackle);
 // survive it and you get a turbo pop (see the RUN timer block).
@@ -8337,6 +8601,7 @@ function updatePlay(dt) {
   }
   updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
+  if (TUNE.animDebug) for (const ch of game.all) animSnapTrack(ch, dt); // Phase 0 snap detector (after all bones are posed)
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
@@ -8833,6 +9098,18 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animProtect', label: 'Ball protect ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animDebug', label: 'Snap detector', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'animSnapThresh', label: 'Snap thresh (rad)', min: 0.2, max: 1.2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'footLock', label: 'Foot-lock IK', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'secondaryMotion', label: 'Overshoot/settle ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'ragdollBlend', label: 'Get-up blend', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
+  { tab: 'Anim', key: 'animQuality', label: 'Anim quality', min: 0, max: 1, step: 0.1, fmt: (v) => v.toFixed(1) },
+  // Phase 6 blend-table tuning (live durations, seconds)
+  { tab: 'Anim', key: 'blendGait', label: 'Gait blend (s)', min: 0.04, max: 0.5, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendPoseIn', label: 'Overlay in (s)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendPoseOut', label: 'Overlay out (s)', min: 0.02, max: 0.3, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendOneShotOut', label: 'One-shot exit (s)', min: 0.04, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
+  { tab: 'Anim', key: 'blendGetup', label: 'Get-up blend (s)', min: 0.05, max: 0.6, step: 0.01, fmt: (v) => v.toFixed(2), onChange: syncBlend },
   // --- Lighting (intensity + color per source) ---
   { tab: 'Lighting', key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
   { tab: 'Lighting', key: 'lightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2), onChange: L },
@@ -9178,7 +9455,7 @@ async function applyModelChoice() {
 function updateDebugPanel() {
   if (!dbgPanelOn || !dbgPanelEl) return;
   const tele = dbgPanelEl.querySelector('.dbg-tele');
-  try { tele.textContent = balanceSummary().text + `\nstate:${game.state}`; } catch (e) { /* ignore */ }
+  try { tele.textContent = balanceSummary().text + `\nstate:${game.state}` + animReadout(); } catch (e) { /* ignore */ }
   const rep = dbgPanelEl.querySelector('#dbg-statrep'); // live balance report (Stats tab)
   if (rep && rep.offsetParent !== null) { try { rep.textContent = dbgBalanceReport(); } catch (e) { /* ignore */ } }
 }
