@@ -1940,6 +1940,7 @@ const TUNE_DEFAULTS = {
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
   animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0, animIdle: 1.0,
+  posStance: 1, // per-position idle stances (linemen 3-point, LB ready, WR set, …); 0 = relaxed idle for all
   // Animation overhaul (docs/animation-system-overhaul-plan.md)
   animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
   animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
@@ -7826,6 +7827,29 @@ const POSE_KEYS = {
     upperArm: [[0, 0]], foreArm: [[0, -0.1]], leftArm: [[0, 0]], leftForeArm: [[0, -0.1]],
     spine: [[0, 0]], head: [[0, 0]], hipDrop: [[0, 0]],
   },
+  // ── Position stances (same additive channel model + IK hipDrop crouch). Assigned
+  // per role in stanceName() when TUNE.posStance is on; each is an editable, previewable
+  // Studio pose. Values are starting points — tune them live in the Studio Keys tab.
+  handsOnWaist: { // casual: elbows out, hands resting on the hips. No crouch.
+    upperArm: [[0, -0.2]], foreArm: [[0, -1.9]], leftArm: [[0, -0.2]], leftForeArm: [[0, -1.9]],
+    spine: [[0, 0]], head: [[0, 0]], hipDrop: [[0, 0]],
+  },
+  threePoint: { // deep 3-point: low hips, big forward hinge, arms hanging down/forward.
+    upperArm: [[0, -0.3]], foreArm: [[0, -0.5]], leftArm: [[0, -0.3]], leftForeArm: [[0, -0.5]],
+    spine: [[0, 0.5]], head: [[0, 0.25]], hipDrop: [[0, 0.42]],
+  },
+  lbReady: { // linebacker ready: moderate crouch, torso forward, hands up & ready.
+    upperArm: [[0, -0.7]], foreArm: [[0, -0.9]], leftArm: [[0, -0.7]], leftForeArm: [[0, -0.9]],
+    spine: [[0, 0.3]], head: [[0, 0.1]], hipDrop: [[0, 0.22]],
+  },
+  wrStance: { // receiver stance: forward sprinter lean, slight crouch, arms set.
+    upperArm: [[0, -0.2]], foreArm: [[0, -0.5]], leftArm: [[0, -0.2]], leftForeArm: [[0, -0.5]],
+    spine: [[0, 0.4]], head: [[0, 0.15]], hipDrop: [[0, 0.12]],
+  },
+  qbReady: { // quarterback ready: near-upright, hands together in front (under center).
+    upperArm: [[0, -0.5]], foreArm: [[0, -1.3]], leftArm: [[0, -0.5]], leftForeArm: [[0, -1.3]],
+    spine: [[0, 0.1]], head: [[0, 0]], hipDrop: [[0, 0.06]],
+  },
 };
 const POSE_DEFAULTS = JSON.parse(JSON.stringify(POSE_KEYS));
 const POSE_STORE_KEY = 'rfPoseKeys';
@@ -8137,29 +8161,39 @@ function applySulkPose(ch, w = 1) {
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
   blendLean(ch, lean, 0, w);
 }
+// Per-role idle stance assignment. When TUNE.posStance is on, a standing player adopts
+// the stance for their position (linemen 3-point, LB ready, WR sprinter set, etc.);
+// otherwise everyone uses the relaxed `idle`. A non-null game.stanceForce overrides all
+// (used to preview one stance on the whole field).
+const STANCE_BY_ROLE = { QB: 'qbReady', OL: 'threePoint', DL: 'threePoint', LB: 'lbReady', CB: 'lbReady', S: 'lbReady', WR: 'wrStance', RB: 'wrStance' };
+function stanceName(ch) {
+  if (game.stanceForce && POSE_KEYS[game.stanceForce]) return game.stanceForce;
+  if (!TUNE.posStance) return 'idle';
+  return STANCE_BY_ROLE[ch.role] || 'idle';
+}
 // Standing-stance overlay, layered ADDITIVELY over the idle clip (which already poses
 // the arms down + breathes via applyLocoLife). Arms/spine/head are small local-X nudges
 // ON TOP of the clip — NOT a blendBone toward rest, which would snap them to the model's
-// T-pose bind rest. The legs/hips (the crouch) are handled by applyIdleCrouch via IK.
-// Authored in the Studio Keys tab; t cycles on a slow per-player breath phase.
-function applyIdlePose(ch, w = 1) {
+// T-pose bind rest. The legs/hips (the crouch) are handled by applyStanceCrouch via IK.
+// `name` selects the POSE_KEYS stance table. Authored in the Studio Keys tab.
+function applyStance(ch, name, w = 1) {
   w *= TUNE.animIdle;
-  if (!ch.upperArm) return;
+  if (!ch.upperArm || !POSE_KEYS[name]) return;
   const t = (Math.sin(performance.now() * 0.0011 + (ch.breathPh || 0)) + 1) * 0.5; // 0..1 slow cycle
-  addBoneX(ch.upperArm, pk('idle', 'upperArm', t) * w);
-  addBoneX(ch.foreArm, pk('idle', 'foreArm', t) * w);
-  addBoneX(ch.leftArm, pk('idle', 'leftArm', t) * w);
-  addBoneX(ch.leftForeArm, pk('idle', 'leftForeArm', t) * w);
-  if (ch.spineBone) addBoneX(ch.spineBone, pk('idle', 'spine', t) * w);  // torso hinge forward
-  if (ch.headBone) addBoneX(ch.headBone, pk('idle', 'head', t) * w);     // keep the head up
+  addBoneX(ch.upperArm, pk(name, 'upperArm', t) * w);
+  addBoneX(ch.foreArm, pk(name, 'foreArm', t) * w);
+  addBoneX(ch.leftArm, pk(name, 'leftArm', t) * w);
+  addBoneX(ch.leftForeArm, pk(name, 'leftForeArm', t) * w);
+  if (ch.spineBone) addBoneX(ch.spineBone, pk(name, 'spine', t) * w);  // torso hinge forward
+  if (ch.headBone) addBoneX(ch.headBone, pk(name, 'head', t) * w);     // keep the head up
 }
-// Bent-knee crouch for the idle stance: drop the hips by `hipDrop` yards and 2-bone-IK
+// Bent-knee crouch for a stance: drop the hips by its `hipDrop` (yards) and 2-bone-IK
 // each leg so the feet stay planted where they were — so the knees bend the RIGHT way
 // by construction (no rig-axis guessing). Gated on hipDrop > 0, so it's a no-op (and
-// zero cost) unless a stance is authored. Shared by the game + the Studio preview.
+// zero cost) for upright stances. Shared by the game + the Studio preview.
 const _idleFootR = new THREE.Vector3(), _idleFootL = new THREE.Vector3();
-function applyIdleCrouch(ch, w = 1) {
-  const depth = pk('idle', 'hipDrop', 0) * w * TUNE.animIdle;
+function applyStanceCrouch(ch, name, w = 1) {
+  const depth = pk(name, 'hipDrop', 0) * w * TUNE.animIdle;
   if (depth <= 0.001 || !ch.leg || !ch.leg.footR || !ch.leg.footL) return;
   ch.group.updateMatrixWorld(true);
   _idleFootR.setFromMatrixPosition(ch.leg.footR.matrixWorld); // capture planted feet
@@ -8169,6 +8203,9 @@ function applyIdleCrouch(ch, w = 1) {
   ik2(ch.leg.thighR, ch.leg.shinR, ch.leg.footR, _idleFootR, 1); // bend knees to re-plant
   ik2(ch.leg.thighL, ch.leg.shinL, ch.leg.footL, _idleFootL, 1);
 }
+// Back-compat wrappers (the relaxed default stance).
+function applyIdlePose(ch, w = 1) { applyStance(ch, 'idle', w); }
+function applyIdleCrouch(ch, w = 1) { applyStanceCrouch(ch, 'idle', w); }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
 // one-shots (the parkour vault/roll, diving catch, loose-ball scoop, celebration
@@ -8324,7 +8361,7 @@ function updateAnimation(ch, dt) {
   ch.idleW = easeWeight(ch.idleW, active === 'idle', dt);
   // Leans first (orient the root), then arm poses, applied lowest -> highest
   // priority so the dominant overlay wins the bones it shares with a fading one.
-  if (ch.idleW > 0.001) applyIdlePose(ch, ch.idleW); // relaxed standing stance (lowest priority; others override shared bones)
+  if (ch.idleW > 0.001) applyStance(ch, stanceName(ch), ch.idleW); // per-position standing stance (lowest priority; others override shared bones)
   if (ch.sulkW > 0.001) applySulkPose(ch, ch.sulkW); // end-game loser: head hung, shoulders slumped
   if (ch.blockW > 0.001) applyBlockPose(ch, ch.blockW);
   if (ch.grabW > 0.001) applyGrabLean(ch, ch.grabW);
@@ -8363,7 +8400,7 @@ function updateAnimation(ch, dt) {
   if (grabbing || draggedCarrier || clipBlocking) groundClamp(ch);
   else if (!inBattle) ch.group.position.y = 0;
   // Idle crouch: sink the hips + IK the feet (after the root height is settled above).
-  if (ch.idleW > 0.001) applyIdleCrouch(ch, ch.idleW);
+  if (ch.idleW > 0.001) applyStanceCrouch(ch, stanceName(ch), ch.idleW);
 }
 // (The old Blitz JUKE — a lateral dodge-roll one-shot — has been replaced by the
 // SPIN move as the carrier's default open-field action; see doSpin / carrierContext.)
@@ -9200,6 +9237,7 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'animGrab', label: 'Grab/wrap ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animIdle', label: 'Idle stance ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'posStance', label: 'Per-position stances', min: 0, max: 1, step: 1, fmt: (v) => v ? 'on' : 'off' },
   { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animProtect', label: 'Ball protect ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animDebug', label: 'Snap detector', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
@@ -9498,8 +9536,7 @@ const STUDIO_PROCS = [
     drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); applyBlockPose(ch, w); } },
   { id: 'sulkpose', label: 'Sulk pose', pose: 'sulk', base: 'idle',
     drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applySulkPose(ch, w); } },
-  { id: 'idlepose', label: 'Idle stance', pose: 'idle', base: 'idle',
-    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyIdlePose(ch, w); applyIdleCrouch(ch, w); } },
+  // Stance poses (idle + per-position) are appended below this array literal.
   { id: 'loco', label: 'Loco life (run)', base: 'run',
     drive(ch, t, w, dt) { setClip(ch, 'run'); applyLocoLife(ch, dt, 0); stepMixer(ch, dt); } },
   { id: 'headtrack', label: 'Head track', base: 'idle',
@@ -9547,7 +9584,17 @@ function studioSelect(h) {
 }
 // ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
 const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Bones', 'Create', 'Contact', 'Export'];
-const STUDIO_BUILTIN_POSES = ['throw', 'carryprotect', 'block', 'sulk', 'idle']; // shipped poses; anything else in POSE_KEYS is user-authored
+// Stance poses (idle + per-position): share the additive arm/spine/head + IK-crouch
+// model and get the friendly quick-stance sliders in the Keys tab.
+const STANCE_POSES = ['idle', 'handsOnWaist', 'threePoint', 'lbReady', 'wrStance', 'qbReady'];
+const STANCE_LABEL = { idle: 'Idle stance', handsOnWaist: 'Stance · Hands on waist', threePoint: 'Stance · 3-point', lbReady: 'Stance · LB ready', wrStance: 'Stance · WR set', qbReady: 'Stance · QB ready' };
+const STUDIO_BUILTIN_POSES = ['throw', 'carryprotect', 'block', 'sulk'].concat(STANCE_POSES); // shipped poses; anything else in POSE_KEYS is user-authored
+// Register a previewable Studio proc for each stance (additive pose + IK crouch), so
+// every stance shows up in the Procedural tab and previews exactly as the game renders it.
+for (const _sn of STANCE_POSES) {
+  STUDIO_PROCS.push({ kind: 'proc', id: 'stance_' + _sn, label: STANCE_LABEL[_sn] || _sn, pose: _sn, base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyStance(ch, _sn, w); applyStanceCrouch(ch, _sn, w); } });
+}
 const STUDIO_CUSTOM = [];
 // Generic procedural-pose applier — drives ANY POSE_KEYS table (the built-in arm/lean/
 // twist/head channels) so authored poses are first-class runtime hooks.
@@ -9641,9 +9688,9 @@ function studioBody() {
     // Friendly "quick stance" sliders for the idle pose (the headline crouch controls),
     // above the raw channel/curve editor. Each writes the channel's value live.
     let quick = '';
-    if (h.pose === 'idle') {
+    if (STANCE_POSES.includes(h.pose)) {
       const iv = (c) => (tbl[c] && tbl[c][0]) ? tbl[c][0][1] : 0;
-      quick = `<div class="std-help-txt" style="margin-bottom:5px">Quick idle stance — drag to pose, then <b>Save</b>:</div>`
+      quick = `<div class="std-help-txt" style="margin-bottom:5px">Quick stance — drag to pose, then <b>Save</b>:</div>`
         + `<label class="lab-row" title="lower the hips & bend the knees (feet stay planted by IK)"><span>crouch</span><input type="range" data-idle="hipDrop" min="0" max="0.6" step="0.01" value="${iv('hipDrop')}"><b id="iv-hipDrop">${iv('hipDrop').toFixed(2)}</b></label>`
         + `<label class="lab-row" title="hinge the torso forward (flip sign if it leans back)"><span>torso lean</span><input type="range" data-idle="spine" min="-0.8" max="0.8" step="0.02" value="${iv('spine')}"><b id="iv-spine">${iv('spine').toFixed(2)}</b></label>`
         + `<label class="lab-row" title="bend both elbows"><span>elbow bend</span><input type="range" data-idle2="foreArm,leftForeArm" min="-1.5" max="1.5" step="0.02" value="${iv('foreArm')}"><b id="iv-foreArm">${iv('foreArm').toFixed(2)}</b></label>`
@@ -10034,17 +10081,21 @@ function buildStudioPanel() {
   $('#lab-reset').onclick = () => { studioResetCurrent(); buildStudioPanel(); };
   if (STUDIO.tab === 'Keys') {
     studioWireCurve();
-    // Quick idle-stance sliders (write channel values live; data-idle2 drives a pair).
-    labPanelEl.querySelectorAll('[data-idle]').forEach((inp) => inp.oninput = () => {
-      const c = inp.dataset.idle, v = parseFloat(inp.value);
-      if (!POSE_KEYS.idle[c]) POSE_KEYS.idle[c] = [[0, 0]]; POSE_KEYS.idle[c][0][1] = v;
-      const o = labPanelEl.querySelector('#iv-' + c); if (o) o.textContent = v.toFixed(2);
-    });
-    labPanelEl.querySelectorAll('[data-idle2]').forEach((inp) => inp.oninput = () => {
-      const cs = inp.dataset.idle2.split(','), v = parseFloat(inp.value);
-      for (const c of cs) { if (!POSE_KEYS.idle[c]) POSE_KEYS.idle[c] = [[0, 0]]; POSE_KEYS.idle[c][0][1] = v; }
-      const o = labPanelEl.querySelector('#iv-' + cs[0]); if (o) o.textContent = v.toFixed(2);
-    });
+    // Quick stance sliders (write channel values live into the SELECTED stance pose;
+    // data-idle2 drives a left/right pair to the same value).
+    const _sp = STUDIO.hook && STUDIO.hook.pose; const _P = _sp && POSE_KEYS[_sp];
+    if (_P) {
+      labPanelEl.querySelectorAll('[data-idle]').forEach((inp) => inp.oninput = () => {
+        const c = inp.dataset.idle, v = parseFloat(inp.value);
+        if (!_P[c]) _P[c] = [[0, 0]]; _P[c][0][1] = v;
+        const o = labPanelEl.querySelector('#iv-' + c); if (o) o.textContent = v.toFixed(2);
+      });
+      labPanelEl.querySelectorAll('[data-idle2]').forEach((inp) => inp.oninput = () => {
+        const cs = inp.dataset.idle2.split(','), v = parseFloat(inp.value);
+        for (const c of cs) { if (!_P[c]) _P[c] = [[0, 0]]; _P[c][0][1] = v; }
+        const o = labPanelEl.querySelector('#iv-' + cs[0]); if (o) o.textContent = v.toFixed(2);
+      });
+    }
   }
   if (STUDIO.tab === 'Bones') {
     labPanelEl.querySelectorAll('[data-bone]').forEach((b) => b.onclick = () => studioSelectBone(b.dataset.bone));
