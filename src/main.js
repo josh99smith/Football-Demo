@@ -7699,6 +7699,17 @@ function blendBone(bone, restQ, angle, w) {
   bone.quaternion.slerp(_poseTarget, w);
   bone.updateMatrixWorld(true);
 }
+// Additive bone nudge: rotate `angle` rad about the bone's local X ON TOP of whatever
+// the clip already posed — unlike blendBone, which REPLACES the bone toward
+// rest·rot(angle). The captured rest is the model's bind (T-)pose, so a small
+// blendBone value snaps the arm back to the T-pose; an additive nudge instead layers
+// over the clip's natural pose. Used by the idle stance (over the idle clip).
+function addBoneX(bone, angle) {
+  if (!bone || !angle) return;
+  _tq.setFromAxisAngle(_xAxisL, angle);
+  bone.quaternion.multiply(_tq);
+  bone.updateMatrixWorld(true);
+}
 // Weighted root lean: blend the group toward a (heading+sway, forward-lean) pose
 // by `w`, so a battle/grab/throw/sulk lean fades in and out over the plain stance.
 function blendLean(ch, lean, sway, w) {
@@ -7807,12 +7818,10 @@ const POSE_KEYS = {
   sulk: { // loser slump (static base; a slow sway is layered on at runtime)
     upperArm: [[0, 0.2]], foreArm: [[0, 0.5]], leftArm: [[0, 0.2]], leftForeArm: [[0, 0.5]],
   },
-  idle: { // relaxed standing stance — arms hang slightly off the torso with a touch
-    // of elbow bend (a settled athlete waiting on the snap, not arms pinned to the
-    // sides). A gentle breathing cycle over t lifts/settles the shoulders; the idle
-    // clip + applyLocoLife breathing play underneath, this just shapes the arms.
-    upperArm: [[0, 0.04], [0.5, 0.07], [1, 0.04]], foreArm: [[0, -0.18]],
-    leftArm: [[0, 0.04], [0.5, 0.07], [1, 0.04]], leftForeArm: [[0, -0.18]],
+  idle: { // standing-stance nudge, layered ADDITIVELY over the idle clip (small values
+    // = a slight relaxed elbow bend on top of the clip's arms-down pose). Values are
+    // deltas, NOT absolute angles — keep them small. Edit in the Studio Keys tab.
+    upperArm: [[0, 0]], foreArm: [[0, -0.1]], leftArm: [[0, 0]], leftForeArm: [[0, -0.1]],
   },
 };
 const POSE_DEFAULTS = JSON.parse(JSON.stringify(POSE_KEYS));
@@ -8125,18 +8134,19 @@ function applySulkPose(ch, w = 1) {
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
   blendLean(ch, lean, 0, w);
 }
-// Relaxed standing stance overlay: shapes the arms into a settled at-rest pose over
-// the idle clip (which carries the actual breathing/weight-shift via applyLocoLife).
-// t cycles on a slow per-player breath phase so the curve's shoulder lift/settle
-// plays; desynced by breathPh so a lineup doesn't breathe in lockstep.
+// Relaxed standing-stance overlay, layered ADDITIVELY over the idle clip (which
+// already poses the arms down + breathes via applyLocoLife). Each channel is a small
+// nudge ON TOP of the clip — NOT a blendBone toward rest, which would snap the arms to
+// the model's T-pose bind rest. Authored in the Studio's Keys tab; t cycles on a slow
+// per-player breath phase (desynced by breathPh) so added shoulder keys can pulse.
 function applyIdlePose(ch, w = 1) {
   w *= TUNE.animIdle;
-  if (!ch.upperArm || !ch.upperArmRest) return;
+  if (!ch.upperArm) return;
   const t = (Math.sin(performance.now() * 0.0011 + (ch.breathPh || 0)) + 1) * 0.5; // 0..1 slow cycle
-  blendBone(ch.upperArm, ch.upperArmRest, pk('idle', 'upperArm', t), w);
-  blendBone(ch.foreArm, ch.foreArmRest, pk('idle', 'foreArm', t), w);
-  blendBone(ch.leftArm, ch.leftArmRest, pk('idle', 'leftArm', t), w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('idle', 'leftForeArm', t), w);
+  addBoneX(ch.upperArm, pk('idle', 'upperArm', t) * w);
+  addBoneX(ch.foreArm, pk('idle', 'foreArm', t) * w);
+  addBoneX(ch.leftArm, pk('idle', 'leftArm', t) * w);
+  addBoneX(ch.leftForeArm, pk('idle', 'leftForeArm', t) * w);
 }
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
@@ -9487,7 +9497,7 @@ const STUDIO_HELP = {
   Clips: 'Canned mocap clips. Click one, then press play (or scrub the timeline) to preview it. Greyed-out clips aren’t on this model.',
   Procedural: 'Code-driven poses layered over a base clip (throw, block, ball-protect…). Ones with editable curves open in the Keys & Bones tabs; ✎ marks your own.',
   Keys: 'Tune the selected pose’s motion curves. Pick a channel chip, then drag points on the graph or type t (time 0–1) and val (radians). The yellow line is the playhead.',
-  Bones: 'Pose the skeleton by hand. Click a glowing joint in the 3D view (or a chip below), then DRAG it in the view to rotate — or use the X/Y/Z sliders. “Set key@t” bakes the rotation into the pose curve.',
+  Bones: 'Pose the skeleton by hand. Click a glowing joint in the 3D view (or a chip below), then DRAG it to rotate — or use the X/Y/Z sliders. NOTE: drags/sliders are a live preview only — they persist ONLY after you bake them with “Set key@t”, then Save. To shape the idle stance, edit it in the Keys tab instead (it layers additively over the idle clip).',
   Create: 'Build a brand-new editable pose, or run generators on the current one (mirror L↔R, retime, ease, blend with another). Save persists custom poses to the live game.',
   Contact: 'Two-player contact poses — battle, block, wrap-drag, ball-protect. Tune the spacing + engagement sliders and orbit the camera to inspect the locked-up bodies.',
   Export: 'Save → the live game reads it on load. Copy JSON/code to keep or bake into source, or paste + Import to round-trip. Set A/B then →A/→B to compare two pose sets.',
