@@ -218,6 +218,25 @@ hook. **Risk:** Low–Med.
 | 4 | Create / generate animations | 0–3 | Med | **Generate animations** |
 | 5 | Save / export / round-trip | 0–4 | Low–Med | Ship the edits |
 | 6 | Polish / guardrails / integration | 1–5 | Low–Med | Robust & usable |
+| 7 | Usability + interactive 3D (desktop) | 0–6 | Low | **Learnable & hands-on** |
+
+### Phase 7 — usability + interactive 3D (desktop focus)
+
+Make the Studio approachable and the 3D view hands-on:
+
+- **In-app help** — per-tab plain-language guidance block (toggle with the header
+  `?` or `H`, preference persisted), tooltips (`title=`) on every control, and an
+  on-screen keyboard-shortcut reference.
+- **Keyboard shortcuts** (lab owns the keyboard while open): `space` play/pause,
+  `←/→` scrub (`shift` = fine), `1–7` tabs, `F` frame camera, `A` turntable,
+  `R` reset pose, `⌘/Ctrl+Z` undo (`shift` redo), `Esc` exit, `H` toggle help.
+- **Interactive, clickable 3D** — glowing clickable joint markers on the Bones
+  tab with hover highlight + a floating joint-name label; **grab-and-drag a joint
+  in the view to rotate it** (live-syncs the X/Y/Z sliders); camera framing presets
+  (Front / Side / ¾ / Top / Frame), turntable auto-spin, and an in-studio screenshot.
+- **More features** — live **engagement** scrub on the break-tackle contact pose
+  (drives `game.battle.val`), and a filter box for the Clips / Procedural lists.
+- **Desktop layout** — roomier panel + hover affordances under `(pointer: fine)`.
 
 **Critical path:** 0 → 1 → 2 → 3 → 4. Phase 0 (the hook registry) unlocks
 everything; 1–3 deliver scrub + keyframe + bone editing; 4 adds authoring; 5–6

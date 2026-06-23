@@ -4165,6 +4165,7 @@ if (psPrev && psNext) {
 const keys = {};
 window.addEventListener('keydown', (e) => {
   audio.unlock();
+  if (game.lab) return; // the Animation Studio owns the keyboard while open (see studio shortcuts)
   if (!keys[e.code]) { // edge (initial press only, not key-repeat)
     // Pause menu: P toggles it, Esc closes it. While paused the sim is frozen, so
     // swallow gameplay keys (so a press doesn't queue an action for the resume).
@@ -9473,7 +9474,24 @@ const STUDIO_PROCS = [
       _studioHeadTgt.set(Math.sin(t * Math.PI * 2) * 4, 1.4, 2.5).add(ch.group.position); applyHeadTrack(ch, _studioHeadTgt, w, dt); } },
 ];
 // Studio runtime state. STUDIO.hook is a descriptor: { kind:'clip'|'proc'|'contact', ... }.
-const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1, kfChannel: null, kfSel: null, bone: null, boneEdits: {}, skel: null, undo: [], redo: [], collapsed: false };
+// help: per-tab guidance on/off (persisted) · battleVal: contact engagement scrub ·
+// hoverBone/drag: 3D joint hover + grab-to-rotate · filter: clip/proc list filter ·
+// joints: the clickable joint-marker group built per enter.
+const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1, kfChannel: null, kfSel: null, bone: null, boneEdits: {}, skel: null, undo: [], redo: [], collapsed: false,
+  help: true, battleVal: 0.5, hoverBone: null, filter: '', joints: null, drag: null };
+const STUDIO_HELP_KEY = 'rfStudioHelp';
+try { if (typeof localStorage !== 'undefined' && localStorage.getItem(STUDIO_HELP_KEY) === '0') STUDIO.help = false; } catch (e) {}
+// Plain-language guidance per tab — the heart of "easier to understand". Shown under
+// the tab bar when help is on (toggle with the header ? button or H).
+const STUDIO_HELP = {
+  Clips: 'Canned mocap clips. Click one, then press play (or scrub the timeline) to preview it. Greyed-out clips aren’t on this model.',
+  Procedural: 'Code-driven poses layered over a base clip (throw, block, ball-protect…). Ones with editable curves open in the Keys & Bones tabs; ✎ marks your own.',
+  Keys: 'Tune the selected pose’s motion curves. Pick a channel chip, then drag points on the graph or type t (time 0–1) and val (radians). The yellow line is the playhead.',
+  Bones: 'Pose the skeleton by hand. Click a glowing joint in the 3D view (or a chip below), then DRAG it in the view to rotate — or use the X/Y/Z sliders. “Set key@t” bakes the rotation into the pose curve.',
+  Create: 'Build a brand-new editable pose, or run generators on the current one (mirror L↔R, retime, ease, blend with another). Save persists custom poses to the live game.',
+  Contact: 'Two-player contact poses — battle, block, wrap-drag, ball-protect. Tune the spacing + engagement sliders and orbit the camera to inspect the locked-up bodies.',
+  Export: 'Save → the live game reads it on load. Copy JSON/code to keep or bake into source, or paste + Import to round-trip. Set A/B then →A/→B to compare two pose sets.',
+};
 // Phase 6 anatomical guardrails: per-channel soft clamps so edits can't author an
 // impossible joint (mirrors the ragdoll's cone/twist limit philosophy).
 const CHAN_LIMIT = { lean: 0.8, twist: 0.8, head: 1.1, _default: 3.0 };
@@ -9568,13 +9586,14 @@ const boneLabel = (n) => ({ Head: 'head', Spine01: 'spine', Spine: 'spine', Righ
   LeftArm: 'L upper-arm', LeftForeArm: 'L forearm', LeftHand: 'L hand', RightUpLeg: 'R thigh', RightLeg: 'R shin', RightFoot: 'R foot',
   LeftUpLeg: 'L thigh', LeftLeg: 'L shin', LeftFoot: 'L foot' }[n] || n);
 function studioBody() {
+  const filterBox = `<input class="std-filter" id="std-filter" placeholder="filter…" value="${STUDIO.filter || ''}">`;
   if (STUDIO.tab === 'Clips') {
     const have = (id) => LAB.A && LAB.A.actions[id];
-    return '<div class="std-grid">' + STUDIO_CLIPS.map((id) =>
+    return filterBox + '<div class="std-grid">' + STUDIO_CLIPS.map((id) =>
       `<button class="std-chip${STUDIO.hook && STUDIO.hook.kind === 'clip' && STUDIO.hook.id === id ? ' on' : ''}${have(id) ? '' : ' off'}" data-clip="${id}">${id}</button>`).join('') + '</div>';
   }
   if (STUDIO.tab === 'Procedural') {
-    return '<div class="std-grid">' + STUDIO_PROCS.map((h) =>
+    return filterBox + '<div class="std-grid">' + STUDIO_PROCS.map((h) =>
       `<button class="std-chip${STUDIO.hook && STUDIO.hook.kind === 'proc' && STUDIO.hook.id === h.id ? ' on' : ''}" data-proc="${h.id}">${h.label}</button>`).join('') + '</div>';
   }
   if (STUDIO.tab === 'Keys') {
@@ -9632,7 +9651,12 @@ function studioBody() {
       const c = LAB_CONTACTS[sel];
       sliders = c.keys.map((key) => { const k = labKnob(key);
         return `<label class="lab-row"><span>${k.label}</span><input type="range" data-key="${key}" min="${k.min}" max="${k.max}" step="${k.step}" value="${TUNE[key]}"><b id="labv-${key}">${k.fmt(TUNE[key])}</b></label>`;
-      }).join('') || '<div class="lab-none">— no spacing knobs for this pose —</div>';
+      }).join('');
+      // Engagement scrub: drives game.battle.val (who's winning the rep), which the
+      // battle lean reads live — slide to watch the carrier drive through vs. get buried.
+      // Only the break-tackle battle pose reads it, so only surface it there.
+      if (/BATTLE/.test(c.name)) sliders += `<label class="lab-row" title="who's winning the rep — drives the battle lean"><span>engagement</span><input type="range" id="ct-battle" min="0" max="1" step="0.01" value="${STUDIO.battleVal}"><b id="ct-battle-v">${STUDIO.battleVal.toFixed(2)}</b></label>`;
+      if (!sliders) sliders = '<div class="lab-none">— no spacing knobs for this pose —</div>';
     }
     return list + '<div class="lab-sliders">' + sliders + '</div>';
   }
@@ -9781,16 +9805,122 @@ function studioMirrorBone() {
   if (!m || !studioBoneByName(LAB.A, m)) return;
   STUDIO.boneEdits[m] = { x: e.x, y: -e.y, z: -e.z }; STUDIO.bone = m; buildStudioPanel();
 }
-// Capture-phase pickers: when posing on the Bones tab, a joint hit selects it and
-// stops the event so the orbit camera doesn't also grab the drag.
+// Capture-phase pickers: when posing on the Bones tab, grabbing a joint selects it
+// AND begins a drag-to-rotate (desktop), and stops the event so the orbit camera
+// doesn't also grab it. Grabbing empty space falls through to the orbit camera.
+const STUD_ROT_K = 0.011; // drag sensitivity (rad / px)
 canvas.addEventListener('mousedown', (ev) => {
   if (!game.lab || STUDIO.tab !== 'Bones') return; const b = studioPickBone(ev.clientX, ev.clientY);
-  if (b) { studioSelectBone(b.name); ev.stopPropagation(); ev.preventDefault(); }
+  if (b) { studioSelectBone(b.name); STUDIO.drag = { lx: ev.clientX, ly: ev.clientY }; ev.stopPropagation(); ev.preventDefault(); }
 }, true);
+// Drag-to-rotate the selected joint: horizontal → local Y (swing), vertical → local X
+// (raise/lower). Live-syncs the Bones-tab sliders without a rebuild.
+window.addEventListener('mousemove', (ev) => {
+  if (!game.lab || !STUDIO.drag || !STUDIO.bone) return;
+  const dx = ev.clientX - STUDIO.drag.lx, dy = ev.clientY - STUDIO.drag.ly;
+  STUDIO.drag.lx = ev.clientX; STUDIO.drag.ly = ev.clientY;
+  const e = STUDIO.boneEdits[STUDIO.bone] || (STUDIO.boneEdits[STUDIO.bone] = { x: 0, y: 0, z: 0 });
+  e.y = THREE.MathUtils.clamp((e.y || 0) + dx * STUD_ROT_K, -3.14, 3.14);
+  e.x = THREE.MathUtils.clamp((e.x || 0) + dy * STUD_ROT_K, -3.14, 3.14);
+  studioSyncBoneSliders();
+});
+window.addEventListener('mouseup', () => { STUDIO.drag = null; });
+// Hover feedback: highlight the nearest joint + show its name label near the cursor.
+canvas.addEventListener('mousemove', (ev) => {
+  if (!game.lab || STUDIO.tab !== 'Bones') { if (STUDIO.hoverBone) { STUDIO.hoverBone = null; studioHideJointLabel(); } return; }
+  if (STUDIO.drag) { studioHideJointLabel(); return; } // mid-rotate: don't fight the drag
+  const b = studioPickBone(ev.clientX, ev.clientY);
+  STUDIO.hoverBone = b ? b.name : null;
+  if (b) studioShowJointLabel(boneLabel(b.name), ev.clientX, ev.clientY); else studioHideJointLabel();
+});
 canvas.addEventListener('touchstart', (ev) => {
   if (!game.lab || STUDIO.tab !== 'Bones' || !ev.touches.length) return; const t = ev.touches[0]; const b = studioPickBone(t.clientX, t.clientY);
   if (b) { studioSelectBone(b.name); ev.stopPropagation(); ev.preventDefault(); }
 }, true);
+// Studio keyboard shortcuts (only while the lab is open; the game handler bails in
+// lab mode). Skipped while typing in a field so inputs behave normally.
+window.addEventListener('keydown', (ev) => {
+  if (!game.lab) return;
+  if (ev.key === 'Escape') { exitLab(); ev.preventDefault(); return; }
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return; // let fields type
+  let handled = true;
+  if (ev.key === ' ' || ev.key === 'Spacebar') STUDIO.playing = !STUDIO.playing;
+  else if (ev.key === 'ArrowLeft') { STUDIO.playing = false; STUDIO.t = Math.max(0, STUDIO.t - (ev.shiftKey ? 0.005 : 0.03)); }
+  else if (ev.key === 'ArrowRight') { STUDIO.playing = false; STUDIO.t = Math.min(1, STUDIO.t + (ev.shiftKey ? 0.005 : 0.03)); }
+  else if (ev.key === 'r' || ev.key === 'R') studioResetCurrent();
+  else if (ev.key === 'f' || ev.key === 'F') studioCamPreset('reset');
+  else if (ev.key === 'a' || ev.key === 'A') dbgCam.autoRotate = !dbgCam.autoRotate;
+  else if (ev.key === 'h' || ev.key === 'H') { studioToggleHelp(); ev.preventDefault(); return; }
+  else if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')) { ev.shiftKey ? studioRedo() : studioUndo(); ev.preventDefault(); return; }
+  else if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'y' || ev.key === 'Y')) { studioRedo(); ev.preventDefault(); return; }
+  else if (ev.key >= '1' && ev.key <= '7') STUDIO.tab = STUDIO_TABS[+ev.key - 1] || STUDIO.tab;
+  else handled = false;
+  if (handled) { ev.preventDefault(); buildStudioPanel(); }
+});
+// ── Phase 7: usability + interactive 3D helpers ─────────────────────────────
+// Help toggle (persisted) — flips the per-tab guidance block on/off.
+function studioToggleHelp() { STUDIO.help = !STUDIO.help; try { localStorage.setItem(STUDIO_HELP_KEY, STUDIO.help ? '1' : '0'); } catch (e) {} buildStudioPanel(); }
+function studioHelpHTML() {
+  if (!STUDIO.help) return '';
+  const txt = STUDIO_HELP[STUDIO.tab] || '';
+  return `<div class="std-help"><div class="std-help-txt">${txt}</div>`
+    + `<div class="std-help-keys"><b>space</b> play · <b>←/→</b> scrub · <b>1–7</b> tabs · <b>F</b> frame · <b>A</b> auto-spin · <b>R</b> reset · <b>⌘Z</b> undo · <b>Esc</b> exit · <b>H</b> hide</div></div>`;
+}
+// Camera framing presets — quick desktop angles. The target is re-framed by the
+// per-frame lerp in updateLab, so we set azimuth/elevation/distance here.
+function studioCamPreset(which) {
+  dbgCam.follow = false; dbgCam.autoRotate = false;
+  const P = { front: [0, 0.12, 4.6], side: [Math.PI / 2, 0.12, 4.6], '34': [0.7, 0.22, 4.8], top: [0.001, 1.35, 5.4], reset: [0.7, 0.22, 4.8] };
+  const p = P[which] || P.reset; dbgCam.az = p[0]; dbgCam.el = p[1]; dbgCam.dist = p[2];
+}
+// Floating joint-name label that follows the cursor while hovering a joint in 3D.
+let _studJLabel = null;
+function studioShowJointLabel(text, x, y) {
+  if (!_studJLabel) { _studJLabel = document.createElement('div'); _studJLabel.className = 'std-jlabel hidden'; document.body.appendChild(_studJLabel); }
+  _studJLabel.textContent = text; _studJLabel.style.left = (x + 14) + 'px'; _studJLabel.style.top = (y - 4) + 'px'; _studJLabel.classList.remove('hidden');
+}
+function studioHideJointLabel() { if (_studJLabel) _studJLabel.classList.add('hidden'); }
+// Live filter for the Clips/Procedural chip grids — hides non-matches without a
+// full rebuild, so the input keeps focus as you type.
+function studioApplyFilter() {
+  if (!labPanelEl) return; const q = (STUDIO.filter || '').toLowerCase().trim();
+  labPanelEl.querySelectorAll('.std-grid .std-chip').forEach((b) => {
+    b.style.display = (!q || (b.textContent || '').toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+// Push the live bone-edit values back into the Bones-tab sliders during a 3D drag
+// (no rebuild, so the drag isn't interrupted).
+function studioSyncBoneSliders() {
+  if (!labPanelEl || STUDIO.tab !== 'Bones' || !STUDIO.bone) return;
+  const e = STUDIO.boneEdits[STUDIO.bone]; if (!e) return;
+  for (const ax of ['x', 'y', 'z']) {
+    const inp = labPanelEl.querySelector('input[data-ax="' + ax + '"]'); if (inp) inp.value = e[ax] || 0;
+    const v = labPanelEl.querySelector('#bv-' + ax); if (v) v.textContent = (e[ax] || 0).toFixed(2);
+  }
+}
+// Tear down the joint markers + free their GPU resources (called on rebuild/exit).
+function studioDisposeJoints() {
+  if (!STUDIO.joints) return;
+  scene.remove(STUDIO.joints);
+  for (const m of STUDIO.joints.children) if (m.material) m.material.dispose();
+  const g0 = STUDIO.joints.children[0]; if (g0 && g0.geometry) g0.geometry.dispose();
+  STUDIO.joints = null;
+}
+// Build the clickable joint markers (small spheres at each pickable bone). They draw
+// over the body (depthTest off) and are recolored/sized per hover/selection in updateLab.
+function studioBuildJoints() {
+  studioDisposeJoints();
+  if (!LAB.A || !LAB.A.bones) return;
+  const g = new THREE.Group(); g.renderOrder = 999;
+  const geo = new THREE.SphereGeometry(0.045, 10, 8);
+  for (const name of STUDIO_BONES) {
+    if (!studioBoneByName(LAB.A, name)) continue;
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthTest: false }));
+    m.userData.bone = name; g.add(m);
+  }
+  g.visible = false; scene.add(g); STUDIO.joints = g;
+}
 function buildStudioPanel() {
   if (!labPanelEl) return;
   const h = STUDIO.hook;
@@ -9798,22 +9928,33 @@ function buildStudioPanel() {
   const tabs = STUDIO_TABS.map((t) => `<button class="std-tab${STUDIO.tab === t ? ' on' : ''}" data-tab="${t}">${t}</button>`).join('');
   labPanelEl.classList.toggle('std-collapsed', STUDIO.collapsed);
   labPanelEl.innerHTML = `
-    <div class="lab-head"><span>🎬 STUDIO</span><span class="std-head-btns"><button id="std-undo" title="undo">↶</button><button id="std-redo" title="redo">↷</button><button id="std-min" title="collapse">${STUDIO.collapsed ? '▢' : '▭'}</button><button id="lab-exit" aria-label="exit">✕</button></span></div>
+    <div class="lab-head"><span>🎬 STUDIO</span><span class="std-head-btns"><button id="std-help" class="${STUDIO.help ? 'on' : ''}" title="toggle help (H)">?</button><button id="std-undo" title="undo (⌘Z)">↶</button><button id="std-redo" title="redo (⌘⇧Z)">↷</button><button id="std-min" title="collapse">${STUDIO.collapsed ? '▢' : '▭'}</button><button id="lab-exit" title="exit (Esc)" aria-label="exit">✕</button></span></div>
     <div class="std-tabs">${tabs}</div>
+    ${studioHelpHTML()}
     <div class="std-body">${studioBody()}</div>
     <div class="std-now" id="std-now">${name}</div>
     <div class="std-transport">
-      <button id="std-play" title="play/pause">${STUDIO.playing ? '⏸' : '▶'}</button>
-      <input id="std-scrub" type="range" min="0" max="1" step="0.001" value="${STUDIO.t}">
+      <button id="std-play" title="play / pause (space)">${STUDIO.playing ? '⏸' : '▶'}</button>
+      <input id="std-scrub" type="range" min="0" max="1" step="0.001" value="${STUDIO.t}" title="scrub timeline (←/→)">
       <b id="std-t">${STUDIO.t.toFixed(2)}</b>
       <button id="std-loop" class="${STUDIO.loop ? 'on' : ''}" title="loop">↻</button>
       <button id="std-speed" title="playback speed">${STUDIO.speed}×</button>
     </div>
+    <div class="std-cam">
+      <button data-cam="front" title="front view">Front</button>
+      <button data-cam="side" title="side view">Side</button>
+      <button data-cam="34" title="three-quarter view">¾</button>
+      <button data-cam="top" title="top-down view">Top</button>
+      <button data-cam="reset" title="reset framing (F)">Frame</button>
+      <button id="std-auto" class="${dbgCam.autoRotate ? 'on' : ''}" title="turntable auto-spin (A)">⟳</button>
+      <button id="std-shot" title="save screenshot (PNG)">📷</button>
+    </div>
     <div class="std-read" id="std-read">${studioReadout()}</div>
-    <label class="lab-row"><span>weight</span><input id="std-w" type="range" min="0" max="1" step="0.01" value="${STUDIO.weight}"><b id="std-wv">${STUDIO.weight.toFixed(2)}</b></label>
-    <div class="lab-actrow"><button id="lab-save">Save</button><button id="lab-copy">Copy</button><button id="lab-reset">Reset</button></div>
-    <div class="lab-hint">drag rotate · pinch / scroll zoom</div>`;
+    <label class="lab-row"><span>weight</span><input id="std-w" type="range" min="0" max="1" step="0.01" value="${STUDIO.weight}" title="blend weight of the active pose (0–1)"><b id="std-wv">${STUDIO.weight.toFixed(2)}</b></label>
+    <div class="lab-actrow"><button id="lab-save" title="persist to the live game (localStorage)">Save</button><button id="lab-copy" title="copy pose JSON to clipboard">Copy</button><button id="lab-reset" title="reset the current pose to its default (R)">Reset</button></div>
+    <div class="lab-hint">left-drag rotate · right-drag / shift pan · scroll zoom</div>`;
   labPanelEl.classList.remove('hidden');
+  document.body.classList.toggle('lab-pose', STUDIO.tab === 'Bones'); // 3D cursor affordance while posing joints
   const $ = (s) => labPanelEl.querySelector(s);
   labPanelEl.querySelectorAll('.std-tab').forEach((b) => b.onclick = () => { STUDIO.tab = b.dataset.tab; buildStudioPanel(); });
   labPanelEl.querySelectorAll('[data-clip]').forEach((b) => b.onclick = () => studioSelect({ kind: 'clip', id: b.dataset.clip }));
@@ -9821,7 +9962,16 @@ function buildStudioPanel() {
   labPanelEl.querySelectorAll('[data-contact]').forEach((b) => b.onclick = () => { const i = +b.dataset.contact; studioSelect(Object.assign({ kind: 'contact', idx: i }, LAB_CONTACTS[i])); });
   $('#lab-exit').onclick = exitLab;
   { const u = $('#std-undo'); if (u) u.onclick = studioUndo; const r = $('#std-redo'); if (r) r.onclick = studioRedo;
+    const hb = $('#std-help'); if (hb) hb.onclick = studioToggleHelp;
     const mn = $('#std-min'); if (mn) mn.onclick = () => { STUDIO.collapsed = !STUDIO.collapsed; buildStudioPanel(); }; }
+  // Camera framing + view controls (desktop quick-angles, turntable, screenshot).
+  labPanelEl.querySelectorAll('[data-cam]').forEach((b) => b.onclick = () => { studioCamPreset(b.dataset.cam); const ab = $('#std-auto'); if (ab) ab.classList.remove('on'); });
+  { const ab = $('#std-auto'); if (ab) ab.onclick = () => { dbgCam.autoRotate = !dbgCam.autoRotate; ab.classList.toggle('on', dbgCam.autoRotate); };
+    const sh = $('#std-shot'); if (sh) sh.onclick = () => { dbgCam.shot = true; }; }
+  // Live chip filter (Clips / Procedural).
+  { const fi = $('#std-filter'); if (fi) { fi.oninput = () => { STUDIO.filter = fi.value; studioApplyFilter(); }; studioApplyFilter(); } }
+  // Contact engagement scrub.
+  { const cb = $('#ct-battle'); if (cb) cb.oninput = () => { STUDIO.battleVal = parseFloat(cb.value); const v = $('#ct-battle-v'); if (v) v.textContent = STUDIO.battleVal.toFixed(2); }; }
   const playBtn = $('#std-play'); if (playBtn) playBtn.onclick = () => { STUDIO.playing = !STUDIO.playing; playBtn.textContent = STUDIO.playing ? '⏸' : '▶'; };
   const loopBtn = $('#std-loop'); if (loopBtn) loopBtn.onclick = () => { STUDIO.loop = !STUDIO.loop; loopBtn.classList.toggle('on', STUDIO.loop); };
   const SPEEDS = [0.25, 0.5, 1, 2];
@@ -9890,10 +10040,11 @@ function enterLab() {
   hideFieldChrome();
   dbgCam.target.set(0, 1.2, 0.3); dbgCam.az = 0.7; dbgCam.el = 0.22; dbgCam.dist = 4.8; dbgCam.follow = false;
   camera.fov = 40; camera.updateProjectionMatrix();
-  STUDIO.bone = null; STUDIO.boneEdits = {};
+  STUDIO.bone = null; STUDIO.boneEdits = {}; STUDIO.hoverBone = null; STUDIO.drag = null;
   studioSyncCustomProcs(); // re-register any authored poses loaded from storage
   if (STUDIO.skel) { scene.remove(STUDIO.skel); STUDIO.skel = null; }
   try { STUDIO.skel = new THREE.SkeletonHelper(LAB.A.model); STUDIO.skel.material.linewidth = 2; STUDIO.skel.visible = false; scene.add(STUDIO.skel); } catch (e) { STUDIO.skel = null; }
+  studioBuildJoints(); // clickable joint markers for the Bones tab
   STUDIO.tab = 'Clips'; studioSelect({ kind: 'clip', id: 'run' }); // open on a recognizable clip
   startLoop(); // ensure the render loop is running (entered from the menu)
 }
@@ -9902,7 +10053,9 @@ function exitLab() {
   LAB.on = false; game.lab = false;
   if (labPanelEl) labPanelEl.classList.add('hidden');
   if (STUDIO.skel) { scene.remove(STUDIO.skel); STUDIO.skel = null; }
-  document.body.classList.remove('lab-mode');
+  studioDisposeJoints();
+  STUDIO.drag = null; STUDIO.hoverBone = null; studioHideJointLabel();
+  document.body.classList.remove('lab-mode'); document.body.classList.remove('lab-pose');
   for (const ch of game.all) { ch.group.visible = true; if (ch.nameTag) ch.nameTag.visible = true;
     for (const k in ch.actions) { const o = ch.actions[k]; if (o) o.paused = false; } } // un-pause clip-scrub
   if (LAB.wasInGame) { enterReset(true); } // resume the game (re-line-up)
@@ -9923,7 +10076,7 @@ function updateLab(dt) {
   if (STUDIO.tab === 'Keys') studioDrawCurve(); // animate the playhead over the curve
   A.group.position.set(0, 0, 0); A.heading = 0;
   if (h && h.kind === 'contact' && B) {
-    game.battle.val = 0.5; B.group.visible = true;
+    game.battle.val = STUDIO.battleVal; B.group.visible = true;
     h.place(A, B); h.apply(A, B, dt);
     groundClamp(A); groundClamp(B);
     if (ball.mesh && A.handBone) { A.handBone.updateWorldMatrix(true, false); A.handBone.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.9, _hips.y), _hips.z); ball.mesh.rotation.set(0, A.heading, 0.35); ball.mesh.visible = true; }
@@ -9937,6 +10090,19 @@ function updateLab(dt) {
     _labMid2.set(0, 1.2, 0.2);
   }
   if (STUDIO.skel) STUDIO.skel.visible = (STUDIO.tab === 'Bones'); // skeleton overlay only while posing
+  // Clickable joint markers: only on the Bones tab. Re-seat each at its bone's world
+  // position and recolor/scale for hover (green) / selection (yellow).
+  if (STUDIO.joints) {
+    const show = STUDIO.tab === 'Bones'; STUDIO.joints.visible = show;
+    if (show) for (const m of STUDIO.joints.children) {
+      const bone = studioBoneByName(A, m.userData.bone); if (!bone) continue;
+      bone.getWorldPosition(m.position);
+      const selj = m.userData.bone === STUDIO.bone, hov = m.userData.bone === STUDIO.hoverBone;
+      m.material.color.setHex(selj ? 0xffd23a : hov ? 0x7fe0a0 : 0xffffff);
+      m.material.opacity = selj ? 1 : hov ? 0.95 : 0.45;
+      m.scale.setScalar(selj ? 1.6 : hov ? 1.35 : 1);
+    }
+  }
   dbgCam.target.lerp(_labMid2, Math.min(1, dt * 4));
 }
 // Debug: rescale every player's visual model and re-seat it on the turf. Called when

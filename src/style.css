@@ -1484,7 +1484,8 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel .std-head-btns { display: flex; align-items: center; gap: 2px; }
 #lab-panel .std-head-btns button { font-size: 15px; min-width: 26px; }
 #lab-panel.std-collapsed .std-tabs, #lab-panel.std-collapsed .std-body, #lab-panel.std-collapsed .std-read,
-#lab-panel.std-collapsed .lab-row, #lab-panel.std-collapsed .lab-actrow, #lab-panel.std-collapsed .lab-hint { display: none; }
+#lab-panel.std-collapsed .lab-row, #lab-panel.std-collapsed .lab-actrow, #lab-panel.std-collapsed .lab-hint,
+#lab-panel.std-collapsed .std-help, #lab-panel.std-collapsed .std-cam { display: none; }
 #lab-panel.std-collapsed { width: min(80vw, 250px); }
 #lab-panel .lab-sel { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 #lab-panel .lab-sel button { width: 40px; height: 36px; border-radius: 9px; cursor: pointer;
@@ -1541,6 +1542,38 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #eef2f7; }
 #lab-panel .std-export textarea { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4);
   color: #bfe7c8; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; font-family: monospace; font-size: 10px; resize: vertical; }
+
+/* Studio Phase 7: help · camera/view row · filter · interactive 3D joint label */
+#lab-panel .std-head-btns button.on { color: #0b0e13; background: #7fe0a0; border-radius: 6px; }
+#lab-panel .std-help { background: rgba(127,224,160,0.09); border: 1px solid rgba(127,224,160,0.28);
+  border-radius: 8px; padding: 7px 9px; margin-bottom: 8px; }
+#lab-panel .std-help-txt { font-size: 11px; line-height: 1.45; color: #d9e3eb; }
+#lab-panel .std-help-keys { margin-top: 6px; font-size: 9.5px; line-height: 1.5; color: #9fb0c0; letter-spacing: 0.2px; }
+#lab-panel .std-help-keys b { color: #ffd23a; font-weight: 800; }
+#lab-panel .std-cam { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+#lab-panel .std-cam button { flex: 1; min-width: 38px; min-height: 28px; border-radius: 7px; cursor: pointer;
+  font-family: inherit; font-weight: 700; font-size: 10px; color: #cdd5df;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); }
+#lab-panel .std-cam button.on { color: #0b0e13; background: #ffd23a; border-color: #ffd23a; }
+#lab-panel .std-cam button:active { transform: translateY(1px); }
+#lab-panel .std-filter { width: 100%; box-sizing: border-box; margin-bottom: 6px; background: rgba(0,0,0,0.35);
+  color: #eef2f7; border: 1px solid rgba(255,255,255,0.2); border-radius: 7px; padding: 6px 8px;
+  font-size: 11px; font-family: inherit; }
+#lab-panel .std-filter::placeholder { color: rgba(255,255,255,0.4); }
+/* Floating joint-name label that follows the cursor over a hovered joint. */
+.std-jlabel { position: fixed; z-index: 100000; pointer-events: none; transform: translateY(-50%);
+  background: rgba(8,11,16,0.92); color: #ffd23a; border: 1px solid rgba(255,210,58,0.5);
+  border-radius: 6px; padding: 2px 7px; font: 800 11px/1.2 system-ui, sans-serif; white-space: nowrap; }
+.std-jlabel.hidden { display: none; }
+body.lab-pose canvas { cursor: crosshair; }
+/* Desktop: a roomier panel + clear hover affordances (pointer-fine = mouse). */
+@media (pointer: fine) and (min-width: 980px) {
+  #lab-panel { width: 366px; }
+  #lab-panel .std-chip:hover, #lab-panel .std-tab:hover, #lab-panel .lab-actrow button:hover,
+  #lab-panel .std-transport button:hover, #lab-panel .std-cam button:hover, #lab-panel .std-kf button:hover,
+  #lab-panel .std-head-btns button:hover { filter: brightness(1.3); }
+  #lab-panel .std-grid { max-height: 300px; }
+}
 
 /* ===========================================================================
    Reusable UI kit (Phase 1): modal · tab bar · buttons
