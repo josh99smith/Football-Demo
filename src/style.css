@@ -1481,6 +1481,11 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel .lab-head { display: flex; align-items: center; justify-content: space-between;
   font-weight: 900; font-style: italic; letter-spacing: 1px; font-size: 15px; color: #ffd23a; margin-bottom: 8px; }
 #lab-panel .lab-head button { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; padding: 2px 6px; }
+#lab-panel .std-head-btns { display: flex; align-items: center; gap: 2px; }
+#lab-panel .std-head-btns button { font-size: 15px; min-width: 26px; }
+#lab-panel.std-collapsed .std-tabs, #lab-panel.std-collapsed .std-body, #lab-panel.std-collapsed .std-read,
+#lab-panel.std-collapsed .lab-row, #lab-panel.std-collapsed .lab-actrow, #lab-panel.std-collapsed .lab-hint { display: none; }
+#lab-panel.std-collapsed { width: min(80vw, 250px); }
 #lab-panel .lab-sel { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 #lab-panel .lab-sel button { width: 40px; height: 36px; border-radius: 9px; cursor: pointer;
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 15px; }

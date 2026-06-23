@@ -9438,7 +9438,16 @@ const STUDIO_PROCS = [
       _studioHeadTgt.set(Math.sin(t * Math.PI * 2) * 4, 1.4, 2.5).add(ch.group.position); applyHeadTrack(ch, _studioHeadTgt, w, dt); } },
 ];
 // Studio runtime state. STUDIO.hook is a descriptor: { kind:'clip'|'proc'|'contact', ... }.
-const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1, kfChannel: null, kfSel: null, bone: null, boneEdits: {}, skel: null };
+const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1, kfChannel: null, kfSel: null, bone: null, boneEdits: {}, skel: null, undo: [], redo: [], collapsed: false };
+// Phase 6 anatomical guardrails: per-channel soft clamps so edits can't author an
+// impossible joint (mirrors the ragdoll's cone/twist limit philosophy).
+const CHAN_LIMIT = { lean: 0.8, twist: 0.8, head: 1.1, _default: 3.0 };
+const chanClamp = (chan, v) => { const L = CHAN_LIMIT[chan] || CHAN_LIMIT._default; return THREE.MathUtils.clamp(v, -L, L); };
+// Undo/redo over the whole pose set (snapshot-based).
+function studioPush() { try { STUDIO.undo.push(JSON.stringify(POSE_KEYS)); if (STUDIO.undo.length > 40) STUDIO.undo.shift(); STUDIO.redo.length = 0; } catch (e) {} }
+function studioApplySnapshot(json) { try { const o = JSON.parse(json); for (const k in POSE_KEYS) delete POSE_KEYS[k]; for (const k in o) POSE_KEYS[k] = o[k]; studioSyncCustomProcs(); if (STUDIO.hook && STUDIO.hook.pose && !POSE_KEYS[STUDIO.hook.pose]) STUDIO.hook = null; STUDIO.kfSel = null; } catch (e) {} }
+function studioUndo() { if (!STUDIO.undo.length) return; STUDIO.redo.push(JSON.stringify(POSE_KEYS)); studioApplySnapshot(STUDIO.undo.pop()); buildStudioPanel(); }
+function studioRedo() { if (!STUDIO.redo.length) return; STUDIO.undo.push(JSON.stringify(POSE_KEYS)); studioApplySnapshot(STUDIO.redo.pop()); buildStudioPanel(); }
 if (typeof window !== 'undefined') window.STUDIO = STUDIO; // Animation Studio debug handle
 const _labMid2 = new THREE.Vector3();
 const studioDur = (h) => h ? (h.kind === 'clip' ? ((LAB.A && LAB.A.actions[h.id] && LAB.A.actions[h.id].getClip().duration) || 1)
@@ -9487,7 +9496,7 @@ function studioNewPose(name) {
 }
 // Generators (quick variant authoring).
 function studioMirrorPose() {
-  const h = STUDIO.hook; if (!(h && h.pose)) return; const P = POSE_KEYS[h.pose];
+  const h = STUDIO.hook; if (!(h && h.pose)) return; studioPush(); const P = POSE_KEYS[h.pose];
   const cl = (a) => a ? a.map((p) => [p[0], p[1]]) : null;
   const ua = cl(P.upperArm), fa = cl(P.foreArm), la = cl(P.leftArm), lfa = cl(P.leftForeArm);
   if (la) P.upperArm = la; if (lfa) P.foreArm = lfa; if (ua) P.leftArm = ua; if (fa) P.leftForeArm = fa;
@@ -9495,23 +9504,23 @@ function studioMirrorPose() {
   buildStudioPanel();
 }
 function studioRetime(f) {
-  const h = STUDIO.hook; if (!(h && h.pose)) return; const P = POSE_KEYS[h.pose];
+  const h = STUDIO.hook; if (!(h && h.pose)) return; studioPush(); const P = POSE_KEYS[h.pose];
   for (const c in P) P[c] = P[c].map((p) => [THREE.MathUtils.clamp(p[0] * f, 0, 1), p[1]]);
   buildStudioPanel();
 }
 function studioEasePreset() {
-  const h = STUDIO.hook; if (!(h && h.pose && STUDIO.kfChannel)) return;
+  const h = STUDIO.hook; if (!(h && h.pose && STUDIO.kfChannel)) return; studioPush();
   const cur = POSE_KEYS[h.pose][STUDIO.kfChannel]; let peak = 0; for (const p of cur) if (Math.abs(p[1]) > Math.abs(peak)) peak = p[1];
   POSE_KEYS[h.pose][STUDIO.kfChannel] = [[0, 0], [0.5, peak || 1], [1, 0]]; STUDIO.kfSel = null; buildStudioPanel();
 }
 function studioBlendInto(other) {
-  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[other])) return; const P = POSE_KEYS[h.pose], Q = POSE_KEYS[other];
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[other])) return; studioPush(); const P = POSE_KEYS[h.pose], Q = POSE_KEYS[other];
   const ts = [0, 0.25, 0.5, 0.75, 1];
   for (const c in P) P[c] = ts.map((t) => [t, (keyAngle(P[c], t) + keyAngle(Q[c] || [[0, 0]], t)) / 2]);
   buildStudioPanel();
 }
 function studioAssignOnto(target) {
-  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[target])) return;
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[target])) return; studioPush();
   for (const c in POSE_KEYS[target]) if (POSE_KEYS[h.pose][c]) POSE_KEYS[target][c] = POSE_KEYS[h.pose][c].map((p) => [p[0], p[1]]);
 }
 // Phase 3: bones that can be posed, the channel each maps to when baked to a keyframe
@@ -9675,6 +9684,7 @@ function studioWireCurve() {
   let drag = false;
   const at = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * cv.width / r.width, (ev.clientY - r.top) * cv.height / r.height]; };
   cv.onpointerdown = (ev) => { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+    studioPush(); // snapshot before a drag/add for undo
     const k = tbl[STUDIO.kfChannel], R = kfRange(k), xy = at(ev);
     let bi = -1, bd = 16 * 16; for (let i = 0; i < k.length; i++) { const p = kfToPx(cv, k[i][0], k[i][1], R); const d = (p[0] - xy[0]) ** 2 + (p[1] - xy[1]) ** 2; if (d < bd) { bd = d; bi = i; } }
     if (bi >= 0) STUDIO.kfSel = k[bi];
@@ -9682,15 +9692,15 @@ function studioWireCurve() {
     drag = true; studioSyncKf(); studioDrawCurve();
   };
   cv.onpointermove = (ev) => { if (!drag || !STUDIO.kfSel) return; const k = tbl[STUDIO.kfChannel], R = kfRange(k), xy = at(ev), tv = kfFromPx(cv, xy[0], xy[1], R);
-    STUDIO.kfSel[0] = tv[0]; STUDIO.kfSel[1] = tv[1]; k.sort((a, b) => a[0] - b[0]); studioSyncKf(); studioDrawCurve(); };
+    STUDIO.kfSel[0] = tv[0]; STUDIO.kfSel[1] = chanClamp(STUDIO.kfChannel, tv[1]); k.sort((a, b) => a[0] - b[0]); studioSyncKf(); studioDrawCurve(); };
   cv.onpointerup = cv.onpointercancel = () => { drag = false; };
   const tin = labPanelEl.querySelector('#kf-t'), vin = labPanelEl.querySelector('#kf-v');
   if (tin) tin.oninput = () => { if (!STUDIO.kfSel) return; STUDIO.kfSel[0] = THREE.MathUtils.clamp(parseFloat(tin.value) || 0, 0, 1); tbl[STUDIO.kfChannel].sort((a, b) => a[0] - b[0]); studioDrawCurve(); };
-  if (vin) vin.oninput = () => { if (!STUDIO.kfSel) return; STUDIO.kfSel[1] = parseFloat(vin.value) || 0; studioDrawCurve(); };
+  if (vin) vin.oninput = () => { if (!STUDIO.kfSel) return; STUDIO.kfSel[1] = chanClamp(STUDIO.kfChannel, parseFloat(vin.value) || 0); studioDrawCurve(); };
   const addB = labPanelEl.querySelector('#kf-add');
-  if (addB) addB.onclick = () => { const k = tbl[STUDIO.kfChannel], nk = [STUDIO.t, keyAngle(k, STUDIO.t)]; k.push(nk); k.sort((a, b) => a[0] - b[0]); STUDIO.kfSel = nk; buildStudioPanel(); };
+  if (addB) addB.onclick = () => { studioPush(); const k = tbl[STUDIO.kfChannel], nk = [STUDIO.t, keyAngle(k, STUDIO.t)]; k.push(nk); k.sort((a, b) => a[0] - b[0]); STUDIO.kfSel = nk; buildStudioPanel(); };
   const delB = labPanelEl.querySelector('#kf-del');
-  if (delB) delB.onclick = () => { const k = tbl[STUDIO.kfChannel]; if (STUDIO.kfSel && k.length > 1) { const i = k.indexOf(STUDIO.kfSel); if (i >= 0) k.splice(i, 1); STUDIO.kfSel = null; } buildStudioPanel(); };
+  if (delB) delB.onclick = () => { studioPush(); const k = tbl[STUDIO.kfChannel]; if (STUDIO.kfSel && k.length > 1) { const i = k.indexOf(STUDIO.kfSel); if (i >= 0) k.splice(i, 1); STUDIO.kfSel = null; } buildStudioPanel(); };
   studioDrawCurve();
 }
 // ── Phase 3: direct bone manipulation (visual posing) ───────────────────────
@@ -9723,6 +9733,7 @@ function studioPickBone(clientX, clientY) {
 function studioBakeBoneToKey() {
   const h = STUDIO.hook, chan = BONE_CHAN[STUDIO.bone], e = STUDIO.boneEdits[STUDIO.bone];
   if (!(h && h.pose && POSE_KEYS[h.pose] && chan && POSE_KEYS[h.pose][chan] && e)) return;
+  studioPush();
   const k = POSE_KEYS[h.pose][chan], t = STUDIO.t;
   let kf = k.find((p) => Math.abs(p[0] - t) < 0.02);
   if (kf) kf[1] = e.x; else { kf = [t, e.x]; k.push(kf); k.sort((a, b) => a[0] - b[0]); }
@@ -9750,8 +9761,9 @@ function buildStudioPanel() {
   const h = STUDIO.hook;
   const name = !h ? '— pick an animation —' : (h.kind === 'clip' ? 'clip · ' + h.id : h.kind === 'proc' ? 'proc · ' + h.label : 'contact · ' + h.name);
   const tabs = STUDIO_TABS.map((t) => `<button class="std-tab${STUDIO.tab === t ? ' on' : ''}" data-tab="${t}">${t}</button>`).join('');
+  labPanelEl.classList.toggle('std-collapsed', STUDIO.collapsed);
   labPanelEl.innerHTML = `
-    <div class="lab-head"><span>🎬 ANIMATION STUDIO</span><button id="lab-exit" aria-label="exit">✕</button></div>
+    <div class="lab-head"><span>🎬 STUDIO</span><span class="std-head-btns"><button id="std-undo" title="undo">↶</button><button id="std-redo" title="redo">↷</button><button id="std-min" title="collapse">${STUDIO.collapsed ? '▢' : '▭'}</button><button id="lab-exit" aria-label="exit">✕</button></span></div>
     <div class="std-tabs">${tabs}</div>
     <div class="std-body">${studioBody()}</div>
     <div class="std-now" id="std-now">${name}</div>
@@ -9773,6 +9785,8 @@ function buildStudioPanel() {
   labPanelEl.querySelectorAll('[data-proc]').forEach((b) => b.onclick = () => { const h2 = STUDIO_PROCS.find((p) => p.id === b.dataset.proc); studioSelect(Object.assign({ kind: 'proc' }, h2)); });
   labPanelEl.querySelectorAll('[data-contact]').forEach((b) => b.onclick = () => { const i = +b.dataset.contact; studioSelect(Object.assign({ kind: 'contact', idx: i }, LAB_CONTACTS[i])); });
   $('#lab-exit').onclick = exitLab;
+  { const u = $('#std-undo'); if (u) u.onclick = studioUndo; const r = $('#std-redo'); if (r) r.onclick = studioRedo;
+    const mn = $('#std-min'); if (mn) mn.onclick = () => { STUDIO.collapsed = !STUDIO.collapsed; buildStudioPanel(); }; }
   const playBtn = $('#std-play'); if (playBtn) playBtn.onclick = () => { STUDIO.playing = !STUDIO.playing; playBtn.textContent = STUDIO.playing ? '⏸' : '▶'; };
   const loopBtn = $('#std-loop'); if (loopBtn) loopBtn.onclick = () => { STUDIO.loop = !STUDIO.loop; loopBtn.classList.toggle('on', STUDIO.loop); };
   const SPEEDS = [0.25, 0.5, 1, 2];
@@ -9812,8 +9826,8 @@ function buildStudioPanel() {
     const ta = $('#std-json');
     const cj = $('#exp-copy'); if (cj) cj.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); cj.textContent = '✓'; } catch (e) {} setTimeout(() => { cj.textContent = 'Copy JSON'; }, 1000); };
     const cc = $('#exp-code'); if (cc) cc.onclick = async () => { try { await navigator.clipboard.writeText(studioPoseCode()); cc.textContent = '✓'; } catch (e) {} setTimeout(() => { cc.textContent = 'Copy code'; }, 1000); };
-    const im = $('#exp-import'); if (im) im.onclick = () => { const ok = ta && studioImportPoses(ta.value); im.textContent = ok ? '✓ Imported' : '✗ bad JSON'; setTimeout(() => { im.textContent = 'Import'; }, 1200); if (ok) buildStudioPanel(); };
-    const ra = $('#exp-resetall'); if (ra) ra.onclick = () => { studioResetAllPoses(); buildStudioPanel(); };
+    const im = $('#exp-import'); if (im) im.onclick = () => { studioPush(); const ok = ta && studioImportPoses(ta.value); im.textContent = ok ? '✓ Imported' : '✗ bad JSON'; setTimeout(() => { im.textContent = 'Import'; }, 1200); if (ok) buildStudioPanel(); };
+    const ra = $('#exp-resetall'); if (ra) ra.onclick = () => { studioPush(); studioResetAllPoses(); buildStudioPanel(); };
     const sA = $('#exp-setA'); if (sA) sA.onclick = () => { _studAB.a = studioExportJSON(); sA.textContent = '✓ A'; setTimeout(() => { sA.textContent = 'Set A'; }, 900); };
     const sB = $('#exp-setB'); if (sB) sB.onclick = () => { _studAB.b = studioExportJSON(); sB.textContent = '✓ B'; setTimeout(() => { sB.textContent = 'Set B'; }, 900); };
     const tA = $('#exp-toA'); if (tA) tA.onclick = () => { if (_studAB.a) { studioImportPoses(_studAB.a); buildStudioPanel(); } };
@@ -10208,7 +10222,7 @@ loadAssets().then(async () => {
   loadSettings(); // player-facing settings (Phase 4) — apply before the first render
   buildStartMenu();
   // Boot straight into the Contact Lab with ?lab; otherwise the matchup menu gates the kickoff.
-  const wantLab = (typeof location !== 'undefined') && /\blab\b/.test(location.search + ' ' + location.hash);
+  const wantLab = (typeof location !== 'undefined') && /\b(lab|studio)\b/.test(location.search + ' ' + location.hash);
   if (wantLab) { enterLab(); }
   else if (startMenuEl) startMenuEl.classList.remove('hidden'); else startGame();
 }).catch((err) => { console.error(err); loadingText.textContent = 'Failed to load assets. Check the console.'; });
