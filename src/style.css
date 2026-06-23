@@ -1524,6 +1524,16 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel .std-transport b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: #ffd23a; font-size: 11px; }
 #lab-panel .std-read { font-size: 10px; color: #9fb0c0; font-variant-numeric: tabular-nums; margin-bottom: 8px;
   min-height: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lab-panel .std-chans { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+#lab-panel .std-chip.sm { min-height: 26px; font-size: 10px; padding: 3px 6px; }
+#lab-panel #std-curve { width: 100%; height: auto; aspect-ratio: 320 / 168; display: block;
+  border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; touch-action: none; margin-bottom: 6px; background: rgba(0,0,0,0.3); }
+#lab-panel .std-kf { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; flex-wrap: wrap; }
+#lab-panel .std-kf label { display: flex; align-items: center; gap: 3px; font-size: 11px; color: #cdd5df; }
+#lab-panel .std-kf input { width: 54px; background: rgba(0,0,0,0.35); color: #eef2f7;
+  border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 4px; font-size: 11px; }
+#lab-panel .std-kf button { min-height: 30px; padding: 0 8px; border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 700;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #eef2f7; }
 #lab-panel .std-export textarea { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4);
   color: #bfe7c8; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; font-family: monospace; font-size: 10px; resize: vertical; }
 

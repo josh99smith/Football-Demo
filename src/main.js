@@ -7818,6 +7818,7 @@ try {
   }
 } catch (e) { /* ignore corrupt/unavailable storage */ }
 const pk = (pose, ch, t) => keyAngle(POSE_KEYS[pose] && POSE_KEYS[pose][ch], t); // table lookup
+if (typeof window !== 'undefined') window.POSE_KEYS = POSE_KEYS; // Animation Studio debug handle
 // Procedural THROW: a real over-the-top QB motion — a fast forward WHIP (the
 // shoulder snaps over the top as the elbow extends), then a follow-through down
 // and across, easing back to rest. The torso leans into it and the off arm comes
@@ -9449,7 +9450,7 @@ function studioSelect(h) {
   buildStudioPanel();
 }
 // ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
-const STUDIO_TABS = ['Clips', 'Procedural', 'Contact', 'Export'];
+const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Contact', 'Export'];
 function studioBody() {
   if (STUDIO.tab === 'Clips') {
     const have = (id) => LAB.A && LAB.A.actions[id];
@@ -9459,6 +9460,24 @@ function studioBody() {
   if (STUDIO.tab === 'Procedural') {
     return '<div class="std-grid">' + STUDIO_PROCS.map((h) =>
       `<button class="std-chip${STUDIO.hook && STUDIO.hook.kind === 'proc' && STUDIO.hook.id === h.id ? ' on' : ''}" data-proc="${h.id}">${h.label}</button>`).join('') + '</div>';
+  }
+  if (STUDIO.tab === 'Keys') {
+    const h = STUDIO.hook;
+    if (!(h && h.kind === 'proc' && h.pose && POSE_KEYS[h.pose]))
+      return '<div class="lab-none">Pick a procedural pose with editable curves (Procedural tab → e.g. Throw) to edit its keyframes here.</div>';
+    const tbl = POSE_KEYS[h.pose], chans = Object.keys(tbl);
+    if (!STUDIO.kfChannel || !tbl[STUDIO.kfChannel]) STUDIO.kfChannel = chans[0];
+    const chchips = chans.map((c) => `<button class="std-chip sm${c === STUDIO.kfChannel ? ' on' : ''}" data-chan="${c}">${c}</button>`).join('');
+    const k = tbl[STUDIO.kfChannel];
+    const sel = (STUDIO.kfSel && k.indexOf(STUDIO.kfSel) >= 0) ? STUDIO.kfSel : null;
+    return `<div class="std-chans">${chchips}</div>
+      <canvas id="std-curve" width="320" height="168"></canvas>
+      <div class="std-kf">
+        <label>t<input id="kf-t" type="number" step="0.01" min="0" max="1" value="${sel ? sel[0].toFixed(3) : ''}"></label>
+        <label>val<input id="kf-v" type="number" step="0.05" value="${sel ? sel[1].toFixed(3) : ''}"></label>
+        <button id="kf-add">+key@t</button><button id="kf-del">–key</button>
+      </div>
+      <div class="lab-hint">tap a point to select · drag to move · tap empty to add</div>`;
   }
   if (STUDIO.tab === 'Contact') {
     const sel = STUDIO.hook && STUDIO.hook.kind === 'contact' ? STUDIO.hook.idx : -1;
@@ -9496,6 +9515,59 @@ function studioReadout() {
   let chans = '';
   if (h.pose && POSE_KEYS[h.pose]) chans = Object.keys(POSE_KEYS[h.pose]).map((c) => `${c} ${pk(h.pose, c, t).toFixed(2)}`).join(' · ');
   return `t ${t.toFixed(2)}${chans ? ' · ' + chans : ''}`;
+}
+// ── Phase 2: keyframe curve editor ──────────────────────────────────────────
+// Renders a POSE_KEYS channel as an editable [t,value] curve on a canvas (drag
+// points, add/delete keys), plotting the SAME smoothstep spline keyAngle uses, plus
+// a live playhead. Edits mutate POSE_KEYS in place, so the running pose updates live.
+const KF_PAD = { l: 26, r: 8, t: 10, b: 18 };
+const kfRange = (k) => { let m = 0.6; for (const p of k) m = Math.max(m, Math.abs(p[1])); return m * 1.15; };
+function kfToPx(cv, t, v, R) { return [KF_PAD.l + t * (cv.width - KF_PAD.l - KF_PAD.r), KF_PAD.t + (1 - (v + R) / (2 * R)) * (cv.height - KF_PAD.t - KF_PAD.b)]; }
+function kfFromPx(cv, x, y, R) { return [THREE.MathUtils.clamp((x - KF_PAD.l) / (cv.width - KF_PAD.l - KF_PAD.r), 0, 1), R - (y - KF_PAD.t) / (cv.height - KF_PAD.t - KF_PAD.b) * 2 * R]; }
+function studioDrawCurve() {
+  const cv = labPanelEl && labPanelEl.querySelector('#std-curve'); if (!cv) return;
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[h.pose])) return;
+  const k = POSE_KEYS[h.pose][STUDIO.kfChannel]; if (!k) return;
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, R = kfRange(k);
+  ctx.clearRect(0, 0, W, H); ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1; // zero line
+  const z = kfToPx(cv, 0, 0, R)[1]; ctx.beginPath(); ctx.moveTo(KF_PAD.l, z); ctx.lineTo(W - KF_PAD.r, z); ctx.stroke();
+  ctx.strokeStyle = '#7fe0a0'; ctx.lineWidth = 2; ctx.beginPath(); // smoothstep spline
+  for (let i = 0; i <= 90; i++) { const t = i / 90, p = kfToPx(cv, t, keyAngle(k, t), R); i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); } ctx.stroke();
+  const px = kfToPx(cv, STUDIO.t, 0, R)[0]; ctx.strokeStyle = '#ffd23a'; ctx.lineWidth = 1; // playhead
+  ctx.beginPath(); ctx.moveTo(px, KF_PAD.t); ctx.lineTo(px, H - KF_PAD.b); ctx.stroke();
+  for (let i = 0; i < k.length; i++) { const p = kfToPx(cv, k[i][0], k[i][1], R), on = k[i] === STUDIO.kfSel; ctx.fillStyle = on ? '#ffd23a' : '#fff'; ctx.beginPath(); ctx.arc(p[0], p[1], on ? 5.5 : 4, 0, 7); ctx.fill(); }
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '9px monospace'; ctx.fillText('+' + R.toFixed(1), 1, 11); ctx.fillText('-' + R.toFixed(1), 1, H - 3);
+}
+function studioSyncKf() {
+  const tin = labPanelEl.querySelector('#kf-t'), vin = labPanelEl.querySelector('#kf-v'), s = STUDIO.kfSel;
+  if (tin) tin.value = s ? s[0].toFixed(3) : ''; if (vin) vin.value = s ? s[1].toFixed(3) : '';
+}
+function studioWireCurve() {
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[h.pose])) return;
+  const tbl = POSE_KEYS[h.pose];
+  labPanelEl.querySelectorAll('[data-chan]').forEach((b) => b.onclick = () => { STUDIO.kfChannel = b.dataset.chan; STUDIO.kfSel = null; buildStudioPanel(); });
+  const cv = labPanelEl.querySelector('#std-curve'); if (!cv) return;
+  let drag = false;
+  const at = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * cv.width / r.width, (ev.clientY - r.top) * cv.height / r.height]; };
+  cv.onpointerdown = (ev) => { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+    const k = tbl[STUDIO.kfChannel], R = kfRange(k), xy = at(ev);
+    let bi = -1, bd = 16 * 16; for (let i = 0; i < k.length; i++) { const p = kfToPx(cv, k[i][0], k[i][1], R); const d = (p[0] - xy[0]) ** 2 + (p[1] - xy[1]) ** 2; if (d < bd) { bd = d; bi = i; } }
+    if (bi >= 0) STUDIO.kfSel = k[bi];
+    else { const tv = kfFromPx(cv, xy[0], xy[1], R); const nk = [tv[0], tv[1]]; k.push(nk); k.sort((a, b) => a[0] - b[0]); STUDIO.kfSel = nk; }
+    drag = true; studioSyncKf(); studioDrawCurve();
+  };
+  cv.onpointermove = (ev) => { if (!drag || !STUDIO.kfSel) return; const k = tbl[STUDIO.kfChannel], R = kfRange(k), xy = at(ev), tv = kfFromPx(cv, xy[0], xy[1], R);
+    STUDIO.kfSel[0] = tv[0]; STUDIO.kfSel[1] = tv[1]; k.sort((a, b) => a[0] - b[0]); studioSyncKf(); studioDrawCurve(); };
+  cv.onpointerup = cv.onpointercancel = () => { drag = false; };
+  const tin = labPanelEl.querySelector('#kf-t'), vin = labPanelEl.querySelector('#kf-v');
+  if (tin) tin.oninput = () => { if (!STUDIO.kfSel) return; STUDIO.kfSel[0] = THREE.MathUtils.clamp(parseFloat(tin.value) || 0, 0, 1); tbl[STUDIO.kfChannel].sort((a, b) => a[0] - b[0]); studioDrawCurve(); };
+  if (vin) vin.oninput = () => { if (!STUDIO.kfSel) return; STUDIO.kfSel[1] = parseFloat(vin.value) || 0; studioDrawCurve(); };
+  const addB = labPanelEl.querySelector('#kf-add');
+  if (addB) addB.onclick = () => { const k = tbl[STUDIO.kfChannel], nk = [STUDIO.t, keyAngle(k, STUDIO.t)]; k.push(nk); k.sort((a, b) => a[0] - b[0]); STUDIO.kfSel = nk; buildStudioPanel(); };
+  const delB = labPanelEl.querySelector('#kf-del');
+  if (delB) delB.onclick = () => { const k = tbl[STUDIO.kfChannel]; if (STUDIO.kfSel && k.length > 1) { const i = k.indexOf(STUDIO.kfSel); if (i >= 0) k.splice(i, 1); STUDIO.kfSel = null; } buildStudioPanel(); };
+  studioDrawCurve();
 }
 function buildStudioPanel() {
   if (!labPanelEl) return;
@@ -9540,6 +9612,7 @@ function buildStudioPanel() {
   const copyBtn = $('#lab-copy');
   copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200); };
   $('#lab-reset').onclick = () => { studioResetCurrent(); buildStudioPanel(); };
+  if (STUDIO.tab === 'Keys') studioWireCurve();
 }
 function studioResetCurrent() {
   const h = STUDIO.hook;
@@ -9587,6 +9660,7 @@ function updateLab(dt) {
     const tv = labPanelEl && labPanelEl.querySelector('#std-t'); if (tv) tv.textContent = STUDIO.t.toFixed(2);
   }
   const rd = labPanelEl && labPanelEl.querySelector('#std-read'); if (rd) rd.textContent = studioReadout();
+  if (STUDIO.tab === 'Keys') studioDrawCurve(); // animate the playhead over the curve
   A.group.position.set(0, 0, 0); A.heading = 0;
   if (h && h.kind === 'contact' && B) {
     game.battle.val = 0.5; B.group.visible = true;
