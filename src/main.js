@@ -7772,6 +7772,7 @@ function applyHeadTrack(ch, targetPos, w, dt) {
 }
 // Smoothstep interpolation across [t,value] keyframes (t ascending in 0..1).
 function keyAngle(keys, t) {
+  if (!keys || !keys.length) return 0;
   if (t <= keys[0][0]) return keys[0][1];
   for (let i = 0; i < keys.length - 1; i++) {
     const a = keys[i], b = keys[i + 1];
@@ -7779,6 +7780,44 @@ function keyAngle(keys, t) {
   }
   return keys[keys.length - 1][1];
 }
+// ── Animation Studio: editable keyframe tables ──────────────────────────────
+// The procedural poses below are keyframe splines of per-bone angle over normalized
+// time t (0..1), evaluated by keyAngle. POSE_KEYS is the single editable home for
+// those tables so the Animation Studio (see enterStudio) can scrub, curve-edit, and
+// export them. Static poses are single-key tables ([[0, angle]] = a constant hold);
+// time-varying poses (throw) carry real multi-key curves. Each value is a local-bone
+// angle in radians fed to blendBone(bone, rest, angle, w). POSE_DEFAULTS keeps a deep
+// copy so the Studio can reset a pose.
+const POSE_KEYS = {
+  throw: { // QB over-the-top whip (time-varying)
+    upperArm: [[0, 0.25], [0.16, -2.0], [0.42, -0.85], [1, 0]],
+    foreArm: [[0, -0.6], [0.1, -1.75], [0.26, -0.15], [0.6, -0.7], [1, 0]],
+    leftArm: [[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]],
+    leftForeArm: [[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]],
+    lean: [[0, 0], [0.16, 0.22], [0.5, 0.08], [1, 0]],
+    twist: [[0, 0], [0.12, 0.2], [0.42, -0.14], [1, 0]],
+  },
+  carryprotect: { // ball-security hold (static)
+    leftArm: [[0, -1.05]], leftForeArm: [[0, -1.85]], upperArm: [[0, -0.55]], foreArm: [[0, -1.5]],
+  },
+  block: { // engaged hand-fight (static base; a sin pump is layered on at runtime)
+    upperArm: [[0, -1.3]], foreArm: [[0, -0.5]], leftArm: [[0, -1.3]], leftForeArm: [[0, -0.5]],
+  },
+  sulk: { // loser slump (static base; a slow sway is layered on at runtime)
+    upperArm: [[0, 0.2]], foreArm: [[0, 0.5]], leftArm: [[0, 0.2]], leftForeArm: [[0, 0.5]],
+  },
+};
+const POSE_DEFAULTS = JSON.parse(JSON.stringify(POSE_KEYS));
+const POSE_STORE_KEY = 'rfPoseKeys';
+// Persisted Studio pose edits override the defaults at boot (the live game reads them),
+// same pattern as TUNE. Guarded for the headless harness.
+try {
+  if (typeof localStorage !== 'undefined') {
+    const saved = JSON.parse(localStorage.getItem(POSE_STORE_KEY) || 'null');
+    if (saved) for (const p in POSE_KEYS) if (saved[p]) for (const c in POSE_KEYS[p]) if (Array.isArray(saved[p][c])) POSE_KEYS[p][c] = saved[p][c];
+  }
+} catch (e) { /* ignore corrupt/unavailable storage */ }
+const pk = (pose, ch, t) => keyAngle(POSE_KEYS[pose] && POSE_KEYS[pose][ch], t); // table lookup
 // Procedural THROW: a real over-the-top QB motion — a fast forward WHIP (the
 // shoulder snaps over the top as the elbow extends), then a follow-through down
 // and across, easing back to rest. The torso leans into it and the off arm comes
@@ -7791,19 +7830,16 @@ function applyThrowPose(ch, dt, w = 1) {
   ch.throwAnimT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
-  const over = THREE.MathUtils.lerp(1.7, 2.3, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1)); // higher = more loft
-  // Right (throwing) arm: a touch back, then snap over the top, follow through.
-  blendBone(ch.upperArm, ch.upperArmRest, keyAngle([[0, 0.25], [0.16, -over], [0.42, -0.85], [1, 0]], t), w);
-  // elbow: cocked/flexed, EXTENDS through the release, slight re-flex on follow-through
-  blendBone(ch.foreArm, ch.foreArmRest, keyAngle([[0, -0.6], [0.1, -1.75], [0.26, -0.15], [0.6, -0.7], [1, 0]], t), w);
-  // Off (left) arm: rises forward for balance during the whip, then tucks back.
-  blendBone(ch.leftArm, ch.leftArmRest, keyAngle([[0, 0.2], [0.16, 1.15], [0.55, 0.35], [1, 0]], t), w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, keyAngle([[0, 0.3], [0.2, 1.0], [0.6, 0.5], [1, 0]], t), w);
-  // Torso drives into the throw: a brief forward lean that peaks at the whip, plus
-  // a hip/shoulder TWIST — wind back, then rotate through the release (the kinetic
-  // chain) — so the throw uncoils from the core instead of being all arm.
-  const lean = keyAngle([[0, 0], [0.16, 0.22], [0.5, 0.08], [1, 0]], t);
-  const twist = keyAngle([[0, 0], [0.12, 0.2], [0.42, -0.14], [1, 0]], t);
+  // Curves live in POSE_KEYS.throw (editable in the Animation Studio). The arm bones
+  // read those tables; the launch-angle loft scales the over-the-top peak so a lob
+  // lofts higher than a bullet without un-editing the curve.
+  const loft = THREE.MathUtils.lerp(0.85, 1.15, THREE.MathUtils.clamp(ch.throwLaunch / 0.6, 0, 1));
+  blendBone(ch.upperArm, ch.upperArmRest, pk('throw', 'upperArm', t) * loft, w);
+  blendBone(ch.foreArm, ch.foreArmRest, pk('throw', 'foreArm', t), w);
+  blendBone(ch.leftArm, ch.leftArmRest, pk('throw', 'leftArm', t), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('throw', 'leftForeArm', t), w);
+  const lean = pk('throw', 'lean', t);
+  const twist = pk('throw', 'twist', t);
   if ((Math.abs(lean) + Math.abs(twist)) * w > 0.001) blendLean(ch, lean, twist, w);
 }
 // Procedural CATCH: reach BOTH arms toward the ball, the raise scaled by how
@@ -7979,10 +8015,10 @@ function carrierThreat(ch) {
 function applyCarryProtect(ch, w = 1) {
   w *= TUNE.animProtect;
   if (w < 0.001 || !ch.upperArm || !ch.upperArmRest) return;
-  blendBone(ch.leftArm, ch.leftArmRest, -1.05, w);       // off arm wraps across the body...
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, -1.85, w); // ...hand up over the ball
-  blendBone(ch.upperArm, ch.upperArmRest, -0.55, w);     // carry arm pulls in...
-  blendBone(ch.foreArm, ch.foreArmRest, -1.5, w);        // ...ball high & tight to the chest
+  blendBone(ch.leftArm, ch.leftArmRest, pk('carryprotect', 'leftArm', 0), w);       // off arm wraps across the body...
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('carryprotect', 'leftForeArm', 0), w); // ...hand up over the ball
+  blendBone(ch.upperArm, ch.upperArmRest, pk('carryprotect', 'upperArm', 0), w);     // carry arm pulls in...
+  blendBone(ch.foreArm, ch.foreArmRest, pk('carryprotect', 'foreArm', 0), w);        // ...ball high & tight to the chest
   blendLean(ch, 0.16, 0, w * 0.5);                       // slight curl into the contact
   if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.18 * w); ch.headBone.quaternion.multiply(_tq); ch.headBone.updateMatrixWorld(true); } // chin down
 }
@@ -8055,10 +8091,10 @@ function applyBlockPose(ch, w = 1) {
   w *= TUNE.animBlock;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const pump = Math.sin(performance.now() * 0.012);
-  blendBone(ch.upperArm, ch.upperArmRest, -(1.3 + pump * 0.12), w);     // upper arms forward at chest height, reaching to the opponent
-  blendBone(ch.foreArm, ch.foreArmRest, -(0.5 + pump * 0.12), w);       // forearms angled in -> hands punch into his chest plate
-  blendBone(ch.leftArm, ch.leftArmRest, -(1.3 - pump * 0.12), w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, -(0.5 - pump * 0.12), w);
+  blendBone(ch.upperArm, ch.upperArmRest, pk('block', 'upperArm', 0) - pump * 0.12, w);     // upper arms forward at chest height, reaching to the opponent
+  blendBone(ch.foreArm, ch.foreArmRest, pk('block', 'foreArm', 0) - pump * 0.12, w);        // forearms angled in -> hands punch into his chest plate
+  blendBone(ch.leftArm, ch.leftArmRest, pk('block', 'leftArm', 0) + pump * 0.12, w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('block', 'leftForeArm', 0) + pump * 0.12, w);
   blendLean(ch, 0.42 + pump * 0.04, 0, w);                              // drive hard into the block
 }
 // Dejected loser pose for the end-game finale: head hung to the chest, shoulders
@@ -8067,8 +8103,8 @@ function applySulkPose(ch, w = 1) {
   w *= TUNE.animSulk;
   const t = performance.now() * 0.001;
   if (ch.headBone) { _tq.setFromAxisAngle(_xAxisL, 0.7 * w); ch.headBone.quaternion.multiply(_tq); }
-  blendBone(ch.upperArm, ch.upperArmRest, 0.2, w); blendBone(ch.foreArm, ch.foreArmRest, 0.5, w);
-  blendBone(ch.leftArm, ch.leftArmRest, 0.2, w); blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5, w);
+  blendBone(ch.upperArm, ch.upperArmRest, pk('sulk', 'upperArm', 0), w); blendBone(ch.foreArm, ch.foreArmRest, pk('sulk', 'foreArm', 0), w);
+  blendBone(ch.leftArm, ch.leftArmRest, pk('sulk', 'leftArm', 0), w); blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('sulk', 'leftForeArm', 0), w);
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
   blendLean(ch, lean, 0, w);
 }
@@ -9348,39 +9384,157 @@ const LAB_CONTACTS = [
 ];
 const labPanelEl = document.getElementById('lab-panel');
 const labKnob = (key) => DBG_KNOBS.find((k) => k.key === key) || { min: -1, max: 1, step: 0.02, fmt: (v) => v.toFixed(2), label: key };
-function buildLabPanel() {
+// ============================================================================
+// ANIMATION STUDIO (Contact Lab overhaul) — select & drive ANY animation hook:
+// canned clips, procedural poses, or two-player contact poses. The hook registry
+// below is the single manifest the Studio reads to enumerate + drive everything
+// ("grab all the hooks"). Built on the Lab scene + orbit cam + TUNE save/load.
+// Phases: 0 shell+registry · 1 timeline · 2 keyframe curves · 3 bone posing ·
+// 4 authoring · 5 export · 6 polish. See docs/animation-studio-lab-plan.md.
+// ============================================================================
+// Every canned clip a character can carry (filtered to what each model actually has).
+const STUDIO_CLIPS = ['idle', 'walk', 'run', 'sprint', 'backL', 'backR', 'block', 'dance', 'sulk',
+  'juke', 'catch', 'tackle', 'divecatch', 'scoop', 'vault', 'cagevault', 'hitreact', 'celebrate', 'getup', 'jab', 'kick', 'blownback'];
+const _studioBall = new THREE.Vector3(), _studioHeadTgt = new THREE.Vector3();
+function studioBaseClip(ch, dt, name) { const nm = ch.actions[name] ? name : 'idle'; setClip(ch, nm); ch.group.rotation.set(0, ch.heading, 0); stepMixer(ch, dt); }
+// Scrub a canned clip: isolate it at the weight slider, pause it, and evaluate at t.
+function studioDriveClip(ch, name, t, w) {
+  const a = ch.actions[name]; if (!a) { studioBaseClip(ch, 0, 'idle'); return; }
+  for (const k in ch.actions) { const o = ch.actions[k]; if (o) { o.enabled = (o === a); o.paused = true; o.setEffectiveWeight(o === a ? w : 0); } }
+  const dur = a.getClip().duration || 1; a.time = THREE.MathUtils.clamp(t, 0, 1) * dur;
+  ch.group.rotation.set(0, ch.heading, 0);
+  ch.mixer.update(0);
+  if (ch.headFix && ch.headBone) ch.headBone.quaternion.multiply(ch.headFix);
+  ch.current = name; ch.active = a;
+}
+// Procedural-pose hooks: each drives one character at normalized t / weight w. Poses
+// with editable curves carry a `pose` key into POSE_KEYS (Phase 2 curve editor).
+const STUDIO_PROCS = [
+  { id: 'throw', label: 'Throw (QB)', pose: 'throw', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); ch.throwLaunch = 0.3; ch.throwAnimT = THROW_ANIM_DUR * (1 - t); applyThrowPose(ch, 0, w); } },
+  { id: 'catch', label: 'Catch reach', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); ch.group.updateWorldMatrix(true, false);
+      _studioBall.set(Math.sin(ch.heading) * 1.1, 1.1 + t * 1.7, Math.cos(ch.heading) * 1.1).add(ch.group.position); // ball low->high over t
+      applyCatchPose(ch, _studioBall, 0, w); if (ball.mesh) { ball.mesh.position.copy(_studioBall); ball.mesh.visible = true; } } },
+  { id: 'taunt', label: 'Arm · Taunt', base: 'run',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); ch.armPose = 'taunt'; ch.armPoseDur = 0.6; ch.armPoseT = 0.6 * (1 - t); ch.armPoseTarget = null; applyArmAction(ch, 0, w); } },
+  { id: 'stiffarm', label: 'Arm · Stiff-arm', base: 'run',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); ch.armPose = 'stiffarm'; ch.armPoseDur = 0.6; ch.armPoseT = 0.6 * (1 - t); ch.armPoseTarget = null; applyArmAction(ch, 0, w); } },
+  { id: 'swat', label: 'Arm · Swat', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); ch.armPose = 'swat'; ch.armPoseDur = 0.6; ch.armPoseT = 0.6 * (1 - t); ch.armPoseTarget = null; applyArmAction(ch, 0, w); } },
+  { id: 'pick', label: 'Arm · Reach/Pick', base: 'run',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); ch.armPose = 'pick'; ch.armPoseDur = 0.6; ch.armPoseT = 0.6 * (1 - t); ch.armPoseTarget = null; applyArmAction(ch, 0, w); } },
+  { id: 'carryprotect', label: 'Ball protect', pose: 'carryprotect', base: 'run',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); applyCarryProtect(ch, w); } },
+  { id: 'blockpose', label: 'Block pose', pose: 'block', base: 'run',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); applyBlockPose(ch, w); } },
+  { id: 'sulkpose', label: 'Sulk pose', pose: 'sulk', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applySulkPose(ch, w); } },
+  { id: 'loco', label: 'Loco life (run)', base: 'run',
+    drive(ch, t, w, dt) { setClip(ch, 'run'); applyLocoLife(ch, dt, 0); stepMixer(ch, dt); } },
+  { id: 'headtrack', label: 'Head track', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); ch.group.updateWorldMatrix(true, false);
+      _studioHeadTgt.set(Math.sin(t * Math.PI * 2) * 4, 1.4, 2.5).add(ch.group.position); applyHeadTrack(ch, _studioHeadTgt, w, dt); } },
+];
+// Studio runtime state. STUDIO.hook is a descriptor: { kind:'clip'|'proc'|'contact', ... }.
+const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1 };
+const _labMid2 = new THREE.Vector3();
+const studioDur = (h) => h ? (h.kind === 'clip' ? ((LAB.A && LAB.A.actions[h.id] && LAB.A.actions[h.id].getClip().duration) || 1)
+  : h.kind === 'proc' ? (h.dur || 0.7) : 1.2) : 1;
+function studioSelect(h) {
+  STUDIO.hook = h; STUDIO.t = 0;
+  if (LAB.B) LAB.B.group.visible = (h && h.kind === 'contact');
+  // Reset any clip-scrub pausing on the actors so a fresh hook plays clean.
+  for (const ch of [LAB.A, LAB.B]) if (ch) for (const k in ch.actions) { const o = ch.actions[k]; if (o) o.paused = false; }
+  buildStudioPanel();
+}
+// ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
+const STUDIO_TABS = ['Clips', 'Procedural', 'Contact', 'Export'];
+function studioBody() {
+  if (STUDIO.tab === 'Clips') {
+    const have = (id) => LAB.A && LAB.A.actions[id];
+    return '<div class="std-grid">' + STUDIO_CLIPS.map((id) =>
+      `<button class="std-chip${STUDIO.hook && STUDIO.hook.kind === 'clip' && STUDIO.hook.id === id ? ' on' : ''}${have(id) ? '' : ' off'}" data-clip="${id}">${id}</button>`).join('') + '</div>';
+  }
+  if (STUDIO.tab === 'Procedural') {
+    return '<div class="std-grid">' + STUDIO_PROCS.map((h) =>
+      `<button class="std-chip${STUDIO.hook && STUDIO.hook.kind === 'proc' && STUDIO.hook.id === h.id ? ' on' : ''}" data-proc="${h.id}">${h.label}</button>`).join('') + '</div>';
+  }
+  if (STUDIO.tab === 'Contact') {
+    const sel = STUDIO.hook && STUDIO.hook.kind === 'contact' ? STUDIO.hook.idx : -1;
+    const list = '<div class="std-grid">' + LAB_CONTACTS.map((c, i) =>
+      `<button class="std-chip${sel === i ? ' on' : ''}" data-contact="${i}">${c.name}</button>`).join('') + '</div>';
+    let sliders = '';
+    if (sel >= 0) {
+      const c = LAB_CONTACTS[sel];
+      sliders = c.keys.map((key) => { const k = labKnob(key);
+        return `<label class="lab-row"><span>${k.label}</span><input type="range" data-key="${key}" min="${k.min}" max="${k.max}" step="${k.step}" value="${TUNE[key]}"><b id="labv-${key}">${k.fmt(TUNE[key])}</b></label>`;
+      }).join('') || '<div class="lab-none">— no spacing knobs for this pose —</div>';
+    }
+    return list + '<div class="lab-sliders">' + sliders + '</div>';
+  }
+  // Export
+  return '<div class="std-export"><div class="lab-none">Editable poses (POSE_KEYS) + tuned knobs. Save → localStorage (live game reads it); Copy → JSON to bake into code.</div>'
+    + '<textarea id="std-json" readonly rows="7">' + studioExportJSON() + '</textarea></div>';
+}
+function studioExportJSON() {
+  const o = {}; for (const p in POSE_KEYS) o[p] = POSE_KEYS[p];
+  return JSON.stringify({ poseKeys: o }, null, 1);
+}
+function buildStudioPanel() {
   if (!labPanelEl) return;
-  const c = LAB_CONTACTS[LAB.idx];
-  const sliders = c.keys.map((key) => { const k = labKnob(key);
-    return `<label class="lab-row"><span>${k.label}</span><input type="range" data-key="${key}" min="${k.min}" max="${k.max}" step="${k.step}" value="${TUNE[key]}"><b id="labv-${key}">${k.fmt(TUNE[key])}</b></label>`;
-  }).join('') || '<div class="lab-none">— no spacing knobs for this pose —</div>';
+  const h = STUDIO.hook;
+  const name = !h ? '— pick an animation —' : (h.kind === 'clip' ? 'clip · ' + h.id : h.kind === 'proc' ? 'proc · ' + h.label : 'contact · ' + h.name);
+  const tabs = STUDIO_TABS.map((t) => `<button class="std-tab${STUDIO.tab === t ? ' on' : ''}" data-tab="${t}">${t}</button>`).join('');
   labPanelEl.innerHTML = `
-    <div class="lab-head"><span>🥋 CONTACT LAB</span><button id="lab-exit" aria-label="exit">✕</button></div>
-    <div class="lab-sel"><button id="lab-prev">◀</button><span id="lab-name">${LAB.idx + 1}/${LAB_CONTACTS.length} · ${c.name}</span><button id="lab-next">▶</button></div>
-    <div class="lab-sliders">${sliders}</div>
-    <div class="lab-actrow"><button id="lab-save">Save</button><button id="lab-copy">Copy values</button><button id="lab-reset">Reset</button></div>
+    <div class="lab-head"><span>🎬 ANIMATION STUDIO</span><button id="lab-exit" aria-label="exit">✕</button></div>
+    <div class="std-tabs">${tabs}</div>
+    <div class="std-body">${studioBody()}</div>
+    <div class="std-now" id="std-now">${name}</div>
+    <div class="std-transport">
+      <button id="std-play" title="play/pause">${STUDIO.playing ? '⏸' : '▶'}</button>
+      <input id="std-scrub" type="range" min="0" max="1" step="0.001" value="${STUDIO.t}">
+      <b id="std-t">${STUDIO.t.toFixed(2)}</b>
+      <button id="std-loop" class="${STUDIO.loop ? 'on' : ''}" title="loop">↻</button>
+    </div>
+    <label class="lab-row"><span>weight</span><input id="std-w" type="range" min="0" max="1" step="0.01" value="${STUDIO.weight}"><b id="std-wv">${STUDIO.weight.toFixed(2)}</b></label>
+    <div class="lab-actrow"><button id="lab-save">Save</button><button id="lab-copy">Copy</button><button id="lab-reset">Reset</button></div>
     <div class="lab-hint">drag rotate · pinch / scroll zoom</div>`;
   labPanelEl.classList.remove('hidden');
-  labPanelEl.querySelector('#lab-prev').onclick = () => { LAB.idx = (LAB.idx + LAB_CONTACTS.length - 1) % LAB_CONTACTS.length; buildLabPanel(); };
-  labPanelEl.querySelector('#lab-next').onclick = () => { LAB.idx = (LAB.idx + 1) % LAB_CONTACTS.length; buildLabPanel(); };
-  labPanelEl.querySelector('#lab-exit').onclick = exitLab;
-  labPanelEl.querySelectorAll('input[type=range]').forEach((inp) => inp.addEventListener('input', () => {
+  const $ = (s) => labPanelEl.querySelector(s);
+  labPanelEl.querySelectorAll('.std-tab').forEach((b) => b.onclick = () => { STUDIO.tab = b.dataset.tab; buildStudioPanel(); });
+  labPanelEl.querySelectorAll('[data-clip]').forEach((b) => b.onclick = () => studioSelect({ kind: 'clip', id: b.dataset.clip }));
+  labPanelEl.querySelectorAll('[data-proc]').forEach((b) => b.onclick = () => { const h2 = STUDIO_PROCS.find((p) => p.id === b.dataset.proc); studioSelect(Object.assign({ kind: 'proc' }, h2)); });
+  labPanelEl.querySelectorAll('[data-contact]').forEach((b) => b.onclick = () => { const i = +b.dataset.contact; studioSelect(Object.assign({ kind: 'contact', idx: i }, LAB_CONTACTS[i])); });
+  $('#lab-exit').onclick = exitLab;
+  const playBtn = $('#std-play'); if (playBtn) playBtn.onclick = () => { STUDIO.playing = !STUDIO.playing; playBtn.textContent = STUDIO.playing ? '⏸' : '▶'; };
+  const loopBtn = $('#std-loop'); if (loopBtn) loopBtn.onclick = () => { STUDIO.loop = !STUDIO.loop; loopBtn.classList.toggle('on', STUDIO.loop); };
+  const scrub = $('#std-scrub'); if (scrub) scrub.oninput = () => { STUDIO.t = parseFloat(scrub.value); STUDIO.playing = false; if (playBtn) playBtn.textContent = '▶'; const tv = $('#std-t'); if (tv) tv.textContent = STUDIO.t.toFixed(2); };
+  const wsl = $('#std-w'); if (wsl) wsl.oninput = () => { STUDIO.weight = parseFloat(wsl.value); const wv = $('#std-wv'); if (wv) wv.textContent = STUDIO.weight.toFixed(2); };
+  labPanelEl.querySelectorAll('input[data-key]').forEach((inp) => inp.addEventListener('input', () => {
     const key = inp.dataset.key; TUNE[key] = parseFloat(inp.value);
     const v = labPanelEl.querySelector('#labv-' + key); if (v) v.textContent = labKnob(key).fmt(TUNE[key]);
   }));
-  const saveBtn = labPanelEl.querySelector('#lab-save');
-  saveBtn.onclick = () => { try { localStorage.setItem(TUNE_STORE_KEY, dbgTuneJSON()); saveBtn.textContent = '✓ Saved'; } catch (e) { saveBtn.textContent = 'failed'; } setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200); };
-  const copyBtn = labPanelEl.querySelector('#lab-copy');
-  copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(dbgTuneJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy values'; }, 1200); };
-  labPanelEl.querySelector('#lab-reset').onclick = () => { for (const key of c.keys) TUNE[key] = TUNE_DEFAULTS[key]; buildLabPanel(); };
+  const saveBtn = $('#lab-save');
+  saveBtn.onclick = () => { try { localStorage.setItem(TUNE_STORE_KEY, dbgTuneJSON()); localStorage.setItem(POSE_STORE_KEY, JSON.stringify(POSE_KEYS)); saveBtn.textContent = '✓ Saved'; } catch (e) { saveBtn.textContent = 'failed'; } setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200); };
+  const copyBtn = $('#lab-copy');
+  copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200); };
+  $('#lab-reset').onclick = () => { studioResetCurrent(); buildStudioPanel(); };
 }
+function studioResetCurrent() {
+  const h = STUDIO.hook;
+  if (h && h.kind === 'contact') { for (const key of LAB_CONTACTS[h.idx].keys) TUNE[key] = TUNE_DEFAULTS[key]; }
+  else if (h && h.pose && POSE_DEFAULTS[h.pose]) { POSE_KEYS[h.pose] = JSON.parse(JSON.stringify(POSE_DEFAULTS[h.pose])); }
+}
+// Back-compat aliases so existing entry points (debug button, ?lab) open the Studio.
+function buildLabPanel() { buildStudioPanel(); }
 function enterLab() {
   if (!game.all.length || LAB.on) return;
   LAB.on = true; game.lab = true; LAB.wasInGame = gameStarted;
-  LAB.A = game.teamA[6] || game.teamA[0]; // a red carrier
-  LAB.B = game.teamB[6] || game.teamB[0]; // a blue defender
+  LAB.A = game.teamA[6] || game.teamA[0]; // a red carrier (actor A)
+  LAB.B = game.teamB[6] || game.teamB[0]; // a blue defender (actor B, contact only)
   clearRagdolls();
-  for (const ch of game.all) { ch.ragdolling = false; ch.group.visible = (ch === LAB.A || ch === LAB.B); if (ch.nameTag) ch.nameTag.visible = false; ch.vel.set(0, 0, 0); ch.speed = 0; ch.oneShotT = 0; }
+  for (const ch of game.all) { ch.ragdolling = false; ch.group.visible = (ch === LAB.A); if (ch.nameTag) ch.nameTag.visible = false; ch.vel.set(0, 0, 0); ch.speed = 0; ch.oneShotT = 0; }
   LAB.A.heading = 0; LAB.A.group.position.set(0, 0, 0);
   game.battle.val = 0.5;
   document.body.classList.add('lab-mode');
@@ -9388,7 +9542,7 @@ function enterLab() {
   hideFieldChrome();
   dbgCam.target.set(0, 1.2, 0.3); dbgCam.az = 0.7; dbgCam.el = 0.22; dbgCam.dist = 4.8; dbgCam.follow = false;
   camera.fov = 40; camera.updateProjectionMatrix();
-  buildLabPanel();
+  STUDIO.tab = 'Clips'; studioSelect({ kind: 'clip', id: 'run' }); // open on a recognizable clip
   startLoop(); // ensure the render loop is running (entered from the menu)
 }
 function exitLab() {
@@ -9396,21 +9550,37 @@ function exitLab() {
   LAB.on = false; game.lab = false;
   if (labPanelEl) labPanelEl.classList.add('hidden');
   document.body.classList.remove('lab-mode');
-  for (const ch of game.all) { ch.group.visible = true; if (ch.nameTag) ch.nameTag.visible = true; }
+  for (const ch of game.all) { ch.group.visible = true; if (ch.nameTag) ch.nameTag.visible = true;
+    for (const k in ch.actions) { const o = ch.actions[k]; if (o) o.paused = false; } } // un-pause clip-scrub
   if (LAB.wasInGame) { enterReset(true); } // resume the game (re-line-up)
   else { startGame(); }                     // came from the start menu — kick off a real game
 }
 function updateLab(dt) {
-  const c = LAB_CONTACTS[LAB.idx], A = LAB.A, B = LAB.B;
-  if (!A || !B) return;
-  game.battle.val = 0.5;
+  const A = LAB.A, B = LAB.B, h = STUDIO.hook;
+  if (!A) return;
+  // Advance the timeline (Phase 1 transport).
+  if (STUDIO.playing && h) {
+    const dur = Math.max(0.05, studioDur(h));
+    STUDIO.t += (dt * STUDIO.speed) / dur;
+    if (STUDIO.t >= 1) STUDIO.t = STUDIO.loop ? (STUDIO.t % 1) : 1;
+    const sc = labPanelEl && labPanelEl.querySelector('#std-scrub'); if (sc) sc.value = STUDIO.t;
+    const tv = labPanelEl && labPanelEl.querySelector('#std-t'); if (tv) tv.textContent = STUDIO.t.toFixed(2);
+  }
   A.group.position.set(0, 0, 0); A.heading = 0;
-  c.place(A, B);
-  c.apply(A, B, dt);
-  groundClamp(A); groundClamp(B);
-  if (ball.mesh && A.handBone) { A.handBone.updateWorldMatrix(true, false); A.handBone.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.9, _hips.y), _hips.z); ball.mesh.rotation.set(0, A.heading, 0.35); ball.mesh.visible = true; }
-  _labMid.set((A.group.position.x + B.group.position.x) / 2, 1.1, (A.group.position.z + B.group.position.z) / 2);
-  dbgCam.target.lerp(_labMid, Math.min(1, dt * 4));
+  if (h && h.kind === 'contact' && B) {
+    game.battle.val = 0.5; B.group.visible = true;
+    h.place(A, B); h.apply(A, B, dt);
+    groundClamp(A); groundClamp(B);
+    if (ball.mesh && A.handBone) { A.handBone.updateWorldMatrix(true, false); A.handBone.getWorldPosition(_hips); ball.mesh.position.set(_hips.x, Math.max(0.9, _hips.y), _hips.z); ball.mesh.rotation.set(0, A.heading, 0.35); ball.mesh.visible = true; }
+    _labMid2.set((A.group.position.x + B.group.position.x) / 2, 1.1, (A.group.position.z + B.group.position.z) / 2);
+  } else {
+    if (B) B.group.visible = false;
+    if (h && h.kind === 'clip') studioDriveClip(A, h.id, STUDIO.t, STUDIO.weight);
+    else if (h && h.kind === 'proc') h.drive(A, STUDIO.t, STUDIO.weight, dt);
+    groundClamp(A);
+    _labMid2.set(0, 1.2, 0.2);
+  }
+  dbgCam.target.lerp(_labMid2, Math.min(1, dt * 4));
 }
 // Debug: rescale every player's visual model and re-seat it on the turf. Called when
 // the Player size knob changes (the collider radii are separate TUNE knobs).

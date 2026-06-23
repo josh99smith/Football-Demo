@@ -1498,6 +1498,32 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); }
 #lab-panel .lab-actrow button:active { transform: translateY(1px); }
 #lab-panel .lab-hint { font-size: 10px; letter-spacing: 0.4px; color: rgba(255,255,255,0.5); text-align: center; }
+/* Animation Studio (Contact Lab overhaul) */
+#lab-panel { width: min(94vw, 340px); max-height: calc(100vh - 24px); overflow-y: auto; }
+#lab-panel .std-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+#lab-panel .std-tab { flex: 1; min-width: 56px; min-height: 30px; border-radius: 8px; cursor: pointer;
+  font-family: inherit; font-weight: 800; font-size: 11px; color: #cdd5df;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16); }
+#lab-panel .std-tab.on { color: #0b0e13; background: #ffd23a; border-color: #ffd23a; }
+#lab-panel .std-body { margin-bottom: 8px; }
+#lab-panel .std-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; max-height: 230px; overflow-y: auto; padding: 1px; }
+#lab-panel .std-chip { min-height: 32px; border-radius: 8px; cursor: pointer; padding: 4px 6px;
+  font-family: inherit; font-weight: 700; font-size: 11px; color: #eef2f7;
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lab-panel .std-chip.on { color: #0b0e13; background: #7fe0a0; border-color: #7fe0a0; }
+#lab-panel .std-chip.off { opacity: 0.38; }
+#lab-panel .std-chip:active { transform: translateY(1px); }
+#lab-panel .std-now { font-size: 11px; font-weight: 800; color: #ffd23a; text-align: center; margin: 2px 0 8px;
+  letter-spacing: 0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lab-panel .std-transport { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+#lab-panel .std-transport button { width: 38px; height: 32px; border-radius: 8px; cursor: pointer;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 14px; }
+#lab-panel .std-transport button.on { color: #0b0e13; background: #ffd23a; border-color: #ffd23a; }
+#lab-panel .std-transport input[type=range] { flex: 1; accent-color: #ffd23a; height: 28px; }
+#lab-panel .std-transport b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: #ffd23a; font-size: 11px; }
+#lab-panel .std-export textarea { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4);
+  color: #bfe7c8; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; font-family: monospace; font-size: 10px; resize: vertical; }
 
 /* ===========================================================================
    Reusable UI kit (Phase 1): modal · tab bar · buttons
