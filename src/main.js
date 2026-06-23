@@ -9593,13 +9593,37 @@ function studioBody() {
     return list + '<div class="lab-sliders">' + sliders + '</div>';
   }
   // Export
-  return '<div class="std-export"><div class="lab-none">Editable poses (POSE_KEYS) + tuned knobs. Save → localStorage (live game reads it); Copy → JSON to bake into code.</div>'
-    + '<textarea id="std-json" readonly rows="7">' + studioExportJSON() + '</textarea></div>';
+  return '<div class="std-export"><div class="lab-none">Save → localStorage (the live game reads it on load). Copy JSON / Code to keep or bake into src/main.js. Paste JSON below + Import to round-trip.</div>'
+    + '<textarea id="std-json" rows="7">' + studioExportJSON() + '</textarea>'
+    + '<div class="lab-actrow"><button id="exp-copy">Copy JSON</button><button id="exp-code">Copy code</button><button id="exp-import">Import</button></div>'
+    + '<div class="lab-actrow"><button id="exp-resetall">Reset ALL poses</button><button id="exp-setA">Set A</button><button id="exp-setB">Set B</button><button id="exp-toA">→A</button><button id="exp-toB">→B</button></div></div>';
 }
 function studioExportJSON() {
   const o = {}; for (const p in POSE_KEYS) o[p] = POSE_KEYS[p];
   return JSON.stringify({ poseKeys: o }, null, 1);
 }
+// Bake-to-code: emit POSE_KEYS in the exact source-literal shape for pasting into main.js.
+function studioPoseCode() {
+  let s = 'const POSE_KEYS = {\n';
+  for (const p in POSE_KEYS) {
+    const chs = POSE_KEYS[p];
+    s += '  ' + p + ': { ' + Object.keys(chs).map((c) => c + ': [' + chs[c].map((k) => '[' + (+(+k[0]).toFixed(3)) + ', ' + (+(+k[1]).toFixed(3)) + ']').join(', ') + ']').join(', ') + ' },\n';
+  }
+  return s + '};\n';
+}
+function studioImportPoses(json) {
+  try {
+    const o = typeof json === 'string' ? JSON.parse(json) : json; const src = o.poseKeys || o;
+    for (const p in src) { if (src[p] && typeof src[p] === 'object') { POSE_KEYS[p] = POSE_KEYS[p] || {}; for (const c in src[p]) if (Array.isArray(src[p][c])) POSE_KEYS[p][c] = src[p][c].map((k) => [+k[0], +k[1]]); } }
+    studioSyncCustomProcs(); return true;
+  } catch (e) { return false; }
+}
+function studioResetAllPoses() {
+  for (const p of Object.keys(POSE_KEYS)) { if (STUDIO_BUILTIN_POSES.includes(p)) POSE_KEYS[p] = JSON.parse(JSON.stringify(POSE_DEFAULTS[p])); else delete POSE_KEYS[p]; }
+  for (let i = STUDIO_PROCS.length - 1; i >= 0; i--) if (STUDIO_PROCS[i].id && STUDIO_PROCS[i].id.indexOf('custom_') === 0) STUDIO_PROCS.splice(i, 1);
+  STUDIO_CUSTOM.length = 0; STUDIO.hook = null; STUDIO.kfSel = null; STUDIO.kfChannel = null;
+}
+const _studAB = { a: null, b: null };
 // Live timeline readout: t / frame for clips, t + edited-channel values for procs.
 function studioReadout() {
   const h = STUDIO.hook; if (!h) return '—';
@@ -9783,6 +9807,17 @@ function buildStudioPanel() {
     const ez = $('#gen-ease'); if (ez) ez.onclick = studioEasePreset;
     const bl = $('#gen-blend'); if (bl) bl.onclick = () => studioBlendInto(($('#gen-blend-sel') || {}).value);
     const asn = $('#gen-assign'); if (asn) asn.onclick = () => { studioAssignOnto(($('#gen-assign-sel') || {}).value); asn.textContent = '✓ Copied'; setTimeout(() => { asn.textContent = 'Copy'; }, 1000); };
+  }
+  if (STUDIO.tab === 'Export') {
+    const ta = $('#std-json');
+    const cj = $('#exp-copy'); if (cj) cj.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); cj.textContent = '✓'; } catch (e) {} setTimeout(() => { cj.textContent = 'Copy JSON'; }, 1000); };
+    const cc = $('#exp-code'); if (cc) cc.onclick = async () => { try { await navigator.clipboard.writeText(studioPoseCode()); cc.textContent = '✓'; } catch (e) {} setTimeout(() => { cc.textContent = 'Copy code'; }, 1000); };
+    const im = $('#exp-import'); if (im) im.onclick = () => { const ok = ta && studioImportPoses(ta.value); im.textContent = ok ? '✓ Imported' : '✗ bad JSON'; setTimeout(() => { im.textContent = 'Import'; }, 1200); if (ok) buildStudioPanel(); };
+    const ra = $('#exp-resetall'); if (ra) ra.onclick = () => { studioResetAllPoses(); buildStudioPanel(); };
+    const sA = $('#exp-setA'); if (sA) sA.onclick = () => { _studAB.a = studioExportJSON(); sA.textContent = '✓ A'; setTimeout(() => { sA.textContent = 'Set A'; }, 900); };
+    const sB = $('#exp-setB'); if (sB) sB.onclick = () => { _studAB.b = studioExportJSON(); sB.textContent = '✓ B'; setTimeout(() => { sB.textContent = 'Set B'; }, 900); };
+    const tA = $('#exp-toA'); if (tA) tA.onclick = () => { if (_studAB.a) { studioImportPoses(_studAB.a); buildStudioPanel(); } };
+    const tB = $('#exp-toB'); if (tB) tB.onclick = () => { if (_studAB.b) { studioImportPoses(_studAB.b); buildStudioPanel(); } };
   }
 }
 function studioResetCurrent() {
