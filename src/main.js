@@ -9451,7 +9451,69 @@ function studioSelect(h) {
   buildStudioPanel();
 }
 // ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
-const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Bones', 'Contact', 'Export'];
+const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Bones', 'Create', 'Contact', 'Export'];
+const STUDIO_BUILTIN_POSES = ['throw', 'carryprotect', 'block', 'sulk']; // shipped poses; anything else in POSE_KEYS is user-authored
+const STUDIO_CUSTOM = [];
+// Generic procedural-pose applier — drives ANY POSE_KEYS table (the built-in arm/lean/
+// twist/head channels) so authored poses are first-class runtime hooks.
+function applyStudioPose(ch, pose, t, w) {
+  const P = POSE_KEYS[pose]; if (!P || !ch.upperArm || !ch.upperArmRest) return;
+  if (P.upperArm) blendBone(ch.upperArm, ch.upperArmRest, keyAngle(P.upperArm, t), w);
+  if (P.foreArm) blendBone(ch.foreArm, ch.foreArmRest, keyAngle(P.foreArm, t), w);
+  if (P.leftArm) blendBone(ch.leftArm, ch.leftArmRest, keyAngle(P.leftArm, t), w);
+  if (P.leftForeArm) blendBone(ch.leftForeArm, ch.leftForeArmRest, keyAngle(P.leftForeArm, t), w);
+  const lean = P.lean ? keyAngle(P.lean, t) : 0, twist = P.twist ? keyAngle(P.twist, t) : 0;
+  if ((Math.abs(lean) + Math.abs(twist)) * w > 0.001) blendLean(ch, lean, twist, w);
+  if (P.head && ch.headBone) { _tq.setFromAxisAngle(_xAxisL, keyAngle(P.head, t) * w); ch.headBone.quaternion.multiply(_tq); ch.headBone.updateMatrixWorld(true); }
+}
+function studioCustomHook(name) {
+  return { kind: 'proc', id: 'custom_' + name, label: '✎ ' + name, pose: name, base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyStudioPose(ch, name, t, w); } };
+}
+// Re-register custom procs from any POSE_KEYS entries that aren't built-ins (e.g. loaded
+// from storage), so authored poses survive a reload and reappear in the Procedural tab.
+function studioSyncCustomProcs() {
+  for (const p in POSE_KEYS) {
+    if (STUDIO_BUILTIN_POSES.includes(p)) continue;
+    if (!STUDIO_PROCS.some((h) => h.pose === p)) { STUDIO_PROCS.push(studioCustomHook(p)); if (!STUDIO_CUSTOM.includes(p)) STUDIO_CUSTOM.push(p); }
+  }
+}
+function studioNewPose(name) {
+  name = (name || '').trim().replace(/[^a-zA-Z0-9_]/g, ''); if (!name) return;
+  while (POSE_KEYS[name]) name += '_2';
+  POSE_KEYS[name] = { upperArm: [[0, 0]], foreArm: [[0, 0]], leftArm: [[0, 0]], leftForeArm: [[0, 0]], lean: [[0, 0]], twist: [[0, 0]], head: [[0, 0]] };
+  STUDIO_CUSTOM.push(name);
+  const h = studioCustomHook(name); STUDIO_PROCS.push(h); studioSelect(h); STUDIO.tab = 'Keys'; buildStudioPanel();
+}
+// Generators (quick variant authoring).
+function studioMirrorPose() {
+  const h = STUDIO.hook; if (!(h && h.pose)) return; const P = POSE_KEYS[h.pose];
+  const cl = (a) => a ? a.map((p) => [p[0], p[1]]) : null;
+  const ua = cl(P.upperArm), fa = cl(P.foreArm), la = cl(P.leftArm), lfa = cl(P.leftForeArm);
+  if (la) P.upperArm = la; if (lfa) P.foreArm = lfa; if (ua) P.leftArm = ua; if (fa) P.leftForeArm = fa;
+  if (P.twist) P.twist = P.twist.map((p) => [p[0], -p[1]]);
+  buildStudioPanel();
+}
+function studioRetime(f) {
+  const h = STUDIO.hook; if (!(h && h.pose)) return; const P = POSE_KEYS[h.pose];
+  for (const c in P) P[c] = P[c].map((p) => [THREE.MathUtils.clamp(p[0] * f, 0, 1), p[1]]);
+  buildStudioPanel();
+}
+function studioEasePreset() {
+  const h = STUDIO.hook; if (!(h && h.pose && STUDIO.kfChannel)) return;
+  const cur = POSE_KEYS[h.pose][STUDIO.kfChannel]; let peak = 0; for (const p of cur) if (Math.abs(p[1]) > Math.abs(peak)) peak = p[1];
+  POSE_KEYS[h.pose][STUDIO.kfChannel] = [[0, 0], [0.5, peak || 1], [1, 0]]; STUDIO.kfSel = null; buildStudioPanel();
+}
+function studioBlendInto(other) {
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[other])) return; const P = POSE_KEYS[h.pose], Q = POSE_KEYS[other];
+  const ts = [0, 0.25, 0.5, 0.75, 1];
+  for (const c in P) P[c] = ts.map((t) => [t, (keyAngle(P[c], t) + keyAngle(Q[c] || [[0, 0]], t)) / 2]);
+  buildStudioPanel();
+}
+function studioAssignOnto(target) {
+  const h = STUDIO.hook; if (!(h && h.pose && POSE_KEYS[target])) return;
+  for (const c in POSE_KEYS[target]) if (POSE_KEYS[h.pose][c]) POSE_KEYS[target][c] = POSE_KEYS[h.pose][c].map((p) => [p[0], p[1]]);
+}
 // Phase 3: bones that can be posed, the channel each maps to when baked to a keyframe
 // (blendBone drives a local-X angle, so the bone's X offset == the channel value), and
 // friendly labels.
@@ -9502,6 +9564,20 @@ function studioBody() {
       body = sliders + `<div class="lab-actrow"><button id="bone-key"${canKey ? '' : ' disabled'}>Set key@t</button><button id="bone-mirror">Mirror</button><button id="bone-reset">Reset bone</button></div>`;
     } else body = '<div class="lab-none">tap a joint in the view, or a bone below, to pose it</div>';
     return `<div class="std-chans">${chips}</div>${body}<div class="lab-hint">tap a joint to select · sliders pose it · Set key@t bakes the X angle into the curve</div>`;
+  }
+  if (STUDIO.tab === 'Create') {
+    const h = STUDIO.hook, poses = Object.keys(POSE_KEYS);
+    const opts = (sel) => poses.map((p) => `<option value="${p}"${p === sel ? ' selected' : ''}>${p}</option>`).join('');
+    let gen = '<div class="lab-none">Select a procedural pose to use the generators.</div>';
+    if (h && h.pose) {
+      gen = `<div class="std-now">editing · ${h.pose}</div>
+        <div class="lab-actrow"><button id="gen-mirror">Mirror L/R</button><button id="gen-rtm">Retime −</button><button id="gen-rtp">Retime +</button></div>
+        <div class="lab-actrow"><button id="gen-ease">Ease current channel</button></div>
+        <div class="std-kf"><span>Blend with</span><select id="gen-blend-sel">${opts()}</select><button id="gen-blend">Blend</button></div>
+        <div class="std-kf"><span>Apply onto</span><select id="gen-assign-sel">${opts('throw')}</select><button id="gen-assign">Copy</button></div>`;
+    }
+    return `<div class="std-kf"><input id="np-name" placeholder="new pose name" maxlength="18"><button id="np-make">+ Create</button></div>
+      <div class="lab-hint">a new pose is a first-class editable hook (Keys + Bones); Save persists it</div>${gen}`;
   }
   if (STUDIO.tab === 'Contact') {
     const sel = STUDIO.hook && STUDIO.hook.kind === 'contact' ? STUDIO.hook.idx : -1;
@@ -9699,6 +9775,15 @@ function buildStudioPanel() {
     const mb = $('#bone-mirror'); if (mb) mb.onclick = studioMirrorBone;
     const rb = $('#bone-reset'); if (rb) rb.onclick = () => { delete STUDIO.boneEdits[STUDIO.bone]; buildStudioPanel(); };
   }
+  if (STUDIO.tab === 'Create') {
+    const mk = $('#np-make'); if (mk) mk.onclick = () => studioNewPose(($('#np-name') || {}).value);
+    const m = $('#gen-mirror'); if (m) m.onclick = studioMirrorPose;
+    const rtm = $('#gen-rtm'); if (rtm) rtm.onclick = () => studioRetime(0.8);
+    const rtp = $('#gen-rtp'); if (rtp) rtp.onclick = () => studioRetime(1.25);
+    const ez = $('#gen-ease'); if (ez) ez.onclick = studioEasePreset;
+    const bl = $('#gen-blend'); if (bl) bl.onclick = () => studioBlendInto(($('#gen-blend-sel') || {}).value);
+    const asn = $('#gen-assign'); if (asn) asn.onclick = () => { studioAssignOnto(($('#gen-assign-sel') || {}).value); asn.textContent = '✓ Copied'; setTimeout(() => { asn.textContent = 'Copy'; }, 1000); };
+  }
 }
 function studioResetCurrent() {
   const h = STUDIO.hook;
@@ -9722,6 +9807,7 @@ function enterLab() {
   dbgCam.target.set(0, 1.2, 0.3); dbgCam.az = 0.7; dbgCam.el = 0.22; dbgCam.dist = 4.8; dbgCam.follow = false;
   camera.fov = 40; camera.updateProjectionMatrix();
   STUDIO.bone = null; STUDIO.boneEdits = {};
+  studioSyncCustomProcs(); // re-register any authored poses loaded from storage
   if (STUDIO.skel) { scene.remove(STUDIO.skel); STUDIO.skel = null; }
   try { STUDIO.skel = new THREE.SkeletonHelper(LAB.A.model); STUDIO.skel.material.linewidth = 2; STUDIO.skel.visible = false; scene.add(STUDIO.skel); } catch (e) { STUDIO.skel = null; }
   STUDIO.tab = 'Clips'; studioSelect({ kind: 'clip', id: 'run' }); // open on a recognizable clip
