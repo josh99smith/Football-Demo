@@ -9438,7 +9438,8 @@ const STUDIO_PROCS = [
       _studioHeadTgt.set(Math.sin(t * Math.PI * 2) * 4, 1.4, 2.5).add(ch.group.position); applyHeadTrack(ch, _studioHeadTgt, w, dt); } },
 ];
 // Studio runtime state. STUDIO.hook is a descriptor: { kind:'clip'|'proc'|'contact', ... }.
-const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1 };
+const STUDIO = { tab: 'Clips', hook: null, t: 0, playing: true, loop: true, speed: 1, weight: 1, kfChannel: null, kfSel: null, bone: null, boneEdits: {}, skel: null };
+if (typeof window !== 'undefined') window.STUDIO = STUDIO; // Animation Studio debug handle
 const _labMid2 = new THREE.Vector3();
 const studioDur = (h) => h ? (h.kind === 'clip' ? ((LAB.A && LAB.A.actions[h.id] && LAB.A.actions[h.id].getClip().duration) || 1)
   : h.kind === 'proc' ? (h.dur || 0.7) : 1.2) : 1;
@@ -9450,7 +9451,16 @@ function studioSelect(h) {
   buildStudioPanel();
 }
 // ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
-const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Contact', 'Export'];
+const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Bones', 'Contact', 'Export'];
+// Phase 3: bones that can be posed, the channel each maps to when baked to a keyframe
+// (blendBone drives a local-X angle, so the bone's X offset == the channel value), and
+// friendly labels.
+const STUDIO_BONES = ['Head', 'Spine01', 'Spine', 'RightArm', 'RightForeArm', 'RightHand', 'LeftArm', 'LeftForeArm', 'LeftHand',
+  'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot'];
+const BONE_CHAN = { RightArm: 'upperArm', RightForeArm: 'foreArm', LeftArm: 'leftArm', LeftForeArm: 'leftForeArm' };
+const boneLabel = (n) => ({ Head: 'head', Spine01: 'spine', Spine: 'spine', RightArm: 'R upper-arm', RightForeArm: 'R forearm', RightHand: 'R hand',
+  LeftArm: 'L upper-arm', LeftForeArm: 'L forearm', LeftHand: 'L hand', RightUpLeg: 'R thigh', RightLeg: 'R shin', RightFoot: 'R foot',
+  LeftUpLeg: 'L thigh', LeftLeg: 'L shin', LeftFoot: 'L foot' }[n] || n);
 function studioBody() {
   if (STUDIO.tab === 'Clips') {
     const have = (id) => LAB.A && LAB.A.actions[id];
@@ -9478,6 +9488,20 @@ function studioBody() {
         <button id="kf-add">+key@t</button><button id="kf-del">–key</button>
       </div>
       <div class="lab-hint">tap a point to select · drag to move · tap empty to add</div>`;
+  }
+  if (STUDIO.tab === 'Bones') {
+    if (!LAB.A) return '<div class="lab-none">no actor loaded</div>';
+    const list = STUDIO_BONES.filter((n) => studioBoneByName(LAB.A, n));
+    const chips = list.map((n) => `<button class="std-chip sm${STUDIO.bone === n ? ' on' : ''}" data-bone="${n}">${boneLabel(n)}</button>`).join('');
+    let body;
+    if (STUDIO.bone) {
+      const e = STUDIO.boneEdits[STUDIO.bone] || { x: 0, y: 0, z: 0 };
+      const sliders = ['x', 'y', 'z'].map((ax) =>
+        `<label class="lab-row"><span>rot ${ax.toUpperCase()}</span><input type="range" data-ax="${ax}" min="-3.14" max="3.14" step="0.02" value="${e[ax] || 0}"><b id="bv-${ax}">${(e[ax] || 0).toFixed(2)}</b></label>`).join('');
+      const canKey = STUDIO.hook && STUDIO.hook.pose && BONE_CHAN[STUDIO.bone] && POSE_KEYS[STUDIO.hook.pose] && POSE_KEYS[STUDIO.hook.pose][BONE_CHAN[STUDIO.bone]];
+      body = sliders + `<div class="lab-actrow"><button id="bone-key"${canKey ? '' : ' disabled'}>Set key@t</button><button id="bone-mirror">Mirror</button><button id="bone-reset">Reset bone</button></div>`;
+    } else body = '<div class="lab-none">tap a joint in the view, or a bone below, to pose it</div>';
+    return `<div class="std-chans">${chips}</div>${body}<div class="lab-hint">tap a joint to select · sliders pose it · Set key@t bakes the X angle into the curve</div>`;
   }
   if (STUDIO.tab === 'Contact') {
     const sel = STUDIO.hook && STUDIO.hook.kind === 'contact' ? STUDIO.hook.idx : -1;
@@ -9569,6 +9593,58 @@ function studioWireCurve() {
   if (delB) delB.onclick = () => { const k = tbl[STUDIO.kfChannel]; if (STUDIO.kfSel && k.length > 1) { const i = k.indexOf(STUDIO.kfSel); if (i >= 0) k.splice(i, 1); STUDIO.kfSel = null; } buildStudioPanel(); };
   studioDrawCurve();
 }
+// ── Phase 3: direct bone manipulation (visual posing) ───────────────────────
+const _bEuler = new THREE.Euler(), _bQ = new THREE.Quaternion(), _bw = new THREE.Vector3();
+function studioBoneByName(ch, name) { return ch && ch.bones && ch.bones.find((b) => b.name === name); }
+function studioRestQ(ch, bone) { if (ch.restPose) for (const e of ch.restPose) if (e[0] === bone) return e[2]; return null; }
+// Apply manual bone-pose overrides on top of whatever the hook drove (authoring).
+function studioApplyBoneEdits(ch) {
+  for (const nm in STUDIO.boneEdits) {
+    const e = STUDIO.boneEdits[nm], bone = studioBoneByName(ch, nm); if (!bone) continue;
+    const rq = studioRestQ(ch, bone); if (!rq) continue;
+    _bEuler.set(e.x || 0, e.y || 0, e.z || 0, 'XYZ'); _bQ.setFromEuler(_bEuler);
+    bone.quaternion.copy(rq).multiply(_bQ); bone.updateMatrixWorld(true);
+  }
+}
+function studioSelectBone(name) { STUDIO.bone = name; if (!STUDIO.boneEdits[name]) STUDIO.boneEdits[name] = { x: 0, y: 0, z: 0 }; buildStudioPanel(); }
+// Screen-space nearest-joint picking (works alongside orbit: a hit consumes the event).
+function studioPickBone(clientX, clientY) {
+  if (!LAB.A || !LAB.A.bones) return null;
+  const rect = canvas.getBoundingClientRect(); let best = null, bd = 28 * 28;
+  for (const b of LAB.A.bones) {
+    if (!STUDIO_BONES.includes(b.name)) continue;
+    b.getWorldPosition(_bw); _bw.project(camera); if (_bw.z > 1) continue;
+    const sx = (_bw.x * 0.5 + 0.5) * rect.width + rect.left, sy = (-_bw.y * 0.5 + 0.5) * rect.height + rect.top;
+    const d = (sx - clientX) ** 2 + (sy - clientY) ** 2; if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+// Bake the posed bone's X angle into its mapped POSE_KEYS channel at the playhead.
+function studioBakeBoneToKey() {
+  const h = STUDIO.hook, chan = BONE_CHAN[STUDIO.bone], e = STUDIO.boneEdits[STUDIO.bone];
+  if (!(h && h.pose && POSE_KEYS[h.pose] && chan && POSE_KEYS[h.pose][chan] && e)) return;
+  const k = POSE_KEYS[h.pose][chan], t = STUDIO.t;
+  let kf = k.find((p) => Math.abs(p[0] - t) < 0.02);
+  if (kf) kf[1] = e.x; else { kf = [t, e.x]; k.push(kf); k.sort((a, b) => a[0] - b[0]); }
+  STUDIO.kfChannel = chan; STUDIO.kfSel = kf; delete STUDIO.boneEdits[STUDIO.bone]; // pose channel now drives it
+  STUDIO.tab = 'Keys'; buildStudioPanel();
+}
+function studioMirrorBone() {
+  const n = STUDIO.bone, e = STUDIO.boneEdits[n]; if (!e) return;
+  const m = n.startsWith('Right') ? 'Left' + n.slice(5) : n.startsWith('Left') ? 'Right' + n.slice(4) : null;
+  if (!m || !studioBoneByName(LAB.A, m)) return;
+  STUDIO.boneEdits[m] = { x: e.x, y: -e.y, z: -e.z }; STUDIO.bone = m; buildStudioPanel();
+}
+// Capture-phase pickers: when posing on the Bones tab, a joint hit selects it and
+// stops the event so the orbit camera doesn't also grab the drag.
+canvas.addEventListener('mousedown', (ev) => {
+  if (!game.lab || STUDIO.tab !== 'Bones') return; const b = studioPickBone(ev.clientX, ev.clientY);
+  if (b) { studioSelectBone(b.name); ev.stopPropagation(); ev.preventDefault(); }
+}, true);
+canvas.addEventListener('touchstart', (ev) => {
+  if (!game.lab || STUDIO.tab !== 'Bones' || !ev.touches.length) return; const t = ev.touches[0]; const b = studioPickBone(t.clientX, t.clientY);
+  if (b) { studioSelectBone(b.name); ev.stopPropagation(); ev.preventDefault(); }
+}, true);
 function buildStudioPanel() {
   if (!labPanelEl) return;
   const h = STUDIO.hook;
@@ -9613,6 +9689,16 @@ function buildStudioPanel() {
   copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(studioExportJSON()); copyBtn.textContent = '✓ Copied'; } catch (e) { copyBtn.textContent = 'failed'; } setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200); };
   $('#lab-reset').onclick = () => { studioResetCurrent(); buildStudioPanel(); };
   if (STUDIO.tab === 'Keys') studioWireCurve();
+  if (STUDIO.tab === 'Bones') {
+    labPanelEl.querySelectorAll('[data-bone]').forEach((b) => b.onclick = () => studioSelectBone(b.dataset.bone));
+    labPanelEl.querySelectorAll('[data-ax]').forEach((inp) => inp.oninput = () => {
+      const e = STUDIO.boneEdits[STUDIO.bone] || (STUDIO.boneEdits[STUDIO.bone] = { x: 0, y: 0, z: 0 });
+      e[inp.dataset.ax] = parseFloat(inp.value); const v = labPanelEl.querySelector('#bv-' + inp.dataset.ax); if (v) v.textContent = e[inp.dataset.ax].toFixed(2);
+    });
+    const kb = $('#bone-key'); if (kb) kb.onclick = studioBakeBoneToKey;
+    const mb = $('#bone-mirror'); if (mb) mb.onclick = studioMirrorBone;
+    const rb = $('#bone-reset'); if (rb) rb.onclick = () => { delete STUDIO.boneEdits[STUDIO.bone]; buildStudioPanel(); };
+  }
 }
 function studioResetCurrent() {
   const h = STUDIO.hook;
@@ -9635,6 +9721,9 @@ function enterLab() {
   hideFieldChrome();
   dbgCam.target.set(0, 1.2, 0.3); dbgCam.az = 0.7; dbgCam.el = 0.22; dbgCam.dist = 4.8; dbgCam.follow = false;
   camera.fov = 40; camera.updateProjectionMatrix();
+  STUDIO.bone = null; STUDIO.boneEdits = {};
+  if (STUDIO.skel) { scene.remove(STUDIO.skel); STUDIO.skel = null; }
+  try { STUDIO.skel = new THREE.SkeletonHelper(LAB.A.model); STUDIO.skel.material.linewidth = 2; STUDIO.skel.visible = false; scene.add(STUDIO.skel); } catch (e) { STUDIO.skel = null; }
   STUDIO.tab = 'Clips'; studioSelect({ kind: 'clip', id: 'run' }); // open on a recognizable clip
   startLoop(); // ensure the render loop is running (entered from the menu)
 }
@@ -9642,6 +9731,7 @@ function exitLab() {
   if (!LAB.on) return;
   LAB.on = false; game.lab = false;
   if (labPanelEl) labPanelEl.classList.add('hidden');
+  if (STUDIO.skel) { scene.remove(STUDIO.skel); STUDIO.skel = null; }
   document.body.classList.remove('lab-mode');
   for (const ch of game.all) { ch.group.visible = true; if (ch.nameTag) ch.nameTag.visible = true;
     for (const k in ch.actions) { const o = ch.actions[k]; if (o) o.paused = false; } } // un-pause clip-scrub
@@ -9672,9 +9762,11 @@ function updateLab(dt) {
     if (B) B.group.visible = false;
     if (h && h.kind === 'clip') studioDriveClip(A, h.id, STUDIO.t, STUDIO.weight);
     else if (h && h.kind === 'proc') h.drive(A, STUDIO.t, STUDIO.weight, dt);
+    studioApplyBoneEdits(A); // Phase 3: manual bone poses layer on top of the hook
     groundClamp(A);
     _labMid2.set(0, 1.2, 0.2);
   }
+  if (STUDIO.skel) STUDIO.skel.visible = (STUDIO.tab === 'Bones'); // skeleton overlay only while posing
   dbgCam.target.lerp(_labMid2, Math.min(1, dt * 4));
 }
 // Debug: rescale every player's visual model and re-seat it on the turf. Called when
