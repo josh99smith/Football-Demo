@@ -1697,7 +1697,7 @@ function makeCharacter(team) {  // Offense = original character; defense = its o
     backped: false,
     // Procedural overlay blend weights (0..1): each eases in/out so a pose fades
     // smoothly over the locomotion clip instead of snapping on/off in one frame.
-    throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, catchRaise: 0.8, protectW: 0,
+    throwW: 0, catchW: 0, armW: 0, battleW: 0, grabW: 0, sulkW: 0, idleW: 0, catchRaise: 0.8, protectW: 0,
     // Locomotion "life": eased bank (lean into turns) + forward pitch (lean with
     // speed/turbo); prevHeading feeds the turn rate; breathPh desyncs idle breathing;
     // headYaw is the eased look-target offset (head-on-a-swivel in coverage).
@@ -1939,7 +1939,7 @@ const TUNE_DEFAULTS = {
   runLean: 1.0,                                    // × forward body lean while running (lower = subtler)
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
-  animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0,
+  animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0, animIdle: 1.0,
   // Animation overhaul (docs/animation-system-overhaul-plan.md)
   animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
   animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
@@ -7806,6 +7806,13 @@ const POSE_KEYS = {
   sulk: { // loser slump (static base; a slow sway is layered on at runtime)
     upperArm: [[0, 0.2]], foreArm: [[0, 0.5]], leftArm: [[0, 0.2]], leftForeArm: [[0, 0.5]],
   },
+  idle: { // relaxed standing stance — arms hang slightly off the torso with a touch
+    // of elbow bend (a settled athlete waiting on the snap, not arms pinned to the
+    // sides). A gentle breathing cycle over t lifts/settles the shoulders; the idle
+    // clip + applyLocoLife breathing play underneath, this just shapes the arms.
+    upperArm: [[0, 0.04], [0.5, 0.07], [1, 0.04]], foreArm: [[0, -0.18]],
+    leftArm: [[0, 0.04], [0.5, 0.07], [1, 0.04]], leftForeArm: [[0, -0.18]],
+  },
 };
 const POSE_DEFAULTS = JSON.parse(JSON.stringify(POSE_KEYS));
 const POSE_STORE_KEY = 'rfPoseKeys';
@@ -8109,6 +8116,19 @@ function applySulkPose(ch, w = 1) {
   const lean = 0.18 + Math.sin(t * 0.8 + (ch.sulkPh || 0)) * 0.05; // slow forward slump + sway
   blendLean(ch, lean, 0, w);
 }
+// Relaxed standing stance overlay: shapes the arms into a settled at-rest pose over
+// the idle clip (which carries the actual breathing/weight-shift via applyLocoLife).
+// t cycles on a slow per-player breath phase so the curve's shoulder lift/settle
+// plays; desynced by breathPh so a lineup doesn't breathe in lockstep.
+function applyIdlePose(ch, w = 1) {
+  w *= TUNE.animIdle;
+  if (!ch.upperArm || !ch.upperArmRest) return;
+  const t = (Math.sin(performance.now() * 0.0011 + (ch.breathPh || 0)) + 1) * 0.5; // 0..1 slow cycle
+  blendBone(ch.upperArm, ch.upperArmRest, pk('idle', 'upperArm', t), w);
+  blendBone(ch.foreArm, ch.foreArmRest, pk('idle', 'foreArm', t), w);
+  blendBone(ch.leftArm, ch.leftArmRest, pk('idle', 'leftArm', t), w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, pk('idle', 'leftForeArm', t), w);
+}
 // Our clips are rotation-only (positions stripped to avoid root-motion drift),
 // which freezes the pelvis at standing height. Fine for locomotion, but dynamic
 // one-shots (the parkour vault/roll, diving catch, loose-ball scoop, celebration
@@ -8253,6 +8273,7 @@ function updateAnimation(ch, dt) {
   else if (ch.armPoseT > 0) active = 'arm';
   else if (ch.blocking) active = 'block'; // squared-up hand-fight (procedural arms + lean)
   else if (ch.sulk) active = 'sulk';
+  else if (want === 'idle' && ch.speed < 0.5) active = 'idle'; // relaxed standing stance (lowest priority)
   ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
   ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
   ch.catchW = easeWeight(ch.catchW, active === 'catch', dt);
@@ -8260,8 +8281,10 @@ function updateAnimation(ch, dt) {
   ch.armW = easeWeight(ch.armW, active === 'arm', dt);
   ch.blockW = easeWeight(ch.blockW, active === 'block', dt);
   ch.sulkW = easeWeight(ch.sulkW, active === 'sulk', dt);
+  ch.idleW = easeWeight(ch.idleW, active === 'idle', dt);
   // Leans first (orient the root), then arm poses, applied lowest -> highest
   // priority so the dominant overlay wins the bones it shares with a fading one.
+  if (ch.idleW > 0.001) applyIdlePose(ch, ch.idleW); // relaxed standing stance (lowest priority; others override shared bones)
   if (ch.sulkW > 0.001) applySulkPose(ch, ch.sulkW); // end-game loser: head hung, shoulders slumped
   if (ch.blockW > 0.001) applyBlockPose(ch, ch.blockW);
   if (ch.grabW > 0.001) applyGrabLean(ch, ch.grabW);
@@ -8289,8 +8312,9 @@ function updateAnimation(ch, dt) {
   } else if (Math.abs(ch.headYaw) > 0.001) {
     applyHeadTrack(ch, px(ch), 0, dt); // ease the look back to center
   }
-  // Idle variety now comes from real per-player idle clips (see makeCharacter),
-  // so no procedural stance offset is layered on top.
+  // Idle variety comes from real per-player idle clips (see makeCharacter); the
+  // editable `idle` POSE_KEYS overlay (applyIdlePose, above) layers a relaxed arm
+  // stance + breath on top, eased in via ch.idleW only when truly standing.
   // Keep dynamic poses out of the turf: one-shots clamp in their own branch
   // above, and the leaning gang-tackle grab clamps here. Plain locomotion just
   // sits at the calibrated height — clear any leftover lift from a finished move.
@@ -9133,6 +9157,7 @@ const DBG_KNOBS = [
   { tab: 'Anim', key: 'animThrow', label: 'Throw pose ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animGrab', label: 'Grab/wrap ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animSulk', label: 'Sulk slump ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { tab: 'Anim', key: 'animIdle', label: 'Idle stance ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animHead', label: 'Head swivel ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animProtect', label: 'Ball protect ×', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
   { tab: 'Anim', key: 'animDebug', label: 'Snap detector', min: 0, max: 1, step: 1, type: 'bool', fmt: (v) => (v ? 'on' : 'off') },
@@ -9431,6 +9456,8 @@ const STUDIO_PROCS = [
     drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'run'); applyBlockPose(ch, w); } },
   { id: 'sulkpose', label: 'Sulk pose', pose: 'sulk', base: 'idle',
     drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applySulkPose(ch, w); } },
+  { id: 'idlepose', label: 'Idle stance', pose: 'idle', base: 'idle',
+    drive(ch, t, w, dt) { studioBaseClip(ch, dt, 'idle'); applyIdlePose(ch, w); } },
   { id: 'loco', label: 'Loco life (run)', base: 'run',
     drive(ch, t, w, dt) { setClip(ch, 'run'); applyLocoLife(ch, dt, 0); stepMixer(ch, dt); } },
   { id: 'headtrack', label: 'Head track', base: 'idle',
@@ -9461,7 +9488,7 @@ function studioSelect(h) {
 }
 // ── Studio panel (tabbed shell): Clips · Procedural · Contact · Export ──────────
 const STUDIO_TABS = ['Clips', 'Procedural', 'Keys', 'Bones', 'Create', 'Contact', 'Export'];
-const STUDIO_BUILTIN_POSES = ['throw', 'carryprotect', 'block', 'sulk']; // shipped poses; anything else in POSE_KEYS is user-authored
+const STUDIO_BUILTIN_POSES = ['throw', 'carryprotect', 'block', 'sulk', 'idle']; // shipped poses; anything else in POSE_KEYS is user-authored
 const STUDIO_CUSTOM = [];
 // Generic procedural-pose applier — drives ANY POSE_KEYS table (the built-in arm/lean/
 // twist/head channels) so authored poses are first-class runtime hooks.
