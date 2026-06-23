@@ -9481,6 +9481,22 @@ function studioExportJSON() {
   const o = {}; for (const p in POSE_KEYS) o[p] = POSE_KEYS[p];
   return JSON.stringify({ poseKeys: o }, null, 1);
 }
+// Live timeline readout: t / frame for clips, t + edited-channel values for procs.
+function studioReadout() {
+  const h = STUDIO.hook; if (!h) return '—';
+  const t = STUDIO.t;
+  if (h.kind === 'clip') {
+    const a = LAB.A && LAB.A.actions[h.id];
+    if (!a) return `clip “${h.id}” — not on this model`;
+    const dur = a.getClip().duration || 1, FPS = 30;
+    return `t ${t.toFixed(2)} · frame ${Math.round(t * dur * FPS)}/${Math.round(dur * FPS)} · ${dur.toFixed(2)}s`;
+  }
+  if (h.kind === 'contact') return `contact spacing pose · t ${t.toFixed(2)}`;
+  // proc: show the edited keyframe-channel values at t (if it has a POSE_KEYS table)
+  let chans = '';
+  if (h.pose && POSE_KEYS[h.pose]) chans = Object.keys(POSE_KEYS[h.pose]).map((c) => `${c} ${pk(h.pose, c, t).toFixed(2)}`).join(' · ');
+  return `t ${t.toFixed(2)}${chans ? ' · ' + chans : ''}`;
+}
 function buildStudioPanel() {
   if (!labPanelEl) return;
   const h = STUDIO.hook;
@@ -9496,7 +9512,9 @@ function buildStudioPanel() {
       <input id="std-scrub" type="range" min="0" max="1" step="0.001" value="${STUDIO.t}">
       <b id="std-t">${STUDIO.t.toFixed(2)}</b>
       <button id="std-loop" class="${STUDIO.loop ? 'on' : ''}" title="loop">↻</button>
+      <button id="std-speed" title="playback speed">${STUDIO.speed}×</button>
     </div>
+    <div class="std-read" id="std-read">${studioReadout()}</div>
     <label class="lab-row"><span>weight</span><input id="std-w" type="range" min="0" max="1" step="0.01" value="${STUDIO.weight}"><b id="std-wv">${STUDIO.weight.toFixed(2)}</b></label>
     <div class="lab-actrow"><button id="lab-save">Save</button><button id="lab-copy">Copy</button><button id="lab-reset">Reset</button></div>
     <div class="lab-hint">drag rotate · pinch / scroll zoom</div>`;
@@ -9509,6 +9527,8 @@ function buildStudioPanel() {
   $('#lab-exit').onclick = exitLab;
   const playBtn = $('#std-play'); if (playBtn) playBtn.onclick = () => { STUDIO.playing = !STUDIO.playing; playBtn.textContent = STUDIO.playing ? '⏸' : '▶'; };
   const loopBtn = $('#std-loop'); if (loopBtn) loopBtn.onclick = () => { STUDIO.loop = !STUDIO.loop; loopBtn.classList.toggle('on', STUDIO.loop); };
+  const SPEEDS = [0.25, 0.5, 1, 2];
+  const spBtn = $('#std-speed'); if (spBtn) spBtn.onclick = () => { STUDIO.speed = SPEEDS[(SPEEDS.indexOf(STUDIO.speed) + 1) % SPEEDS.length] || 1; spBtn.textContent = STUDIO.speed + '×'; };
   const scrub = $('#std-scrub'); if (scrub) scrub.oninput = () => { STUDIO.t = parseFloat(scrub.value); STUDIO.playing = false; if (playBtn) playBtn.textContent = '▶'; const tv = $('#std-t'); if (tv) tv.textContent = STUDIO.t.toFixed(2); };
   const wsl = $('#std-w'); if (wsl) wsl.oninput = () => { STUDIO.weight = parseFloat(wsl.value); const wv = $('#std-wv'); if (wv) wv.textContent = STUDIO.weight.toFixed(2); };
   labPanelEl.querySelectorAll('input[data-key]').forEach((inp) => inp.addEventListener('input', () => {
@@ -9566,6 +9586,7 @@ function updateLab(dt) {
     const sc = labPanelEl && labPanelEl.querySelector('#std-scrub'); if (sc) sc.value = STUDIO.t;
     const tv = labPanelEl && labPanelEl.querySelector('#std-t'); if (tv) tv.textContent = STUDIO.t.toFixed(2);
   }
+  const rd = labPanelEl && labPanelEl.querySelector('#std-read'); if (rd) rd.textContent = studioReadout();
   A.group.position.set(0, 0, 0); A.heading = 0;
   if (h && h.kind === 'contact' && B) {
     game.battle.val = 0.5; B.group.visible = true;

@@ -1522,6 +1522,8 @@ body.lab-mode #grade, body.lab-mode #playselect { display: none !important; }
 #lab-panel .std-transport button.on { color: #0b0e13; background: #ffd23a; border-color: #ffd23a; }
 #lab-panel .std-transport input[type=range] { flex: 1; accent-color: #ffd23a; height: 28px; }
 #lab-panel .std-transport b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: #ffd23a; font-size: 11px; }
+#lab-panel .std-read { font-size: 10px; color: #9fb0c0; font-variant-numeric: tabular-nums; margin-bottom: 8px;
+  min-height: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #lab-panel .std-export textarea { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.4);
   color: #bfe7c8; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; font-family: monospace; font-size: 10px; resize: vertical; }
 
