@@ -7821,7 +7821,15 @@ const POSE_STORE_KEY = 'rfPoseKeys';
 try {
   if (typeof localStorage !== 'undefined') {
     const saved = JSON.parse(localStorage.getItem(POSE_STORE_KEY) || 'null');
-    if (saved) for (const p in POSE_KEYS) if (saved[p]) for (const c in POSE_KEYS[p]) if (Array.isArray(saved[p][c])) POSE_KEYS[p][c] = saved[p][c];
+    // Deep-merge persisted edits over the defaults by walking the SAVED tables (not
+    // just the built-ins): this restores edited channels, channels the default pose
+    // doesn't have (e.g. a baked head/lean), AND whole user-authored poses — so what
+    // the Studio saved is exactly what the game reads back on the next boot.
+    if (saved) for (const p in saved) {
+      const sp = saved[p]; if (!sp || typeof sp !== 'object') continue;
+      const dp = POSE_KEYS[p] || (POSE_KEYS[p] = {});
+      for (const c in sp) if (Array.isArray(sp[c])) dp[c] = sp[c].map((k) => [+k[0], +k[1]]);
+    }
   }
 } catch (e) { /* ignore corrupt/unavailable storage */ }
 const pk = (pose, ch, t) => keyAngle(POSE_KEYS[pose] && POSE_KEYS[pose][ch], t); // table lookup
