@@ -1940,7 +1940,7 @@ const TUNE_DEFAULTS = {
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
   animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0, animIdle: 1.0,
-  posStance: 1, // per-position idle stances (linemen 3-point, LB ready, WR set, …); 0 = relaxed idle for all
+  posStance: 0, // master toggle for idle stances (per-position 3-point/LB/WR/etc.); 0 = plain idle clip (off)
   // Animation overhaul (docs/animation-system-overhaul-plan.md)
   animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
   animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
@@ -8350,7 +8350,7 @@ function updateAnimation(ch, dt) {
   else if (ch.armPoseT > 0) active = 'arm';
   else if (ch.blocking) active = 'block'; // squared-up hand-fight (procedural arms + lean)
   else if (ch.sulk) active = 'sulk';
-  else if (want === 'idle' && ch.speed < 0.5) active = 'idle'; // relaxed standing stance (lowest priority)
+  else if (want === 'idle' && ch.speed < 0.5 && TUNE.posStance) active = 'idle'; // standing stance (off unless posStance enabled)
   ch.battleW = easeWeight(ch.battleW, active === 'battle', dt);
   ch.grabW = easeWeight(ch.grabW, active === 'grab', dt);
   ch.catchW = easeWeight(ch.catchW, active === 'catch', dt);
