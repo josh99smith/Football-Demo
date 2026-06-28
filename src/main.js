@@ -3880,6 +3880,7 @@ function syncPauseBtn() {
 const settingsMenuEl = document.getElementById('settingsmenu');
 const SETTINGS_KEY = 'rfSettings';
 let _reducedMotion = false; // gated in ScreenShake (tames the camera shake)
+let _settingsTabIdx = 0;    // remembered settings tab (restored across rebuilds)
 // Player-facing settings and their live state (seeded from the current knobs).
 const settings = {
   showFps: false,
@@ -3892,7 +3893,55 @@ const settings = {
   textScale: 1.0,              // UI text scale (hooks the fluid-type tokens)
   highContrast: false,
   reducedMotion: false,
+  // Quality / performance (defaults = current behavior, so no change for existing users)
+  renderScale: 1.0,            // render-resolution multiplier (× capped device pixel ratio)
+  shadows: 'high',             // 'off' | 'low' (1024) | 'high' (2048)
+  effects: 1.0,                // animation/IK/secondary-motion quality (0 = cheapest)
 };
+// Performance presets — a one-tap bundle for the three quality levers below.
+const QUALITY_PRESETS = {
+  low: { renderScale: 0.6, shadows: 'off', effects: 0.0 },
+  medium: { renderScale: 0.85, shadows: 'low', effects: 0.5 },
+  high: { renderScale: 1.0, shadows: 'high', effects: 1.0 },
+};
+// Render at a fraction of native resolution — the single biggest GPU win on weak
+// devices. Re-asserted on resize so it survives orientation/window changes.
+function applyRenderScale() {
+  const s = THREE.MathUtils.clamp(settings.renderScale || 1, 0.4, 1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2) * s);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+// Shadow quality: drop the shadow pass entirely (off) or rebuild the shadow map at a
+// smaller size. Disposing the old map forces three to recreate it at the new size.
+function applyShadows() {
+  const m = settings.shadows;
+  if (m === 'off') { sun.castShadow = false; return; }
+  sun.castShadow = true;
+  const size = m === 'low' ? 1024 : 2048;
+  if (sun.shadow.mapSize.x !== size) {
+    sun.shadow.mapSize.set(size, size);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } // rebuild at new size
+  }
+}
+// Effects quality scales the procedural animation layers (IK / foot-lock / secondary
+// motion) via TUNE.animQuality — already read across those systems.
+function applyEffects() { TUNE.animQuality = THREE.MathUtils.clamp(settings.effects, 0, 1); }
+// Heuristic auto-pick for the device (cores / DPR / mobile UA).
+function autoQuality() {
+  const dpr = window.devicePixelRatio || 1, cores = navigator.hardwareConcurrency || 4;
+  const mobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+  if (cores <= 2 || (mobile && dpr >= 3)) return 'low';
+  if (mobile || cores <= 4 || dpr > 2.5) return 'medium';
+  return 'high';
+}
+// Apply a named preset (or 'auto'): set the three levers, apply, persist, and rebuild
+// the panel so the controls reflect the new values (restoring the open tab).
+function setQuality(name) {
+  const p = QUALITY_PRESETS[name === 'auto' ? autoQuality() : name]; if (!p) return;
+  settings.renderScale = p.renderScale; settings.shadows = p.shadows; settings.effects = p.effects;
+  applyRenderScale(); applyShadows(); applyEffects(); saveSettings();
+  buildSettings();
+}
 function applySetting(key) {
   const v = settings[key];
   switch (key) {
@@ -3906,6 +3955,9 @@ function applySetting(key) {
     case 'textScale': document.documentElement.style.setProperty('--ui-scale', v); break;
     case 'highContrast': document.body.classList.toggle('high-contrast', !!v); break;
     case 'reducedMotion': _reducedMotion = !!v; document.body.classList.toggle('reduced-motion', !!v); break;
+    case 'renderScale': applyRenderScale(); break;
+    case 'shadows': applyShadows(); break;
+    case 'effects': applyEffects(); break;
   }
 }
 function applyAllSettings() { for (const k in settings) applySetting(k); }
@@ -3935,7 +3987,13 @@ function buildSettings() {
   head.appendChild(title); head.appendChild(close);
 
   const note = (text) => { const d = document.createElement('div'); d.className = 'ui-section-note'; d.textContent = text; return d; };
-  const { bar, panes } = uiTabs([
+  // Which preset (if any) the three quality levers currently match, for highlighting.
+  const currentPreset = () => {
+    for (const n of ['low', 'medium', 'high']) { const p = QUALITY_PRESETS[n];
+      if (Math.abs(settings.renderScale - p.renderScale) < 0.01 && settings.shadows === p.shadows && Math.abs(settings.effects - p.effects) < 0.01) return n; }
+    return 'custom';
+  };
+  const { bar, panes, select } = uiTabs([
     { label: 'Audio', build: (p) => {
         p.appendChild(note('Master, music, SFX, and commentary levels live in the audio mixer.'));
         const stack = document.createElement('div'); stack.className = 'ui-stack';
@@ -3946,6 +4004,21 @@ function buildSettings() {
     } },
     { label: 'Video', build: (p) => {
         p.appendChild(uiSlider('Brightness', { min: 0.7, max: 2.0, step: 0.05, value: settings.brightness, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('brightness', v) }));
+        p.appendChild(uiToggle('Show FPS counter', settings.showFps, (v) => setSetting('showFps', v)));
+    } },
+    { label: 'Quality', build: (p) => {
+        p.appendChild(note('Lower settings = faster on weak devices. Try Auto, or drop Resolution & Shadows if it stutters.'));
+        p.appendChild(uiSegmented('Preset', [
+          { label: 'Low', value: 'low' }, { label: 'Medium', value: 'medium' }, { label: 'High', value: 'high' },
+        ], currentPreset(), (v) => setQuality(v)));
+        const stack = document.createElement('div'); stack.className = 'ui-stack';
+        stack.appendChild(uiButton('✨&nbsp; AUTO-DETECT', 'ghost', () => setQuality('auto')));
+        p.appendChild(stack);
+        p.appendChild(uiSlider('Resolution', { min: 0.4, max: 1.0, step: 0.05, value: settings.renderScale, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => setSetting('renderScale', v) }));
+        p.appendChild(uiSegmented('Shadows', [
+          { label: 'Off', value: 'off' }, { label: 'Low', value: 'low' }, { label: 'High', value: 'high' },
+        ], settings.shadows, (v) => setSetting('shadows', v)));
+        p.appendChild(uiSlider('Effects detail', { min: 0, max: 1, step: 0.1, value: settings.effects, format: (v) => v === 0 ? 'off' : `${Math.round(v * 100)}%`, onInput: (v) => setSetting('effects', v) }));
         p.appendChild(uiToggle('Show FPS counter', settings.showFps, (v) => setSetting('showFps', v)));
     } },
     { label: 'Gameplay', build: (p) => {
@@ -3969,6 +4042,9 @@ function buildSettings() {
   ]);
   panel.appendChild(head); panel.appendChild(bar); panel.appendChild(panes);
   settingsMenuEl.appendChild(panel);
+  // Remember + restore the open tab across rebuilds (e.g. when a quality preset is applied).
+  bar.querySelectorAll('.ui-tab').forEach((b, i) => b.addEventListener('click', () => { _settingsTabIdx = i; }));
+  select(_settingsTabIdx);
   settingsMenuEl.addEventListener('pointerdown', (e) => { if (e.target === settingsMenuEl) closeSettings(); });
 }
 function openSettings() { if (!settingsMenuEl) return; buildSettings(); settingsMenuEl.classList.remove('ui-closing', 'hidden'); uiSound('open'); }
@@ -10410,7 +10486,7 @@ function simStep(realDt) {
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  applyRenderScale(); // re-assert pixel ratio + size so the render-scale setting survives resize
 });
 
 // ---- Start menu: the matchup + both rosters, gates the kickoff ----------------
