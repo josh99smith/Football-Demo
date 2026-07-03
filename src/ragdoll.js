@@ -114,6 +114,7 @@ const BONE_FALLBACKS = {
 };
 
 const LOWER = new Set(['thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR']);
+const ARM = new Set(['uarmL', 'farmL', 'handL', 'uarmR', 'farmR', 'handR']); // brace these toward the ground on a fall
 const MAX_SPIN = 8; // rad/s — a body can never spin up into a contorted blur
 const CAGE_PAD = 0.2; // uniform inset (~torso radius) so no limb pokes past the fence
 
@@ -174,9 +175,10 @@ export class TackleRagdoll {
    * `hitSpeed`, applied to one tier of the body (per `variant`) while the
    * rest lags, so the body topples around the hit.
    */
-  spawn(carryVel, hitDir, hitSpeed, collisionBit = 0x0002, variant = 'highKnock') {
+  spawn(carryVel, hitDir, hitSpeed, collisionBit = 0x0002, variant = 'highKnock', brace = 0) {
     if (this.active) this.dispose();
     try {
+      this.braceW = brace; // Phase 1: arms reach toward the ground to break the fall (0 = limp)
       this.#spawnInner(carryVel, hitDir, hitSpeed, collisionBit, variant);
     } catch (e) {
       // A failed spawn must never take down the sim tick OR leak.
@@ -241,11 +243,19 @@ export class TackleRagdoll {
         case 'twist': v = isPelvis ? midVel : (isLeg ? twistVel : hitVel); break;
         default: v = isPelvis ? midVel : (isLeg ? carryVel : hitVel); break; // highKnock
       }
+      // Phase 1 active brace: the arms lead the fall toward the ground (reach out to
+      // catch it) instead of hanging limp. Bounded; applyLimits' VMAX caps it.
+      let vx = v.x, vy = v.y, vz = v.z;
+      if (this.braceW && ARM.has(def.name)) {
+        vx += hitDir.x * hitSpeed * 0.45 * this.braceW;
+        vz += hitDir.z * hitSpeed * 0.45 * this.braceW;
+        vy -= hitSpeed * 0.6 * this.braceW;
+      }
       const segR = Math.min(def.r, Math.max(0.03, len / 2 - 0.01));
       const body = world.createRigidBody(R.RigidBodyDesc.dynamic()
         .setTranslation(_c.x, _c.y, _c.z)
         .setRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w })
-        .setLinvel(v.x, v.y, v.z)
+        .setLinvel(vx, vy, vz)
         .setAngularDamping(9.5)  // limbs settle instead of flailing
         .setLinearDamping(0.5)
         .setCanSleep(true));
