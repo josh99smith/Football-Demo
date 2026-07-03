@@ -2603,18 +2603,17 @@ function makePlayArtSVG(play) {
   let art = '';
   for (const f of OFF_FORM) {
     const x0 = mapX(f.x), y0 = mapY(f.dz);
-    // Chalk-on-paper diagram: rust WR routes, slate RB, ink centre + dots.
-    if (f.role === 'OL') { art += `<rect x="${(x0 - 2.5).toFixed(1)}" y="${(mapY(0) - 2.5).toFixed(1)}" width="5" height="5" rx="1" fill="#9a9ca2"/>`; continue; }
-    if (f.role === 'QB') { art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.6" fill="#3c5a78"/>`; continue; }
+    if (f.role === 'OL') { art += `<rect x="${(x0 - 2.5).toFixed(1)}" y="${(mapY(0) - 2.5).toFixed(1)}" width="5" height="5" rx="1" fill="#9fb0c0"/>`; continue; }
+    if (f.role === 'QB') { art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.6" fill="#bfe3ff"/>`; continue; }
     const wpts = play.route(f.elig, f.x, 0);
     let d = `M ${x0.toFixed(1)} ${y0.toFixed(1)}`;
     for (const w of wpts) d += ` L ${mapX(w.x).toFixed(1)} ${mapY(w.z).toFixed(1)}`;
-    const col = f.role === 'RB' ? '#3c5a78' : '#b85a2e';
+    const col = f.role === 'RB' ? '#7cfca0' : '#ffd54a';
     art += `<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
-    art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.3" fill="${col}"/>`;
+    art += `<circle cx="${x0.toFixed(1)}" cy="${y0.toFixed(1)}" r="2.3" fill="#fff"/>`;
   }
   game.dir = savedDir;
-  const los = `<line x1="${padX}" y1="${losY}" x2="${W - padX}" y2="${losY}" stroke="rgba(26,28,32,0.28)" stroke-width="1.4" stroke-dasharray="3 3"/>`;
+  const los = `<line x1="${padX}" y1="${losY}" x2="${W - padX}" y2="${losY}" stroke="rgba(255,255,255,0.45)" stroke-width="1.4" stroke-dasharray="3 3"/>`;
   return `<svg class="ps-art" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${los}${art}</svg>`;
 }
 
