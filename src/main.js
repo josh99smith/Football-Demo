@@ -8368,6 +8368,9 @@ const _snapPrev = new WeakMap(); // bone -> last-frame local quaternion
 // line (I key) shows the running count.
 function tposeTrack(ch) {
   if (!ch.upperArm || !ch.upperArmRest || !ch.leftArm || !ch.leftArmRest) return;
+  // Only RENDERED bodies count: a torn player's original model is hidden (the
+  // gore halves replace it) and its undriven skeleton is invisible to the user.
+  if (ch.torn || (ch.model && !ch.model.visible) || !ch.group.visible) { ch._tpFrames = 0; return; }
   if (ch.upperArm.quaternion.angleTo(ch.upperArmRest) < 0.07 &&
       ch.leftArm.quaternion.angleTo(ch.leftArmRest) < 0.07) {
     ch._tpFrames = (ch._tpFrames || 0) + 1;
@@ -8375,11 +8378,13 @@ function tposeTrack(ch) {
       const s = game.animSnaps || (game.animSnaps = { count: 0, max: 0, worst: '' });
       s.tpose = (s.tpose || 0) + 1;
       s.tposeWho = (ch.surname || ch.role || '?') + (ch.isBench ? '/bench' : '') + '@' + game.state + '/' + (ch.current || '?');
-      try {
+      try { // context so a sighting is self-diagnosing (which overlay/one-shot owned the arms)
         const log = (window.__tposeLog = window.__tposeLog || []);
-        log.push({ t: Math.round(performance.now() / 1000), who: s.tposeWho, oneShotT: +(ch.oneShotT || 0).toFixed(2), spd: +(ch.speed || 0).toFixed(1) });
+        log.push({ t: Math.round(performance.now() / 1000), who: s.tposeWho, os: +(ch.oneShotT || 0).toFixed(2), spd: +(ch.speed || 0).toFixed(1),
+          ov: ['throwW', 'catchW', 'armW', 'battleW', 'grabW', 'blockW', 'sulkW', 'idleW', 'protectW', 'leapCatchW', 'reachIkW'].map((k) => (ch[k] > 0.01 ? k + ':' + ch[k].toFixed(2) : '')).filter(Boolean).join(' '),
+          armPose: ch.armPoseT > 0 ? ch.armPose : '', fade: ch.fadeAct ? 1 : 0 });
         if (log.length > 20) log.shift();
-        console.warn('[anim] T-pose:', s.tposeWho);
+        console.warn('[anim] T-pose:', s.tposeWho, JSON.stringify(log[log.length - 1]));
       } catch (e) { /* logging must never hurt the game */ }
     }
   } else ch._tpFrames = 0;
