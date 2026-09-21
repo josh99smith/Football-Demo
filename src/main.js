@@ -5186,6 +5186,11 @@ function groundPlayers() {
     restoreHelmet(ch); // snap a popped-off helmet back onto the head
     restoreTear(ch);   // un-split a torn-in-half body
     restoreRestPose(ch); // clean skeleton each play (no bone-position drift from ragdolls/replay)
+    // Re-pose NOW (zero-dt evaluation): the restore just put the BIND (T-)pose on
+    // every bone, and it must never survive to a render — groundPlayers runs from
+    // input handlers (snap) and teleport resets, where a slow frame / GC hitch on
+    // a phone would otherwise flash the whole formation in a T-pose.
+    if (ch.mixer) stepMixer(ch, 0);
     ch.ragdolling = false; ch.grabbing = false; ch.tauntT = 0; ch.diveT = 0;
     // Rest between plays restores only PART of the tank (more with stamina), so a
     // heavily-used player stays worn down over a drive instead of resetting fresh.
@@ -7713,6 +7718,7 @@ function clearRagdolls() {
     ch.ragdolling = false;
     restoreRestPose(ch);
     if (wasRagdoll && ch.mixer) ch.mixer.setTime(0); // re-evaluate the current clip onto the clean pose
+    else if (ch.mixer) stepMixer(ch, 0); // and re-pose everyone else NOW — the restored bind pose must never reach a render
   }
 }
 
@@ -8353,22 +8359,33 @@ function groundClamp(ch) {
 // panel + tallied so regressions are caught. Runs for EVERY character each frame
 // (including ragdolling ones) so it also catches the physics<->anim seams.
 const _snapPrev = new WeakMap(); // bone -> last-frame local quaternion
-function animSnapTrack(ch, dt) {
-  if (!TUNE.animDebug || !ch.bones || dt <= 0) return;
-  // T-pose tracker: both upper arms sitting AT the bind rest for 3+ frames while
-  // not ragdolling is a rendered T-pose. Weight-based checks can't see the case
-  // where bones were set outside the mixer (restoreRestPose) and never re-posed,
-  // so this reads the BONES. Reported on the ANIM debug line with who/where.
-  if (ch.upperArm && ch.upperArmRest && ch.leftArm && ch.leftArmRest &&
-      ch.upperArm.quaternion.angleTo(ch.upperArmRest) < 0.07 &&
+// T-pose tracker (ALWAYS on — two quaternion angles per player is negligible):
+// both upper arms sitting AT the bind rest for 3+ rendered frames while not
+// ragdolling is a rendered T-pose. Weight-based checks can't see the case where
+// bones were set outside the mixer (restoreRestPose) and never re-posed, so this
+// reads the BONES. Sightings go to the console + window.__tposeLog (last 20) so
+// any in-the-wild report can name the exact player/state/clip; the ANIM debug
+// line (I key) shows the running count.
+function tposeTrack(ch) {
+  if (!ch.upperArm || !ch.upperArmRest || !ch.leftArm || !ch.leftArmRest) return;
+  if (ch.upperArm.quaternion.angleTo(ch.upperArmRest) < 0.07 &&
       ch.leftArm.quaternion.angleTo(ch.leftArmRest) < 0.07) {
     ch._tpFrames = (ch._tpFrames || 0) + 1;
     if (ch._tpFrames === 3) {
       const s = game.animSnaps || (game.animSnaps = { count: 0, max: 0, worst: '' });
       s.tpose = (s.tpose || 0) + 1;
       s.tposeWho = (ch.surname || ch.role || '?') + (ch.isBench ? '/bench' : '') + '@' + game.state + '/' + (ch.current || '?');
+      try {
+        const log = (window.__tposeLog = window.__tposeLog || []);
+        log.push({ t: Math.round(performance.now() / 1000), who: s.tposeWho, oneShotT: +(ch.oneShotT || 0).toFixed(2), spd: +(ch.speed || 0).toFixed(1) });
+        if (log.length > 20) log.shift();
+        console.warn('[anim] T-pose:', s.tposeWho);
+      } catch (e) { /* logging must never hurt the game */ }
     }
   } else ch._tpFrames = 0;
+}
+function animSnapTrack(ch, dt) {
+  if (!TUNE.animDebug || !ch.bones || dt <= 0) return;
   let mx = 0, worst = null;
   for (const b of ch.bones) {
     let prev = _snapPrev.get(b);
@@ -8889,10 +8906,11 @@ function updatePlay(dt) {
   }
   updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
-  if (TUNE.animDebug) { // Phase 0 snap detector + T-pose tracker (after all bones are posed; bench included — it has its own clip path)
-    for (const ch of game.all) animSnapTrack(ch, dt);
-    if (game.bench) for (const ch of game.bench) animSnapTrack(ch, dt);
-  }
+  // T-pose tracker always on (bench included — it has its own clip path); the
+  // heavier per-bone snap detector stays behind the animDebug knob.
+  for (const ch of game.all) { if (!ch.ragdolling) tposeTrack(ch); else ch._tpFrames = 0; }
+  if (game.bench) for (const ch of game.bench) tposeTrack(ch);
+  if (TUNE.animDebug) for (const ch of game.all) animSnapTrack(ch, dt); // Phase 0 snap detector (after all bones are posed)
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
