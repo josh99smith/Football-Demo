@@ -8144,9 +8144,13 @@ function applyArmAction(ch, dt, bw = 1) {
     blendBone(ch.foreArm, ch.foreArmRest, -0.5 * w, bw);
     blendBone(ch.leftArm, ch.leftArmRest, reach * w, bw);
     blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.5 * w, bw);
-    // Phase 4: IK the in-stride reach onto the LIVE ball so the hands meet it.
+    // Phase 4: IK the in-stride reach onto the LIVE ball so the hands meet it. The
+    // IK weight is eased in/out rather than switched: it used to vanish the frame the
+    // ball turned 'carried' (mid-envelope), snapping both arms off the ball-locked
+    // pose — the ~3 rad WR pop at the catch in the snap telemetry.
     const ikT = catchBallTarget(ch);
-    if (ikT) ikHandsToBall(ch, ikT, true, bw * w);
+    ch.reachIkW = expEase(ch.reachIkW || 0, ikT ? bw * w : 0, ikT ? 40 : 14, dt);
+    if (ch.reachIkW > 0.01) ikHandsToBall(ch, ikT || ball.mesh.position, true, ch.reachIkW);
   }
 }
 // Ball-security threat: how imminent is contact on the ball carrier (0 none .. 1
@@ -8395,9 +8399,13 @@ function updateAnimation(ch, dt) {
     // Anticipatory CATCH leap: overlay the ball-tracking reach ON TOP of the leap
     // clip so the hands actually meet the ball (the clip sells the jump/extension,
     // the overlay locks the arms to the ball) while it's still in the air / homing.
-    if (ch.catchLeap && (ball.mode === 'flying' || ball.mode === 'secured') && ch === (ball.catcher || ball.targetRecv)) {
-      applyCatchPose(ch, ball.mesh.position, dt, 0.85);
-    }
+    // Eased in AND out: the reach used to stop dead the frame the ball turned
+    // 'carried', snapping the arms from the ball-locked IK pose back to the leap
+    // clip (a ~2.5 rad one-frame pop in the snap telemetry). Now it bleeds out over
+    // a few frames while the ball settles into his hand.
+    const leapReach = ch.catchLeap && (ball.mode === 'flying' || ball.mode === 'secured') && ch === (ball.catcher || ball.targetRecv);
+    ch.leapCatchW = expEase(ch.leapCatchW || 0, leapReach ? 0.85 : 0, leapReach ? 40 : 14, dt);
+    if (ch.leapCatchW > 0.01) applyCatchPose(ch, ball.mesh.position, dt, ch.leapCatchW);
     if (ch.recoverBlend) applyRecoverBlend(ch, dt); // Phase 4: rise FROM the fall pose into the get-up
     groundClamp(ch); // dynamic clips (rolls/dives/jumps) carry big vertical body
     return;          // motion; lift the root so no joint sinks through the turf
