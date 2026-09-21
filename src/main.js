@@ -4838,7 +4838,7 @@ function dbgBalanceReport() {
   // Phase 6: animation snap telemetry (regression catch) — only meaningful when the
   // detector is running (TUNE.animDebug); flags any transition that popped.
   const an = game.animSnaps || { count: 0, max: 0, worst: '' };
-  const anLine = TUNE.animDebug ? `\nANIM snaps ${an.count} · max ${an.max.toFixed(2)}rad${an.worst ? ' @ ' + an.worst : ''}` : '';
+  const anLine = TUNE.animDebug ? `\nANIM snaps ${an.count} · max ${an.max.toFixed(2)}rad${an.worst ? ' @ ' + an.worst : ''} · T-pose ${an.tpose || 0}${an.tposeWho ? ' @ ' + an.tposeWho : ''}` : '';
   return `REAPERS vs DEMONS · Q${game.quarter}\n${blk('RPR', game.scoreOff, A)}\n${blk('DMN', game.scoreDef, B)}\n— plays ${t.plays} · sacks ${t.sacks} · fum ${t.fumbles} · picks ${t.picks} · big ${t.bigPlays}${tkLine}${anLine}\nYOU (career)  ${u.tackles} tkl · ${u.catches} cat · ${u.ints} int`;
 }
 function resetGame() {
@@ -7755,7 +7755,14 @@ function controlledMove(ch, dt, topSpeed) {
 function playOneShot(ch, name, hold, fit = false) {
   const a = ch.actions[name];
   if (!a) return;
-  ch.oneShotT = hold; setClip(ch, name);
+  ch.oneShotT = hold;
+  if (ch.current === name) {
+    // Re-triggering the ACTIVE one-shot (benchReact during an ambient emote, a
+    // second dive lunge, a repeat get-up): setClip early-returns on same-name, so
+    // a finished LoopOnce action would sit PAUSED at its clamped last frame for
+    // the whole new hold — a frozen player. Restart it in place at full weight.
+    a.reset(); a.enabled = true; a.setEffectiveTimeScale(1); a.setEffectiveWeight(1); a.play();
+  } else setClip(ch, name);
   // fit: speed the clip so it finishes (lands) within the hold instead of being
   // cut off mid-air — only ever speeds up, never slows a short clip down.
   if (fit) a.setEffectiveTimeScale(Math.max(1, a.getClip().duration / hold));
@@ -8348,6 +8355,20 @@ function groundClamp(ch) {
 const _snapPrev = new WeakMap(); // bone -> last-frame local quaternion
 function animSnapTrack(ch, dt) {
   if (!TUNE.animDebug || !ch.bones || dt <= 0) return;
+  // T-pose tracker: both upper arms sitting AT the bind rest for 3+ frames while
+  // not ragdolling is a rendered T-pose. Weight-based checks can't see the case
+  // where bones were set outside the mixer (restoreRestPose) and never re-posed,
+  // so this reads the BONES. Reported on the ANIM debug line with who/where.
+  if (ch.upperArm && ch.upperArmRest && ch.leftArm && ch.leftArmRest &&
+      ch.upperArm.quaternion.angleTo(ch.upperArmRest) < 0.07 &&
+      ch.leftArm.quaternion.angleTo(ch.leftArmRest) < 0.07) {
+    ch._tpFrames = (ch._tpFrames || 0) + 1;
+    if (ch._tpFrames === 3) {
+      const s = game.animSnaps || (game.animSnaps = { count: 0, max: 0, worst: '' });
+      s.tpose = (s.tpose || 0) + 1;
+      s.tposeWho = (ch.surname || ch.role || '?') + (ch.isBench ? '/bench' : '') + '@' + game.state + '/' + (ch.current || '?');
+    }
+  } else ch._tpFrames = 0;
   let mx = 0, worst = null;
   for (const b of ch.bones) {
     let prev = _snapPrev.get(b);
@@ -8868,7 +8889,10 @@ function updatePlay(dt) {
   }
   updateHitStick(); // hit-stick cue: shown/hot while you close on the carrier on D
   for (const ch of game.all) updateAnimation(ch, dt);
-  if (TUNE.animDebug) for (const ch of game.all) animSnapTrack(ch, dt); // Phase 0 snap detector (after all bones are posed)
+  if (TUNE.animDebug) { // Phase 0 snap detector + T-pose tracker (after all bones are posed; bench included — it has its own clip path)
+    for (const ch of game.all) animSnapTrack(ch, dt);
+    if (game.bench) for (const ch of game.bench) animSnapTrack(ch, dt);
+  }
   updateBall(dt); // after the pose updates so the ball follows the hand bone
   ensureBallVisible(); // the ball must never vanish — keep it shown + at a sane spot
   updateTrail(ball.mode === 'flying'); // glowing comet trail while in the air
