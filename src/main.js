@@ -1943,7 +1943,7 @@ const TUNE_DEFAULTS = {
   // Procedural animation intensities (× the eased pose weight; 0 = off, 1 = default)
   animBank: 1.0, animBreath: 1.0, animBlock: 1.0, animBattle: 1.0, animArm: 1.0,
   animCatch: 1.0, animThrow: 1.0, animGrab: 1.0, animSulk: 1.0, animHead: 1.0, animProtect: 1.0, animIdle: 1.0,
-  posStance: 0, // master toggle for idle stances (per-position 3-point/LB/WR/etc.); 0 = plain idle clip (off)
+  posStance: 1, // per-position idle stances (OL/DL crouch, LB/DB ready, WR set, QB): reads as a real pre-snap; 0 = plain idle clip. Tables tunable in the Studio.
   // Animation overhaul (docs/animation-system-overhaul-plan.md)
   animDebug: 0,          // Phase 0: run the snap detector + show the anim controller readout
   animSnapThresh: 0.55,  // Phase 0: per-frame bone-rotation delta (rad) that counts as a "snap"
