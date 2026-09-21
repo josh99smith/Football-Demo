@@ -1131,6 +1131,14 @@ body.replay-mode .replay-btn { display: none !important; }
 }
 /* Tight landscape (short phones): pull controls in and trim chrome. */
 @media (orientation: landscape) and (max-height: 430px) {
+  /* Catch-style / hit-stick chooser: on a phone-height screen the 3-button COLUMN
+     (anchored 170px up) topped out above the viewport and ran through the pause +
+     volume buttons. Lay it out as one compact ROW just above the ACTION/TURBO
+     cluster, shifted left of the top-right button column so nothing overlaps. */
+  .catch-row { flex-direction: row; align-items: center; gap: 6px;
+    right: max(64px, calc(env(safe-area-inset-right) + 52px));
+    bottom: max(166px, calc(env(safe-area-inset-bottom) + 108px)); }
+  .catch-btn { min-width: 92px; padding: 9px 10px; font-size: 12px; letter-spacing: 0.5px; }
   .joystick { width: 116px; height: 116px; }
   .joystick-knob { width: 52px; height: 52px; margin: -26px 0 0 -26px; }
   .action-btn { width: 84px; height: 84px; bottom: max(22px, env(safe-area-inset-bottom)); }
@@ -1271,8 +1279,18 @@ body.replay-mode .replay-btn { display: none !important; }
   #startmenu .sm-foot { gap: clamp(8px, 2.4vw, 22px); padding: 6px 12px max(8px, calc(env(safe-area-inset-bottom) + 4px)); }
   #startmenu .sm-difflabel { margin-bottom: 3px; }
   #startmenu .sm-diff { min-height: 38px; padding: 7px 12px; }
-  #startmenu .sm-startwrap { gap: 6px; }
-  #startmenu .sm-start { min-height: 42px; padding: 9px clamp(20px, 6vw, 44px); font-size: clamp(14px, 3vw, 20px); }
+  /* Footer on ONE compact row: the KICK OFF / GAUNTLET pair sits side by side (not
+     stacked) and nothing wraps. Stacked, the footer grew to ~170px on a phone with
+     the browser bar showing (~300px tall), crushing the matchup row to ~90px so the
+     team names overflowed up into the title (the "REAPERS FOOT...DEMONS" collision). */
+  #startmenu .sm-foot { flex-wrap: nowrap; gap: clamp(8px, 2vw, 18px); }
+  #startmenu .sm-startwrap { flex-direction: row; gap: 8px; }
+  #startmenu .sm-start { min-height: 40px; padding: 8px clamp(14px, 3vw, 28px); font-size: clamp(13px, 2.6vw, 18px); }
+  #startmenu .sm-start .sm-sub { display: none; } /* drop the button sub-captions on short screens */
+  /* And never let a side panel overflow the matchup row: stretch it to the row's
+     height so its content centers and clips INSIDE the row (never into the header). */
+  #startmenu .sm-versus { align-items: stretch; }
+  #startmenu .sm-vsbadge { align-self: center; } /* the round badge must not stretch with the row */
 }
 
 /* ---------- Post-play player cards ---------- */
@@ -1699,6 +1717,9 @@ body.paused #replay-btn, body.paused #playselect, body.paused #pause-btn { point
    not while you're reading the play-select deck. */
 body[data-ui="live"] #userstats,
 body[data-ui="choosing"] #userstats { display: none !important; }
+/* The play picker owns the screen: the status line ("Tap SNAP to start the play")
+   otherwise bleeds through behind the CHOOSE YOUR PLAY title. */
+body[data-ui="choosing"] #status { display: none !important; }
 
 /* Ball in play: drop everything that isn't the scoreboard or a live control —
    the post-play cards, the play-art toggle, and any lingering result readout. */

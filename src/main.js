@@ -369,12 +369,15 @@ new THREE.TextureLoader().load('assets/disturb.jpg', (tex) => {
     mat.bumpMap = tt; mat.bumpScale = 0.08; mat.needsUpdate = true;
   }
 });
-// Optional custom field texture: drop a JPEG/PNG at assets/field.png (or .jpg).
+// Optional custom field texture: set FIELD_TEXTURE to e.g. 'assets/field.png'.
 // It maps onto one plane the size of the whole field (53.3 x 120 yd, end zones
 // included) and replaces the procedural turf + lines. Image is portrait: its
 // long (vertical) axis is the field length; top of the image = the -Z (blue)
-// end, bottom = the +Z (red) end.
+// end, bottom = the +Z (red) end. Explicit opt-in (not a blind probe) so every
+// boot doesn't fire two doomed requests + two console 404s looking for it.
+const FIELD_TEXTURE = null;
 (function loadFieldTexture() {
+  if (!FIELD_TEXTURE) return; // procedural field
   const tl = new THREE.TextureLoader();
   const apply = (tex) => {
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -385,8 +388,7 @@ new THREE.TextureLoader().load('assets/disturb.jpg', (tex) => {
     fieldGroup.add(surf);
     fieldGroup.traverse((o) => { if (o.userData.proc) o.visible = false; }); // hide procedural markings
   };
-  tl.load('assets/field.png', apply, undefined,
-    () => tl.load('assets/field.jpg', apply, undefined, () => { /* none found — keep procedural field */ }));
+  tl.load(FIELD_TEXTURE, apply, undefined, () => { /* missing/broken — keep the procedural field */ });
 })();
 
 // --- Midfield logo + end-zone wordmarks (canvas decals on the turf) ---
@@ -4564,7 +4566,11 @@ function uiPhaseFor() {
   const s = game.state;
   if (s === STATE.REPLAY) return 'replay';
   if (game.gameOver) return 'gameover';
-  if (s === STATE.PRESNAP) return game.choosing ? 'choosing' : 'presnap';
+  // The play picker opens during the between-plays RESET (before PRESNAP), so key
+  // the phase on `choosing` itself — otherwise the picker sits on top of the "dead"
+  // phase's post-play card + result readout (the cluttered call screen).
+  if (game.choosing && (s === STATE.PRESNAP || s === STATE.DEAD || s === STATE.RESET)) return 'choosing';
+  if (s === STATE.PRESNAP) return 'presnap';
   if (s === STATE.DEAD || s === STATE.RESET) return 'dead';
   return 'live'; // LIVE / AIR / RUN / RETURN / LOOSE / TACKLE / BATTLE — ball in play
 }
@@ -6932,7 +6938,11 @@ function updateKnockdownRecovery(dt) {
     restoreRestPose(d); if (d.mixer) d.mixer.setTime(0);
     if (p) { d.group.position.x = p.x; d.group.position.z = p.z; }
     d.group.position.y = 0; d.vel.set(0, 0, 0); d.speed = 0;
-    if (game.carrier) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z); // face the ball
+    // Face the ball for the get-up ONLY when there's no pose-matched blend: the root
+    // yaw IS the heading during a one-shot, so re-aiming here spins the captured
+    // lying pose on the turf by the heading delta at blend start (a visible snap).
+    // With the blend on, he rises facing the way he fell and pursuit turns him after.
+    if (game.carrier && !d.recoverBlend) d.heading = Math.atan2(game.carrier.group.position.x - d.group.position.x, game.carrier.group.position.z - d.group.position.z);
     // Phase 2: a minor knockdown (settled quickly, not far from his feet) pops up
     // fast; a big tumble takes the full get-up. Phase 4: the get-up rises from the
     // fall pose (applyRecoverBlend) instead of teleporting to a clean rest pose.
