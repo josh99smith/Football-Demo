@@ -1864,6 +1864,7 @@ const STATE = { PRESNAP: 'presnap', LIVE: 'live', AIR: 'air', RUN: 'run', RETURN
 // version badge or press the ` key). Read everywhere instead of hard-coded values.
 const TUNE_DEFAULTS = {
   fightChance: 0.18,     // post-play scuffle chance after a no-replay tackle/OOB
+  standoverChance: 0.6,  // odds the lead tackler flexes over a flattened carrier after a big/gang hit (Blitz standover; dirty hits always)
   fightKnockback: 3.2,   // how hard the scuffle victim is staggered back (yd/s)
   blockTempo: 1.0,       // global × on the engaged-push / break-tackle clip speed
   staggerDur: 0.4,       // broken-tackle ("BROKE IT!") hit-stagger length (s)
@@ -1951,7 +1952,7 @@ const TUNE_DEFAULTS = {
   ragdollBlend: 1,       // Phase 4: blend from the settled ragdoll pose into the get-up (0 = hard snap)
   animQuality: 1.0,      // Phase 6: master quality scale for IK/additive layers (0 = cheapest, off on low-end)
   // Phase 6: live blend-table durations (seconds) — mirror BLEND, synced via syncBlend()
-  blendGait: 0.18, blendPoseIn: 0.09, blendPoseOut: 0.13, blendOneShotOut: 0.16, blendGetup: 0.24,
+  blendGait: 0.18, blendPoseIn: 0.13, blendPoseOut: 0.18, blendOneShotOut: 0.16, blendGetup: 0.24, // pose in/out lengthened: a full-arm overlay (block, protect, reach) landing in 90ms read as a jolt
   // Camera framing
   camFov: 1.0, camDist: 1.0, camHeight: 1.0,       // × broadcast FOV / chase distance / height
   // FX / juice
@@ -5212,6 +5213,7 @@ function preparePlay(teleport) {
   game.drag.active = false; game.drag.grabbers.length = 0;
   for (const ch of game.all) {
     ch.oneShotT = 0; ch.throwAnimT = 0; ch.armPoseT = 0; ch.spinT = 0; ch.recoverT = 0; ch.recoverBlend = null; ch.grabbing = false; ch.holdHeading = false; ch.downKnock = false; ch.catchLeap = false; ch.catchPlant = false; ch.catchExposed = 0;
+    ch.catchSide = ch.catchRR = ch.catchLR = ch.catchRF = ch.catchLF = null; // eased catch-reach state starts fresh each play
     ch.throwW = 0; ch.catchW = 0; ch.armW = 0; ch.battleW = 0; ch.grabW = 0; ch.sulkW = 0; ch.blockW = 0; ch.protectW = 0; ch.blocking = false; // clear overlay blends (hidden by the cut)
     restoreHelmet(ch); restoreTear(ch); // be whole BEFORE the walk-back; the dip-cut hides this restore
     // Per-player walk-back variety so they don't trudge home like robots.
@@ -6087,6 +6089,7 @@ function blowWhistle() {
   audio.whistle();
 }
 function resolveTackleEnd() {
+  game.standover = null; // never let a pending flex leak into the next tackle
   if (game.returnActive) { endReturn('tackle', game.tackleSpotZ); return; }
   if (game.fumbleLost) { game.fumbleLost = false; endPlay('fumble', game.tackleSpotZ); return; }
   endPlay('tackle', game.tackleSpotZ);
@@ -7296,6 +7299,11 @@ function beginTackle(lead, force = false) {
     if (tear) tearInHalf(carrier, hitX, hitZ, power);
     else if (big || gang || dirty) popHelmet(carrier, hitX, hitZ, power);
     if (dirty && lead.actions.celebrate && !lead.ragdolling) { lead.heading = Math.atan2(hitX, hitZ); playOneShot(lead, 'celebrate', 1.3, true); }
+    // Blitz STANDOVER: after the lunge lands, the lead tackler flexes over the
+    // flattened carrier instead of dropping into a plain idle for the tackle hold
+    // (the reference's signature "standover" beat). Deferred past the lunge clip —
+    // fired from the TACKLE hold below. Dirty hits already flex immediately.
+    else if ((big || gang) && lead.actions.celebrate && !lead.ragdolling && Math.random() < TUNE.standoverChance) game.standover = { lead, t: 0.5 };
     if (tear) showBanner('RIPPED IN HALF!', '#ff2a2a', { power });
     else if (dirty) showBanner('DIRTY HIT!', '#37d0e0', { power });
     else showBanner(gang ? 'GANG TACKLE!' : 'BIG HIT!', gang ? '#ff9a3a' : '#ff5a3a', { power });
@@ -7969,6 +7977,13 @@ function applyThrowPose(ch, dt, w = 1) {
   ch.throwAnimT -= dt;
   if (!ch.upperArm || !ch.upperArmRest) return;
   const t = THREE.MathUtils.clamp(1 - ch.throwAnimT / THROW_ANIM_DUR, 0, 1);
+  // The curves end at 0 = the bone's captured REST, which is the model's bind (T-)pose
+  // arm — with the overlay still at full weight, every throw finished by swinging
+  // the arm out to the side before the run clip took over (the QB/RightArm pop in
+  // the snap telemetry). Fade the overlay's WEIGHT out over the follow-through so the
+  // clip's natural arm takes back the bone as the keys return to rest.
+  w *= keyAngle([[0, 1], [0.7, 1], [1, 0]], t);
+  if (w <= 0.001) return;
   // Curves live in POSE_KEYS.throw (editable in the Animation Studio). The arm bones
   // read those tables; the launch-angle loft scales the over-the-top peak so a lob
   // lofts higher than a bullet without un-editing the curve.
@@ -8030,12 +8045,12 @@ function applyFootLock(ch) {
   footLockLeg(ch, ch.leg.thighR, ch.leg.shinR, ch.leg.footR, 'footLockR');
   footLockLeg(ch, ch.leg.thighL, ch.leg.shinL, ch.leg.footL, 'footLockL');
 }
-function ikHandsToBall(ch, target, twoHand, w) {
+function ikHandsToBall(ch, target, twoHand, w, sideHint) {
   if (!target || w <= 0.01 || !TUNE.catchIK || !ch.upperArm || !ch.handBone) return;
   w = Math.min(1, w * TUNE.catchIK * (TUNE.animQuality != null ? TUNE.animQuality : 1)); // Phase 6: quality-scaled
   ch.group.updateWorldMatrix(true, true);            // fresh world matrices for the posed arm chain
   const dx = target.x - ch.group.position.x, dz = target.z - ch.group.position.z;
-  const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
+  const side = sideHint != null ? sideHint : dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // ball to his right (>0) or left
   const right = side >= 0;
   const pa = right ? ch.upperArm : ch.leftArm, pf = right ? ch.foreArm : ch.leftForeArm, ph = right ? ch.handBone : ch.leftHandBone;
   ik2(pa, pf, ph, target, w);
@@ -8067,16 +8082,27 @@ function applyCatchPose(ch, ballPos, dt, w = 1) {
   // frame) decides whether both hands meet it (centered) or he stabs with the near
   // arm while the off arm trails (a wide reach). side > 0 = ball to his right.
   const dx = ballPos.x - ch.group.position.x, dz = ballPos.z - ch.group.position.z;
-  const side = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // local lateral offset
+  const sideRaw = dx * Math.cos(ch.heading) - dz * Math.sin(ch.heading); // local lateral offset
+  // Smooth the lateral read: a ball crossing his centreline flips which arm is the
+  // near arm (and the one-/two-hand split) — as a hard branch that swapped whole
+  // arms in a single frame (the biggest pop the snap detector found). Ease the read
+  // AND the per-arm reach values, so a swap is a quick blend, never a jump.
+  const side = ch.catchSide = expEase(ch.catchSide != null ? ch.catchSide : sideRaw, sideRaw, 14, dt);
   const oneH = THREE.MathUtils.clamp((Math.abs(side) - 0.7) / 1.3, 0, 1); // 0 two-hand .. 1 one-hand
-  const rightReach = side >= 0 ? raise : raise * (1 - oneH * 0.85); // right arm = ch.upperArm
-  const leftReach = side < 0 ? raise : raise * (1 - oneH * 0.85);
+  const tRR = side >= 0 ? raise : raise * (1 - oneH * 0.85); // right arm = ch.upperArm
+  const tLR = side < 0 ? raise : raise * (1 - oneH * 0.85);
+  const tRF = -0.55 * (side >= 0 ? 1 : 1 - oneH * 0.7), tLF = 0.55 * (side < 0 ? 1 : 1 - oneH * 0.7);
+  const rightReach = ch.catchRR = expEase(ch.catchRR != null ? ch.catchRR : tRR, tRR, 16, dt);
+  const leftReach = ch.catchLR = expEase(ch.catchLR != null ? ch.catchLR : tLR, tLR, 16, dt);
+  const rightFore = ch.catchRF = expEase(ch.catchRF != null ? ch.catchRF : tRF, tRF, 16, dt);
+  const leftFore = ch.catchLF = expEase(ch.catchLF != null ? ch.catchLF : tLF, tLF, 16, dt);
   blendBone(ch.upperArm, ch.upperArmRest, -rightReach, w);
-  blendBone(ch.foreArm, ch.foreArmRest, -0.55 * (side >= 0 ? 1 : 1 - oneH * 0.7), w);
+  blendBone(ch.foreArm, ch.foreArmRest, rightFore, w);
   blendBone(ch.leftArm, ch.leftArmRest, leftReach, w);
-  blendBone(ch.leftForeArm, ch.leftForeArmRest, 0.55 * (side < 0 ? 1 : 1 - oneH * 0.7), w);
-  // Phase 4: refine the posed arms so the hand(s) actually land on the ball.
-  ikHandsToBall(ch, ballPos, oneH < 0.5, w);
+  blendBone(ch.leftForeArm, ch.leftForeArmRest, leftFore, w);
+  // Phase 4: refine the posed arms so the hand(s) actually land on the ball (the
+  // near-arm pick follows the SMOOTHED side so it can't flip a frame early).
+  ikHandsToBall(ch, ballPos, oneH < 0.5, w, side);
 }
 // Procedural ARM ACTIONS (swat a pass, dive at a pick). Like the throw/catch
 // poses these run AFTER the mixer and are rig-agnostic (arm bones only), easing
@@ -8786,6 +8812,13 @@ function updatePlay(dt) {
     // fall, then spot the ball where the pile slid to.
     for (const ch of game.all) if (!ch.ragdolling) { ch.speed = 0; ch.vel.set(0, 0, 0); }
     game.tackleTimer -= dt;
+    if (game.standover && (game.standover.t -= dt) <= 0) { // deferred standover flex (see beginTackle)
+      const l = game.standover.lead; game.standover = null;
+      if (l && !l.ragdolling && l.actions.celebrate && game.carrier) {
+        l.heading = Math.atan2(game.carrier.group.position.x - l.group.position.x, game.carrier.group.position.z - l.group.position.z); // square up over him
+        playOneShot(l, 'celebrate', 1.3, true);
+      }
+    }
     const settled = game.carrier && game.carrier.ragdoll &&
       game.carrier.ragdoll.active && game.tackleTimer < 1.2 && game.carrier.ragdoll.settled();
     if (game.tackleTimer <= 0 || settled) resolveTackleEnd();
